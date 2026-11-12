@@ -97,10 +97,19 @@ L'index est un cache :
   - chaque valeur garde son encodage, sa liaison et sa somme de contrôle ; la
     base n'est qu'un conteneur ;
   - écritures sans synchronisation, journal en mémoire : aucun autre fichier
-    que la base n'est jamais écrit. Une base où traîne un fichier annexe
-    (`-journal`, `-wal`, `-shm`), ou qui n'est pas en mode retour arrière,
-    n'est jamais ouverte par un lecteur ; un écrivain retire d'abord ces noms
-    (retirer un nom n'écrit jamais dans le fichier qu'il désigne) ;
+    que la base n'est jamais écrit, et jamais un fichier de base à plusieurs
+    liens. Les lecteurs ouvrent la base en lecture seule : SQLite ne rejoue
+    alors aucun journal et n'écrit aucun fichier annexe. Une base qui n'est
+    pas en mode retour arrière, ou à côté de laquelle traîne un `-wal`, un
+    `-shm` ou un `-journal` non vide, n'est jamais ouverte par un lecteur ; un
+    écrivain retire d'abord ces noms (retirer un nom n'écrit jamais dans le
+    fichier qu'il désigne) ;
+  - risque résiduel, commun avec la base du Store : SQLite fait ses propres
+    contrôles en verrouillant, après les nôtres ; un processus qui plante un
+    journal « chaud » dans cet intervalle peut le faire rejouer par un
+    écrivain (et supprimer le super-journal qu'il nomme), et le VFS Windows
+    de SQLite ne respecte pas `NOFOLLOW`. Le fermer demande un VFS qui
+    n'ouvre que la base principale, pour les deux bases (à faire) ;
   - tout accès vérifie le schéma exact (marqueur, version, deux tables, rien
     d'autre) puis n'exécute que des requêtes fixes (`trusted_schema=OFF`,
     mode défensif) ; une valeur est lue par la requête qui vérifie son type

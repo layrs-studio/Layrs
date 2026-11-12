@@ -152,8 +152,12 @@ pub fn load(
         }
         // Removed, then forgotten (council s9 r3): a read that saw the value
         // began before the forget, so it cannot remember it again.
-        if let (Some(cache), true) = (&cache, stored) {
-            cache.remove(root_tree.as_str());
+        if stored {
+            // Through a writer: readers' connections are read-only.
+            drop(cache);
+            if let Some(writer) = Projections::open(store_root, Access::Write) {
+                writer.remove(root_tree.as_str());
+            }
         }
         forget_complete(root_tree);
         return None;
@@ -189,6 +193,9 @@ fn read(
     stored: &mut bool,
     decoding: &Decoding<'_>,
 ) -> Option<Parsed> {
+    if quarantined(root_tree) {
+        return None;
+    }
     // Taken before the read: bytes read before a projection is forgotten
     // are never remembered after it (council s9 r2).
     let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
@@ -488,8 +495,12 @@ pub fn save(
 }
 
 /// Replaces the cached projection of `root_tree` (found to differ from its
-/// recomputation) with `entries`, in one write: unlike a removal followed by
-/// `save`, a busy database cannot leave the wrong value answering.
+/// recomputation) with `entries`, a complete form written in one upsert
+/// (council s12 r1, r2). The root is quarantined in this process first: it
+/// is never read again here (nor a delta through it) until the replacement
+/// is written. Another process may still read the wrong value until then,
+/// as when a removed cache file could not be deleted; its own sampling
+/// catches it the same way.
 pub fn replace(
     store_root: &Path,
     root_tree: &TreeId,
@@ -497,12 +508,40 @@ pub fn replace(
     entries: &[CheckoutProjectionEntry],
     refs: Option<&dyn FileRefs>,
 ) {
-    // Forgotten first (council s9 r3): this process never answers a delta
-    // from the wrong bytes again, written or not.
+    if let Ok(mut quarantined) = quarantine().lock() {
+        quarantined.insert(root_tree.clone());
+    }
+    // Forgotten after the quarantine (council s9 r3): no read of the wrong
+    // bytes can be remembered again.
     forget_complete(root_tree);
-    record(store_root, root_tree, projection_tree, entries, refs, true);
+    for _ in 0..3 {
+        if record(store_root, root_tree, projection_tree, entries, refs, true) {
+            if let Ok(mut quarantined) = quarantine().lock() {
+                quarantined.remove(root_tree);
+            }
+            forget_complete(root_tree);
+            return;
+        }
+    }
+    crate::perf::count("projection_cache.replace_failed", 1);
 }
 
+/// Roots found wrong whose replacement this process could not write yet.
+fn quarantine() -> &'static std::sync::Mutex<std::collections::BTreeSet<TreeId>> {
+    static QUARANTINE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<TreeId>>> =
+        std::sync::OnceLock::new();
+    QUARANTINE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()))
+}
+
+fn quarantined(root_tree: &TreeId) -> bool {
+    quarantine()
+        .lock()
+        .map_or(true, |quarantined| quarantined.contains(root_tree))
+}
+
+/// Writes the projection; whether it is recorded. A replacement is always
+/// a complete form: it never reads a delta base, which may be the very value
+/// it replaces (council s12 r2).
 fn record(
     store_root: &Path,
     root_tree: &TreeId,
@@ -510,20 +549,19 @@ fn record(
     entries: &[CheckoutProjectionEntry],
     refs: Option<&dyn FileRefs>,
     replacing: bool,
-) {
+) -> bool {
     let _span = crate::perf::span("projection_cache.save");
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
-        if replacing {
-            remove(store_root, root_tree);
-        }
-        return;
+        return replacing
+            && Projections::open(store_root, Access::Create)
+                .is_some_and(|cache| cache.remove(root_tree.as_str()));
     }
     let Some(cache) = Projections::open(store_root, Access::Create) else {
-        return;
+        return false;
     };
     if !replacing && cache.touch(root_tree.as_str()) {
         // Recorded already: only marked recent, so pruning keeps it.
-        return;
+        return true;
     }
     let decoding = Decoding {
         refs,
@@ -534,8 +572,9 @@ fn record(
     // Taken before the base is read (council s9 r2, s12 r1): bytes read
     // before a projection is forgotten are never remembered after it.
     let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
-    let delta = cache
-        .newest_complete(MAX_BYTES, refs.is_some())
+    let delta = (!replacing)
+        .then(|| cache.newest_complete(MAX_BYTES, refs.is_some()))
+        .flatten()
         .and_then(|(base_root, bytes)| {
             let base_root = TreeId::parse(base_root).ok()?;
             let base = verified(bytes, &base_root, generation, &decoding)?;
@@ -599,7 +638,7 @@ fn record(
         )
         .is_err()
     {
-        return;
+        return false;
     }
     // Pruning is only needed once a complete projection was added (at most
     // `KEPT_COMPLETE` stay) or more than `KEPT` are recorded. A delta added
@@ -611,6 +650,7 @@ fn record(
     if fs::symlink_metadata(&legacy).is_ok() {
         let _ = fs::remove_dir_all(&legacy);
     }
+    true
 }
 
 fn changes_owned(
@@ -871,7 +911,7 @@ mod tests {
         assert_eq!(load(&root, &tree, None), Some(entries()));
         // Another Tree never reads this value as its own, even copied.
         let other = TreeId::parse(format!("blake3:{}", blake3::hash(b"other"))).unwrap();
-        let cache = Projections::open(&root, Access::Read).unwrap();
+        let cache = Projections::open(&root, Access::Write).unwrap();
         let bytes = cache.get(tree.as_str(), MAX_BYTES).unwrap();
         cache.insert(other.as_str(), None, false, &bytes).unwrap();
         assert_eq!(load(&root, &other, None), None);
@@ -902,7 +942,7 @@ mod tests {
         for tree in &trees {
             save(&root, tree, tree, &entries(), None);
         }
-        assert!(Projections::open(&root, Access::Read).unwrap().count() <= KEPT);
+        assert!(Projections::open(&root, Access::Write).unwrap().count() <= KEPT);
         assert_eq!(load(&root, trees.last().unwrap(), None), Some(entries()));
         let _ = fs::remove_dir_all(&root);
     }
@@ -950,7 +990,7 @@ mod tests {
             },
         });
         save(&root, &tree(1), &tree(1), &next, None);
-        let cache = Projections::open(&root, Access::Read).unwrap();
+        let cache = Projections::open(&root, Access::Write).unwrap();
         let size = |n: u8| cache.get(tree(n).as_str(), MAX_BYTES).unwrap().len();
         assert!(size(1) * 20 < size(0), "{} vs {}", size(1), size(0));
         assert_eq!(load(&root, &tree(1), None), Some(next.clone()));
@@ -1049,7 +1089,7 @@ mod tests {
         // Complete forms both: without the positions, the first is no base.
         save(&root, &tree(1), &tree(1), &projection, Some(&positions));
         save(&root, &tree(0), &tree(0), &projection, None);
-        let cache = Projections::open(&root, Access::Read).unwrap();
+        let cache = Projections::open(&root, Access::Write).unwrap();
         let size = |n: u8| cache.get(tree(n).as_str(), MAX_BYTES).unwrap().len();
         assert!(size(1) * 3 < size(0), "{} vs {}", size(1), size(0));
         assert_eq!(
@@ -1069,6 +1109,40 @@ mod tests {
             Some(projection.clone())
         );
         assert_eq!(load(&root, &tree(0), None), Some(projection));
+        drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A replacement is a complete form written without reading a base
+    /// (the replaced value may be that base): deltas bound to the replaced
+    /// bytes no longer apply (council s12 r2).
+    #[test]
+    fn a_replaced_base_is_complete_and_its_deltas_no_longer_apply() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-replace-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 33]))).unwrap();
+        let wrong = many(200, 8);
+        save(&root, &tree(0), &tree(0), &wrong, None);
+        let mut next = wrong.clone();
+        next.remove(5);
+        save(&root, &tree(1), &tree(1), &next, None);
+        assert_eq!(load(&root, &tree(1), None), Some(next));
+        let mut right = wrong.clone();
+        right.remove(9);
+        replace(&root, &tree(0), &tree(0), &right, None);
+        assert_eq!(load(&root, &tree(0), None), Some(right));
+        let cache = Projections::open(&root, Access::Write).unwrap();
+        assert!(
+            cache
+                .rows()
+                .iter()
+                .any(|row| row.root == tree(0).as_str() && row.base.is_none())
+        );
+        assert_eq!(load(&root, &tree(1), None), None);
+        assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
         drop(cache);
         let _ = fs::remove_dir_all(&root);
     }

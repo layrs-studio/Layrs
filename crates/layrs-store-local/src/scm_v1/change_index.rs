@@ -336,6 +336,8 @@ impl ChangeIndex {
                     ..empty()
                 });
             }
+            // A damaged value: read as empty, and replaced by the next save.
+            super::derived_cache::Stored::Malformed => None,
             super::derived_cache::Stored::Missing => {
                 let path = Self::file(store_root, worktree_id);
                 let metadata = fs::symlink_metadata(&path).ok()?;

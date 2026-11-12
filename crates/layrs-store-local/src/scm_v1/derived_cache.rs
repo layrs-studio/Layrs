@@ -17,15 +17,28 @@
 //!   mid-write may leave the database damaged: a torn value fails its
 //!   checksum or binding and reads as absent, and a writer that meets a
 //!   damaged database replaces it.
-//! - A database that is not a regular file, is not in rollback mode (its
-//!   header), or has any sidecar (`-journal`, `-wal`, `-shm`: never this
-//!   cache's, so planted or another program's) is never opened by a reader;
-//!   a writer removes the sidecar names first (removing a name never writes
-//!   to the file it names). Every access then checks the schema exactly
-//!   (marker, version, the two tables and their keys, nothing else: no view
-//!   or trigger) and runs fixed queries (`trusted_schema=OFF`, defensive
-//!   mode); a value is read in the statement that checks its type and
-//!   length.
+//! - Readers open the database read-only: SQLite then never replays a hot
+//!   journal (`SQLITE_READONLY_ROLLBACK`), never deletes a super-journal and
+//!   never writes a sidecar, while still taking the locks that keep their
+//!   reads consistent with concurrent writers. A database that is not a
+//!   regular file, is not in rollback mode (its header), or has a `-wal` or
+//!   `-shm` (which would switch the connection to WAL mode, even empty), or
+//!   a non-empty `-journal`, is never opened by a reader. A writer removes
+//!   the sidecar names first (removing a name never writes to the file it
+//!   names). Every access then checks the schema exactly (marker, version,
+//!   the two tables and their keys, nothing else: no view or trigger) and
+//!   runs fixed queries (`trusted_schema=OFF`, defensive mode); a value is
+//!   read in the statement that checks its type and length.
+//! - Residual risk, shared with the Store's own database: SQLite's checks
+//!   happen when it locks, after ours. A process racing to plant a hot
+//!   journal between a writer's check and its lock can make SQLite replay it
+//!   (writing into this database) and delete the super-journal it names;
+//!   and SQLite's Windows VFS does not honour `NOFOLLOW`, so a name swapped
+//!   for a link after the check is followed. Closing these needs a VFS that
+//!   opens nothing but the main database, for both databases (council s12
+//!   r2, recorded for later).
+//! - A writer never writes a database file with more than one link (a
+//!   hard link planted to a file outside the Store).
 //! - A writer replaces only a database proven foreign or damaged. An empty
 //!   database (another process creating it) is initialized in place; one of
 //!   a newer version of this cache, or busy, is a miss and is kept.
@@ -80,12 +93,19 @@ pub(crate) fn open(store_root: &Path, access: Access) -> Option<Connection> {
                 discard(&path);
                 initialize(&path).ok()
             };
-            match rollback_header(&path) {
-                Header::Rollback => {}
-                Header::Foreign if writer => return replace(),
+            match inspect(&path) {
+                (Header::Rollback, single) if single || access == Access::Read => {}
+                (Header::Foreign, true) if writer => return replace(),
                 _ => return None,
             }
-            let connection = match connect(&path, false) {
+            let connection = match connect(
+                &path,
+                if access == Access::Read {
+                    Connect::ReadOnly
+                } else {
+                    Connect::ReadWrite
+                },
+            ) {
                 Ok(connection) => connection,
                 Err(error) if writer && invalid(&error) => return replace(),
                 Err(_) => return None,
@@ -128,7 +148,9 @@ fn without_sidecars(path: &Path, access: Access) -> bool {
             return true;
         };
         if access == Access::Read {
-            return metadata.is_file() && metadata.len() == 0;
+            // An empty journal is never hot; any WAL file switches the
+            // connection to WAL mode (council s12 r2).
+            return *suffix == "-journal" && metadata.is_file() && metadata.len() == 0;
         }
         fs::remove_file(&sidecar).is_ok() && fs::symlink_metadata(&sidecar).is_err()
     })
@@ -142,10 +164,16 @@ enum Header {
     Unreadable,
 }
 
-fn rollback_header(path: &Path) -> Header {
+/// The database file's header, and whether the file has a single link (a
+/// writer never writes one with more: council s12 r2).
+fn inspect(path: &Path) -> (Header, bool) {
     use std::io::Read;
+    let Ok(file) = fs::File::open(path) else {
+        return (Header::Unreadable, false);
+    };
+    let single = single_link(&file);
     let mut header = Vec::with_capacity(100);
-    match fs::File::open(path).and_then(|file| file.take(100).read_to_end(&mut header)) {
+    let header = match (&file).take(100).read_to_end(&mut header) {
         Err(_) => Header::Unreadable,
         Ok(0) => Header::Rollback,
         Ok(_)
@@ -157,7 +185,31 @@ fn rollback_header(path: &Path) -> Header {
             Header::Rollback
         }
         Ok(_) => Header::Foreign,
-    }
+    };
+    (header, single)
+}
+
+#[cfg(windows)]
+fn single_link(file: &fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` stays open and the whole output structure is writable.
+    (unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) }) != 0
+        && info.nNumberOfLinks == 1
+}
+
+#[cfg(unix)]
+fn single_link(file: &fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().is_ok_and(|metadata| metadata.nlink() == 1)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn single_link(_file: &fs::File) -> bool {
+    false
 }
 
 /// Raised when a database is proven not to be this cache.
@@ -178,17 +230,28 @@ pub(crate) fn invalid(error: &rusqlite::Error) -> bool {
     )
 }
 
-fn connect(path: &Path, create: bool) -> rusqlite::Result<Connection> {
-    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    if create {
-        flags |= OpenFlags::SQLITE_OPEN_CREATE;
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Connect {
+    ReadOnly,
+    ReadWrite,
+    Create,
+}
+
+fn connect(path: &Path, mode: Connect) -> rusqlite::Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | match mode {
+            Connect::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
+            Connect::ReadWrite => OpenFlags::SQLITE_OPEN_READ_WRITE,
+            Connect::Create => OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        };
     let connection = Connection::open_with_flags(path, flags)?;
     connection.busy_timeout(BUSY)?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    if mode == Connect::ReadOnly {
+        return Ok(connection);
+    }
     // Before anything is written: no journal file, ever.
     let mode: String =
         connection.query_row("PRAGMA journal_mode = MEMORY", [], |row| row.get(0))?;
@@ -202,7 +265,7 @@ fn connect(path: &Path, create: bool) -> rusqlite::Result<Connection> {
 /// Creates the tables of an empty database (another process may be doing
 /// the same: the first transaction creates them, the other finds them).
 fn initialize(path: &Path) -> rusqlite::Result<Connection> {
-    let mut connection = connect(path, true)?;
+    let mut connection = connect(path, Connect::Create)?;
     // Only effective before the first table: a database another process
     // initialized keeps its own (identical) settings.
     connection.pragma_update(None, "page_size", 4096)?;
@@ -235,6 +298,9 @@ enum Schema {
 /// Exactly this cache's schema: its marker, version, two tables and their
 /// primary key indexes, and nothing else (no view, trigger or index).
 fn check_schema(connection: &Connection) -> rusqlite::Result<Schema> {
+    // One read transaction: the marker, version and objects of one snapshot
+    // (another process may be initializing it: council s12 r2).
+    let snapshot = connection.unchecked_transaction()?;
     let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let mut statement =
@@ -249,6 +315,8 @@ fn check_schema(connection: &Connection) -> rusqlite::Result<Schema> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    snapshot.commit()?;
     let expected = [
         (
             "table",
@@ -296,12 +364,21 @@ fn discard(path: &Path) {
 /// `Ok(None)`: no such value; `Err`: unreadable, not a blob, or larger than
 /// allowed. One statement checks the value and reads it (one snapshot): a
 /// value larger than allowed is never materialized.
+/// Why a value could not be read.
+pub(crate) enum Unread {
+    /// The row is there but is not a blob within the bound: a damaged
+    /// value, which a writer may replace.
+    Malformed,
+    /// The database could not answer (busy, damaged, I/O).
+    Unavailable,
+}
+
 fn get(
     connection: &Connection,
     table: Table,
     key: &str,
     max_bytes: u64,
-) -> rusqlite::Result<Option<Vec<u8>>> {
+) -> Result<Option<Vec<u8>>, Unread> {
     let query = match table {
         Table::ChangeIndex => {
             "SELECT CASE WHEN typeof(bytes) = 'blob' AND length(bytes) <= ?2 THEN bytes END \
@@ -317,11 +394,12 @@ fn get(
         .query_row(query, params![key, limit], |row| {
             row.get::<_, Option<Vec<u8>>>(0)
         })
-        .optional()?
+        .optional()
     {
-        None => Ok(None),
-        Some(Some(bytes)) => Ok(Some(bytes)),
-        Some(None) => Err(rusqlite::Error::InvalidQuery),
+        Err(_) => Err(Unread::Unavailable),
+        Ok(None) => Ok(None),
+        Ok(Some(Some(bytes))) => Ok(Some(bytes)),
+        Ok(Some(None)) => Err(Unread::Malformed),
     }
 }
 
@@ -335,7 +413,9 @@ enum Table {
 pub(crate) enum Stored {
     Missing,
     Present(Vec<u8>),
-    /// Present but unreadable (busy, damaged or too large).
+    /// A row that is not a blob within the bound: a damaged value.
+    Malformed,
+    /// The database could not answer (busy, damaged, foreign, newer).
     Unreadable,
 }
 
@@ -350,7 +430,8 @@ pub(crate) fn change_index_get(store_root: &Path, worktree: &str, max_bytes: u64
     match get(&connection, Table::ChangeIndex, worktree, max_bytes) {
         Ok(Some(bytes)) => Stored::Present(bytes),
         Ok(None) => Stored::Missing,
-        Err(_) => Stored::Unreadable,
+        Err(Unread::Malformed) => Stored::Malformed,
+        Err(Unread::Unavailable) => Stored::Unreadable,
     }
 }
 
@@ -466,8 +547,8 @@ impl Projections {
             .expect("a Projections connection is only taken when dropped")
     }
 
-    /// Records a damaged database for replacement on drop (writers only:
-    /// `access` is not `Read`).
+    /// Records a damaged database for replacement on drop (only writers
+    /// write: a reader's connection is read-only).
     fn noted<T>(&self, result: rusqlite::Result<T>) -> rusqlite::Result<T> {
         if let Err(error) = &result {
             if invalid(error) {
@@ -565,11 +646,13 @@ impl Projections {
             .map_or(0, |count| usize::try_from(count).unwrap_or(usize::MAX))
     }
 
-    pub(crate) fn remove(&self, root: &str) {
-        let _ = self.noted(
+    /// Whether the value is gone (removed, or was never there).
+    pub(crate) fn remove(&self, root: &str) -> bool {
+        self.noted(
             self.connection()
                 .execute("DELETE FROM projection WHERE root = ?1", [root]),
-        );
+        )
+        .is_ok()
     }
 }
 
@@ -603,10 +686,10 @@ mod tests {
             change_index_get(&store, "w", 1 << 20),
             Stored::Present(bytes) if bytes == b"index"
         ));
-        // Larger than allowed: unreadable, never truncated.
+        // Larger than allowed: malformed, never truncated.
         assert!(matches!(
             change_index_get(&store, "w", 4),
-            Stored::Unreadable
+            Stored::Malformed
         ));
         let projections = Projections::open(&store, Access::Create).unwrap();
         projections.insert("a", None, false, b"complete a").unwrap();
@@ -679,7 +762,7 @@ mod tests {
         }
         assert!(matches!(
             change_index_get(&store, "w", 1 << 20),
-            Stored::Unreadable
+            Stored::Malformed
         ));
         // Garbage instead of a database: the same.
         fs::write(path(&store), b"not a database at all, not even close").unwrap();
@@ -706,6 +789,36 @@ mod tests {
         change_index_put(&store, "w", b"fourth").unwrap();
         assert!(!sidecar.exists());
         assert_eq!(fs::read(&outside).unwrap(), b"keep me");
+        // A database file with another link is never written.
+        let elsewhere = store.join("elsewhere.sqlite3");
+        fs::rename(path(&store), &elsewhere).unwrap();
+        fs::hard_link(&elsewhere, path(&store)).unwrap();
+        assert!(change_index_put(&store, "w", b"linked").is_err());
+        assert!(matches!(
+            change_index_get(&store, "w", 1 << 20),
+            Stored::Present(bytes) if bytes == b"fourth"
+        ));
+        fs::remove_file(&elsewhere).unwrap();
+        // An empty WAL beside it (which would switch SQLite to WAL mode)
+        // with a shared-memory file linked outside: a reader never opens the
+        // database; a writer removes both names, never writing through them.
+        let wal = store.join("metadata").join("derived.sqlite3-wal");
+        let shm = store.join("metadata").join("derived.sqlite3-shm");
+        fs::write(&wal, b"").unwrap();
+        fs::write(&outside, b"").unwrap();
+        fs::hard_link(&outside, &shm).unwrap();
+        assert!(matches!(
+            change_index_get(&store, "w", 1 << 20),
+            Stored::Unreadable
+        ));
+        assert!(!change_index_exists(&store, "w"));
+        change_index_put(&store, "w", b"fourth").unwrap();
+        assert!(!wal.exists() && !shm.exists());
+        assert_eq!(fs::read(&outside).unwrap(), b"");
+        assert!(matches!(
+            change_index_get(&store, "w", 1 << 20),
+            Stored::Present(bytes) if bytes == b"fourth"
+        ));
         // An empty database (another process creating it) is initialized in
         // place; one of a newer version of this cache is kept, unread.
         fs::write(path(&store), b"").unwrap();
