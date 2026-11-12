@@ -17,18 +17,18 @@
 //!   and reads as absent, and the next writer replaces a database proven
 //!   damaged (`SQLITE_CORRUPT`, `SQLITE_NOTADB`, a foreign header or
 //!   schema), whether a reader or a writer found the damage.
-//! - Readers open the database read-only: SQLite then never replays a hot
-//!   journal (`SQLITE_READONLY_ROLLBACK`) nor deletes a super-journal. A
-//!   database that is not a regular file, is not in rollback mode (its
-//!   header), or has a `-wal` or `-shm` (which would switch the connection
-//!   to WAL mode, even empty), or a non-empty `-journal`, is never opened by
-//!   a reader. A reader checks the schema and runs its queries in one read
-//!   transaction.
-//! - A writer removes the sidecar names first (removing a name never writes
-//!   to the file it names), and never writes a database file with more than
-//!   one link: it checks the handle SQLite opened (Windows), and takes the
-//!   name back (removes it, then creates a fresh database) from a file that
-//!   has another link (a hard-link backup, or a link planted to a file
+//! - Every connection goes through a VFS that opens nothing but the database
+//!   file (`guarded_vfs`, council s13 Q7): a journal, WAL or shared-memory
+//!   file beside it, planted or another program's, is never seen, replayed,
+//!   opened or deleted, and no temporary file is made. A writable open
+//!   refuses a database file with another link or that is a reparse point,
+//!   checked on the handle SQLite opened (Windows).
+//! - Readers open the database read-only, of a regular file in rollback
+//!   mode (its header); a reader checks the schema and runs its queries in
+//!   one read transaction.
+//! - A writer never writes a database file with more than one link: it takes
+//!   the name back (removes it, then creates a fresh database) from a file
+//!   that has another link (a hard-link backup, or a link planted to a file
 //!   outside the Store), or that is foreign or damaged. An empty database
 //!   (another process creating it) is initialized in place; one of a newer
 //!   version of this cache, or busy, is a miss and is kept.
@@ -37,16 +37,10 @@
 //!   their keys, no view or trigger), then runs fixed queries
 //!   (`trusted_schema=OFF`, defensive mode); a value is read in the
 //!   statement that checks its type and length.
-//! - Residual risk, shared with the Store's own database (whose sidecars
-//!   SQLite writes on every command): SQLite's own checks happen when it
-//!   locks, after ours. A process racing to plant a hot journal between a
-//!   writer's check and its lock can make SQLite replay it (writing into
-//!   this database) and delete the super-journal it names; one planting a
-//!   `-wal` and `-shm` between a reader's check and its lock makes SQLite
-//!   open them (read-write, even for a read-only connection); on Unix a
-//!   name swapped for a hard link after the check is opened. Closing these
-//!   needs a VFS that opens nothing but the main database, for both
-//!   databases, readers included (council s12 r2, r3; recorded for later).
+//! - Residual risk: on Unix SQLite does not hand out its descriptor, so the
+//!   name is checked again after the open; a name swapped for a hard link
+//!   between the open and that check is written (protected links on Linux
+//!   mitigate it).
 //! - Every access is best effort: a busy or damaged database only makes the
 //!   caller read the Store or the folder again.
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
@@ -64,8 +58,6 @@ const BUSY: Duration = Duration::from_secs(1);
 const CHANGE_INDEX_TABLE: &str =
     "CREATE TABLE change_index (worktree TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL)";
 const PROJECTION_TABLE: &str = "CREATE TABLE projection (root TEXT PRIMARY KEY NOT NULL, base TEXT, positions INTEGER NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL)";
-/// Names SQLite may give the files beside a database.
-const SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
 
 pub(crate) fn path(store_root: &Path) -> PathBuf {
     store_root.join("metadata").join(FILE)
@@ -116,15 +108,12 @@ pub(crate) fn open(store_root: &Path, access: Access) -> Result<Connection, Refu
             if !creating {
                 return Err(Refused::Missing);
             }
-            if !without_sidecars(&path, access) {
-                return Err(Refused::Unavailable);
-            }
             let _ = fs::create_dir_all(path.parent().ok_or(Refused::Unavailable)?);
             return initialize(&path).map_err(|_| Refused::Unavailable);
         }
         Err(_) => return Err(Refused::Unavailable),
     };
-    if !metadata.is_file() || !without_sidecars(&path, access) {
+    if !metadata.is_file() {
         return Err(Refused::Unavailable);
     }
     match inspect(&path) {
@@ -142,10 +131,6 @@ pub(crate) fn open(store_root: &Path, access: Access) -> Result<Connection, Refu
         Ok(connection) => connection,
         Err(error) => return settle(classify(&error)),
     };
-    if access != Access::Read && !opened_single_link(&connection, &path) {
-        drop(connection);
-        return settle(Refused::Damaged);
-    }
     match check_schema(&connection, access == Access::Read) {
         Ok(Schema::Ours) => Ok(connection),
         Ok(Schema::Empty) if creating => {
@@ -181,26 +166,6 @@ fn classify(error: &rusqlite::Error) -> Refused {
     } else {
         Refused::Unavailable
     }
-}
-
-/// No sidecar beside the database (this cache never makes one): a writer
-/// removes its name first; a reader refuses any but an empty regular
-/// journal, which SQLite never replays.
-fn without_sidecars(path: &Path, access: Access) -> bool {
-    SIDECARS.iter().all(|suffix| {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        let sidecar = PathBuf::from(name);
-        let Ok(metadata) = fs::symlink_metadata(&sidecar) else {
-            return true;
-        };
-        if access == Access::Read {
-            // Any WAL file switches the connection to WAL mode (council s12
-            // r2), even empty.
-            return *suffix == "-journal" && metadata.is_file() && metadata.len() == 0;
-        }
-        fs::remove_file(&sidecar).is_ok() && fs::symlink_metadata(&sidecar).is_err()
-    })
 }
 
 enum Header {
@@ -255,46 +220,14 @@ fn single_link_handle(handle: std::os::windows::io::RawHandle) -> bool {
         && info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
-/// The file SQLite opened for `connection` has a single link (council s12
-/// r3): its own handle, so a name swapped after `inspect` cannot pass.
-#[cfg(windows)]
-fn opened_single_link(connection: &Connection, _path: &Path) -> bool {
-    let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
-    // SAFETY: the connection is open (so is its main database file);
-    // SQLITE_FCNTL_WIN32_GET_HANDLE writes that file's HANDLE into
-    // `handle`, which SQLite keeps open while the connection lives.
-    let rc = unsafe {
-        rusqlite::ffi::sqlite3_file_control(
-            connection.handle(),
-            c"main".as_ptr(),
-            rusqlite::ffi::SQLITE_FCNTL_WIN32_GET_HANDLE,
-            (&mut handle as *mut *mut std::ffi::c_void).cast(),
-        )
-    };
-    rc == rusqlite::ffi::SQLITE_OK && !handle.is_null() && single_link_handle(handle)
-}
-
 #[cfg(unix)]
 fn single_link(file: &fs::File) -> bool {
     use std::os::unix::fs::MetadataExt;
     file.metadata().is_ok_and(|metadata| metadata.nlink() == 1)
 }
 
-/// On Unix SQLite does not hand out its descriptor: the name is checked
-/// again (a swap racing this check stays a recorded residual risk).
-#[cfg(unix)]
-fn opened_single_link(_connection: &Connection, path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.nlink() == 1)
-}
-
 #[cfg(not(any(windows, unix)))]
 fn single_link(_file: &fs::File) -> bool {
-    false
-}
-
-#[cfg(not(any(windows, unix)))]
-fn opened_single_link(_connection: &Connection, _path: &Path) -> bool {
     false
 }
 
@@ -331,8 +264,19 @@ fn connect(path: &Path, mode: Connect) -> rusqlite::Result<Connection> {
             Connect::ReadWrite => OpenFlags::SQLITE_OPEN_READ_WRITE,
             Connect::Create => OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         };
-    let connection = Connection::open_with_flags(path, flags)?;
+    if !super::guarded_vfs::register() {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some("the guarded SQLite VFS is unavailable".into()),
+        ));
+    }
+    // Through the VFS that opens nothing but the database file (council s13
+    // Q7): no journal, WAL, shared memory or temporary file is ever seen,
+    // replayed or written, and a database file with another link is refused.
+    let connection =
+        Connection::open_with_flags_and_vfs(path, flags, super::guarded_vfs::MAIN_ONLY)?;
     connection.busy_timeout(BUSY)?;
+    connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     if mode == Connect::ReadOnly {
@@ -352,9 +296,6 @@ fn connect(path: &Path, mode: Connect) -> rusqlite::Result<Connection> {
 /// the same: the first transaction creates them, the other finds them).
 fn initialize(path: &Path) -> rusqlite::Result<Connection> {
     let mut connection = connect(path, Connect::Create)?;
-    if !opened_single_link(&connection, path) {
-        return Err(not_this_cache());
-    }
     // Only effective before the first table: a database another process
     // initialized keeps its own (identical) settings.
     connection.pragma_update(None, "page_size", 4096)?;
@@ -891,19 +832,19 @@ mod tests {
                 .join("derived.sqlite3-journal")
                 .exists()
         );
-        // A sidecar beside it (planted, or another program's) is never
-        // opened: a reader misses, a writer removes its name.
+        // A journal beside it (planted, or another program's), linked to a
+        // file outside, is never seen, replayed or written.
         let sidecar = store.join("metadata").join("derived.sqlite3-journal");
         let outside = store.join("outside.txt");
-        fs::write(&outside, b"keep me").unwrap();
+        fs::write(&outside, vec![0xd9_u8; 4096]).unwrap();
         fs::hard_link(&outside, &sidecar).unwrap();
         assert!(matches!(
             change_index_get(&store, "w", 1 << 20),
-            Stored::Unreadable
+            Stored::Present(bytes) if bytes == b"third"
         ));
         change_index_put(&store, "w", b"fourth").unwrap();
-        assert!(!sidecar.exists());
-        assert_eq!(fs::read(&outside).unwrap(), b"keep me");
+        assert_eq!(fs::read(&outside).unwrap(), vec![0xd9_u8; 4096]);
+        fs::remove_file(&sidecar).unwrap();
         // A database file with another link (a hard-link backup, or one
         // planted) is read, never written: a writer takes the name back and
         // starts a fresh database; the other link keeps its bytes.
@@ -923,8 +864,7 @@ mod tests {
         ));
         fs::remove_file(&elsewhere).unwrap();
         // An empty WAL beside it (which would switch SQLite to WAL mode)
-        // with a shared-memory file linked outside: a reader never opens the
-        // database; a writer removes both names, never writing through them.
+        // with a shared-memory file linked outside: never seen or written.
         let wal = store.join("metadata").join("derived.sqlite3-wal");
         let shm = store.join("metadata").join("derived.sqlite3-shm");
         fs::write(&wal, b"").unwrap();
@@ -932,16 +872,15 @@ mod tests {
         fs::hard_link(&outside, &shm).unwrap();
         assert!(matches!(
             change_index_get(&store, "w", 1 << 20),
-            Stored::Unreadable
+            Stored::Present(bytes) if bytes == b"linked"
         ));
-        assert!(!change_index_exists(&store, "w"));
         change_index_put(&store, "w", b"fourth").unwrap();
-        assert!(!wal.exists() && !shm.exists());
-        assert_eq!(fs::read(&outside).unwrap(), b"");
         assert!(matches!(
             change_index_get(&store, "w", 1 << 20),
             Stored::Present(bytes) if bytes == b"fourth"
         ));
+        assert_eq!(fs::read(&outside).unwrap(), b"");
+        assert_eq!(fs::read(&wal).unwrap(), b"");
         // An empty database (another process creating it) is initialized in
         // place; one of a newer version of this cache is kept, unread.
         fs::write(path(&store), b"").unwrap();

@@ -255,10 +255,17 @@ pub fn create_fresh_baseline(
     drop(staged_file);
     sync_directory(parent)?;
 
-    let mut connection = Connection::open_with_flags(
+    let mut connection = open_guarded_writer(
         &staged,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    // The switch to WAL writes the header in a transaction that uses a
+    // rollback journal unless the journal is off: kept in memory (the
+    // guarded VFS opens no journal file), as SQLite moves from MEMORY to WAL
+    // through OFF. A staged file: a crash only means a retry.
+    let journal: String =
+        connection.query_row("PRAGMA journal_mode = MEMORY", [], |row| row.get(0))?;
+    require_pragma("journal_mode", "memory", journal.to_ascii_lowercase())?;
     if let Some(page_size) = baseline.page_size {
         // Only an empty database takes a page size, before WAL is enabled.
         connection.pragma_update(None, "page_size", page_size)?;
@@ -428,7 +435,13 @@ fn publish_no_clobber(staged: &Path, final_path: &Path) -> Result<()> {
 pub fn open_existing(path: &Path, busy_timeout: Duration) -> Result<Connection> {
     validate_embedded_checksum()?;
     require_existing_file(path)?;
-    let connection = Connection::open_with_flags(
+    // A creation interrupted after publishing leaves the staged name as a
+    // second link to the database, which the guarded VFS refuses to write.
+    let staged = staged_database_path(path)?;
+    if fs::symlink_metadata(&staged).is_ok() {
+        remove_staged_for_retry(&staged)?;
+    }
+    let connection = open_guarded_writer(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
@@ -488,7 +501,7 @@ pub(crate) fn open_writer_existing_no_mutation(
     let reader = open_read_only(path, busy_timeout)?;
     validate_store_identity(&reader, store_id)?;
     drop(reader);
-    let connection = Connection::open_with_flags(
+    let connection = open_guarded_writer(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -711,7 +724,7 @@ pub(crate) fn checkpoint_orphaned_wal(path: &Path, busy_timeout: Duration) -> Re
     validate_embedded_checksum()?;
     require_existing_file(path)?;
     verify_persistent_wal(path)?;
-    let connection = Connection::open_with_flags(
+    let connection = open_guarded_writer(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -728,6 +741,30 @@ pub(crate) fn checkpoint_orphaned_wal(path: &Path, busy_timeout: Duration) -> Re
         )));
     }
     Ok(())
+}
+
+/// Opens the Store's database for a writer through the guarded VFS (council
+/// s13 Q7): it opens the database and its `-wal` only, each a regular file
+/// with a single link (checked on the handle SQLite opened, on Windows), and
+/// never sees a rollback journal, so a journal planted beside the database
+/// is never replayed (nor the super-journal it names deleted). The
+/// connection takes `locking_mode=EXCLUSIVE` before its first read, so its
+/// WAL index lives in its memory and no `-shm` is ever opened (SQLite opens
+/// one through the file's methods, which the VFS does not see). Every writer
+/// holds the Store's exclusive lock; readers open the database `immutable=1`
+/// and take no SQLite lock.
+fn open_guarded_writer(path: &Path, flags: OpenFlags) -> Result<Connection> {
+    if !super::guarded_vfs::register() {
+        return Err(ScmSchemaError::InvalidMetadata(
+            "the guarded SQLite VFS is unavailable".into(),
+        ));
+    }
+    let connection =
+        Connection::open_with_flags_and_vfs(path, flags, super::guarded_vfs::MAIN_AND_WAL)?;
+    let mode: String =
+        connection.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |row| row.get(0))?;
+    require_pragma("locking_mode", "exclusive", mode.to_ascii_lowercase())?;
+    Ok(connection)
 }
 
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {

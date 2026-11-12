@@ -363,18 +363,23 @@ fn begin_immediate_is_atomic_and_observes_writer_timeout() {
     let temporary = TempDirectory::new("immediate");
     let path = temporary.database("layrs.sqlite3");
     let mut first = create_fresh(&path, Duration::from_millis(25), &test_store_id()).unwrap();
-    let mut second = open_existing(&path, Duration::from_millis(25)).unwrap();
-
     let first_transaction = first
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    let error = with_immediate_transaction(&mut second, |_| Ok(())).unwrap_err();
-    assert!(matches!(
-        error,
-        ScmSchemaError::Sqlite(rusqlite::Error::SqliteFailure(ref code, _))
-            if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-    ));
+    // A writer holds the database for its whole connection
+    // (`locking_mode=EXCLUSIVE`): another writer waits out its timeout.
+    let error = open_existing(&path, Duration::from_millis(25)).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ScmSchemaError::Sqlite(rusqlite::Error::SqliteFailure(ref code, _))
+                if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        ),
+        "{error:?}"
+    );
     drop(first_transaction);
+    drop(first);
+    let mut second = open_existing(&path, Duration::from_millis(25)).unwrap();
 
     with_immediate_transaction(&mut second, |transaction| {
         transaction.execute(
@@ -424,4 +429,98 @@ fn applied_transaction_receipt_boundary_requires_canonical_jcs() {
         validate_canonical_receipt_json("{not-json}"),
         Err(ScmSchemaError::InvalidMetadata(_))
     ));
+}
+
+#[test]
+fn a_writer_never_replays_a_planted_journal_nor_writes_through_a_link() {
+    let temporary = TempDirectory::new("guarded-writer");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    let directory = path.parent().unwrap().to_path_buf();
+    // A genuine hot rollback journal of this database: taken from a copy
+    // switched to rollback mode, while a transaction was open.
+    let copy = directory.join("copy.sqlite3");
+    fs::copy(&path, &copy).unwrap();
+    let planted = {
+        let plain = Connection::open(&copy).unwrap();
+        let mode: String = plain
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        plain.pragma_update(None, "synchronous", "OFF").unwrap();
+        plain
+            .execute_batch("BEGIN; DELETE FROM stores; PRAGMA user_version = 99;")
+            .unwrap();
+        let planted = fs::read(sidecar_path(&copy, "-journal")).unwrap();
+        plain.execute_batch("ROLLBACK").unwrap();
+        planted
+    };
+    let journal = sidecar_path(&path, "-journal");
+    fs::write(&journal, &planted).unwrap();
+    // A shared-memory file linked to a file outside.
+    let outside = directory.join("outside.txt");
+    fs::write(&outside, b"keep me").unwrap();
+    fs::hard_link(&outside, sidecar_path(&path, "-shm")).unwrap();
+    let header = |path: &Path| {
+        let bytes = fs::read(path).unwrap();
+        (bytes[18], bytes[19])
+    };
+    for round in 0..2 {
+        let writer = open_writer_existing_no_mutation(
+            &path,
+            Duration::from_millis(100),
+            &test_store_id(),
+            WriterDurability::CheckedFinish,
+        )
+        .unwrap();
+        writer
+            .execute(
+                "INSERT INTO applied_transactions VALUES (?1, ?2, '{}', 0)",
+                [
+                    format!("transaction:{round}"),
+                    format!("blake3:{}", "0".repeat(64)),
+                ],
+            )
+            .unwrap();
+        finish_writer(writer, &path).unwrap();
+        checkpoint_orphaned_wal(&path, Duration::from_millis(100)).unwrap();
+    }
+    // Never replayed (it would switch the database back to rollback mode),
+    // never deleted, and nothing written through the link.
+    assert_eq!(header(&path), (2, 2));
+    assert_eq!(fs::read(&journal).unwrap(), planted);
+    assert_eq!(fs::read(&outside).unwrap(), b"keep me");
+    let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
+    validate_store_identity(&reader, &test_store_id()).unwrap();
+    drop(reader);
+    // SQLite's own VFS would replay it: the journal is genuinely hot.
+    let control = directory.join("control.sqlite3");
+    fs::copy(&path, &control).unwrap();
+    fs::write(sidecar_path(&control, "-journal"), &planted).unwrap();
+    {
+        let plain = Connection::open(&control).unwrap();
+        let stores: i64 = plain
+            .query_row("SELECT count(*) FROM stores", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stores, 1);
+    }
+    assert_eq!(header(&control), (1, 1));
+    // A database with another link is never opened by a writer.
+    fs::remove_file(&journal).unwrap();
+    let elsewhere = directory.join("elsewhere.sqlite3");
+    fs::hard_link(&path, &elsewhere).unwrap();
+    let before = fs::read(&elsewhere).unwrap();
+    #[cfg(windows)]
+    assert!(
+        open_writer_existing_no_mutation(
+            &path,
+            Duration::from_millis(100),
+            &test_store_id(),
+            WriterDurability::EachCommit,
+        )
+        .is_err()
+    );
+    #[cfg(windows)]
+    assert!(checkpoint_orphaned_wal(&path, Duration::from_millis(100)).is_err());
+    assert_eq!(fs::read(&elsewhere).unwrap(), before);
 }

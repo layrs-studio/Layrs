@@ -17,6 +17,7 @@ mod consolidation;
 mod derived_cache;
 mod format;
 pub mod fsck;
+mod guarded_vfs;
 mod identity;
 mod layout;
 pub use identity::{LocalIdentity, configure_local_identity, local_identity};

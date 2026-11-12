@@ -105,19 +105,20 @@ L'index est un cache :
   - chaque valeur garde son encodage, sa liaison et sa somme de contrôle ; la
     base n'est qu'un conteneur ;
   - écritures sans synchronisation, journal en mémoire : ce cache ne crée
-    jamais d'autre fichier que la base. Les lecteurs l'ouvrent en lecture
-    seule (SQLite ne rejoue alors aucun journal) et vérifient le schéma puis
-    lisent dans une même transaction. Une base qui n'est pas en mode retour
-    arrière, ou à côté de laquelle traîne un `-wal`, un `-shm` ou un
-    `-journal` non vide, n'est jamais ouverte par un lecteur ; un écrivain
-    retire d'abord ces noms (retirer un nom n'écrit jamais dans le fichier
-    qu'il désigne) ;
-  - un écrivain n'écrit jamais dans un fichier de base à plusieurs liens : il
-    vérifie le handle que SQLite a ouvert (Windows) et reprend le nom (le
-    retire puis crée une base neuve) à un fichier lié ailleurs (sauvegarde
-    par liens physiques, ou lien planté), étranger ou abîmé ; une base vide
-    est initialisée sur place ; une base occupée, ou d'une version plus
-    récente de ce cache, est un défaut de cache et reste en place ;
+    jamais d'autre fichier que la base. Toute connexion passe par un VFS qui
+    n'ouvre que le fichier de base (conseil s13 Q7) : un journal, un `-wal`
+    ou un `-shm` posé à côté (planté, ou d'un autre programme) n'est jamais
+    vu, rejoué, ouvert ni supprimé. Les lecteurs ouvrent en lecture seule une
+    base en mode retour arrière, vérifient le schéma puis lisent dans une
+    même transaction ;
+  - un écrivain n'écrit jamais dans un fichier de base à plusieurs liens : le
+    VFS refuse toute ouverture en écriture d'un fichier lié ailleurs ou point
+    de réanalyse, vérifié sur le handle que SQLite a ouvert (Windows), et
+    l'écrivain reprend le nom (le retire puis crée une base neuve) à un
+    fichier lié ailleurs (sauvegarde par liens physiques, ou lien planté),
+    étranger ou abîmé ; une base vide est initialisée sur place ; une base
+    occupée, ou d'une version plus récente de ce cache, est un défaut de
+    cache et reste en place ;
   - tout accès vérifie le schéma exact (marqueur et version d'abord, puis au
     plus les quatre objets attendus, de longueur bornée) puis n'exécute que
     des requêtes fixes (`trusted_schema=OFF`, mode défensif) ; une valeur est
@@ -126,15 +127,16 @@ L'index est un cache :
     vide et remplacée à la prochaine écriture ; un index illisible parce que
     la base est occupée ou plus récente est lu vide et n'est jamais réécrit
     par-dessus ;
-  - risque résiduel, commun avec la base du Store (dont SQLite écrit les
-    fichiers annexes à chaque commande) : SQLite fait ses propres contrôles
-    en verrouillant, après les nôtres. Un processus qui plante dans cet
-    intervalle un journal « chaud » peut le faire rejouer par un écrivain (et
-    supprimer le super-journal qu'il nomme) ; un `-wal` et un `-shm` plantés
-    avant le verrou d'un lecteur sont ouverts en écriture ; sous Unix, un nom
-    remplacé par un lien physique après le contrôle est ouvert. Le fermer
-    demande un VFS qui n'ouvre que la base principale, pour les deux bases,
-    lecteurs compris (conseil s12, à faire) ;
+  - la base du Store suit la même règle (conseil s13 Q7) : ses écrivains
+    passent par le même VFS, qui n'ouvre que la base et son `-wal` (chacun à
+    un seul lien), ne voit jamais de journal de retour arrière, et prennent
+    `locking_mode=EXCLUSIVE` avant leur première lecture (index du WAL en
+    mémoire, aucun `-shm`) ; ses lecteurs l'ouvrent `immutable=1` et ne
+    regardent aucun fichier annexe. Risque résiduel : sous Unix, SQLite ne
+    donne pas son descripteur, le nom est revérifié après l'ouverture ; un
+    nom remplacé par un lien physique entre les deux est écrit. La base
+    candidate d'un compactage (`VACUUM INTO`, maintenance) reste hors de ce
+    VFS ;
 - s'il est illisible, tout est relu ;
 - il n'est écrit qu'après acceptation de la capture ;
 - une entrée ne naît que d'un contenu prouvé : soit haché par la capture, soit
