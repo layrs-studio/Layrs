@@ -392,17 +392,28 @@ impl NativeClient {
             // what this capture read and the Store can no longer prove goes
             // back in, so a full capture (`step --full`) restores lost
             // content from the folder.
-            if reader.catalog_damaged()? {
+            // Only a snapshot that carries objects can recover anything: an
+            // unchanged one that does not never loads the whole catalog.
+            if !snapshot.objects().is_empty() && reader.catalog_damaged()? {
                 let space = worktree.space_id().clone();
                 let recovery = recovery_batch(&reader, &space, snapshot, &stamp)?;
                 drop(reader);
                 drop(store);
+                // Best effort (council s18 r1): a capture that trusted its
+                // index did not read the files an unproven Tree names, so
+                // its recovery can be refused; the folder is still unchanged.
+                // `step --full` reads every file and carries them.
                 if let Some(recovery) = recovery {
-                    self.accept(&PreparedMutation {
-                        batch: recovery.0,
-                        step_id: base.id().clone(),
-                        chunks: recovery.1,
-                    })?;
+                    if self
+                        .accept(&PreparedMutation {
+                            batch: recovery.0,
+                            step_id: base.id().clone(),
+                            chunks: recovery.1,
+                        })
+                        .is_err()
+                    {
+                        layrs_store_local::perf::count("capture.recovery_refused", 1);
+                    }
                 }
             }
             return Ok(CapturePlan::Unchanged {

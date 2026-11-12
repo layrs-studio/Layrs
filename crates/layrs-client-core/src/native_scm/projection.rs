@@ -298,7 +298,9 @@ pub(super) fn read_admitted_step_projection(
                 // A registered pack is unreadable (council s17, B1a): the
                 // check cannot be made; the cached projection, validated
                 // when it was written, answers.
-                Err(_) if reader.catalog_damaged().unwrap_or(false) => {
+                Err(NativeClientError::Store(layrs_store::scm::StoreError::Corruption {
+                    ..
+                })) if reader.catalog_damaged().unwrap_or(false) => {
                     layrs_store_local::perf::count("projection_cache.unverifiable", 1);
                     return Ok(cached);
                 }

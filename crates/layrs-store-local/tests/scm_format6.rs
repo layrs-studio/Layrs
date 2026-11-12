@@ -1685,6 +1685,78 @@ fn keys_rows_answer_exactly_beside_a_lost_pack() {
     assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
 }
 
+/// Beside a lost pack, a writer's evidence must be readable (council s18
+/// r1): a File whose explicit manifest is readable but one of whose chunks
+/// was only in the lost pack is not proven closed, and an admitted Tree
+/// whose only copy was there is neither present nor admitted to a writer
+/// (to a reader its rows still answer). fsck names the lost pack once.
+#[test]
+fn beside_a_lost_pack_a_writer_needs_readable_evidence() {
+    let root = TestRoot::new("evidence");
+    create(&root.0, "evidence", "7");
+    let half = 512 * 1024;
+    let shared = vec![0xa_u8; half];
+    let first = file(
+        "first.bin",
+        &[shared.clone(), vec![0xb; half]].concat(),
+        Recipe::Half,
+    );
+    let second = file(
+        "second.bin",
+        &[shared, vec![0xc; half]].concat(),
+        Recipe::Half,
+    );
+    let (mut lane, batch) = Lane::begin("evidence", std::slice::from_ref(&first));
+    let first_tree = tree_of(std::slice::from_ref(&first));
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    // The second File's manifest goes to the second pack; their shared
+    // chunk stays in the first.
+    let both = vec![first.clone(), second.clone()];
+    repository
+        .apply_batch(&lane.capture(&both, file_objects(std::slice::from_ref(&second))))
+        .unwrap();
+    drop(repository);
+    let lost = registered_packs(&root.0).remove(0);
+    fs::remove_file(root.0.join("objects/packs").join(lost)).unwrap();
+    forget_loaded_packs();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(
+        reader
+            .files_durably_closed_metadata([second.manifest.file_id()], lane.space.id())
+            .unwrap()
+            .is_empty()
+    );
+    let tree = StoreObjectId::Tree(first_tree.id().clone());
+    assert!(reader.tree_present_metadata(first_tree.id()).unwrap());
+    assert!(
+        reader
+            .object_admitted_metadata(&tree, lane.space.id())
+            .unwrap()
+    );
+    let writer = NativeScmReader::new(&store)
+        .unwrap()
+        .with_positive_evidence();
+    assert!(!writer.tree_present_metadata(first_tree.id()).unwrap());
+    assert!(
+        !writer
+            .object_admitted_metadata(&tree, lane.space.id())
+            .unwrap()
+    );
+    assert!(!writer.durable_admission_proves_closure().unwrap());
+    drop(writer);
+    drop(reader);
+    drop(store);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    let corruption = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == FsckFindingCode::CasCorruption)
+        .count();
+    assert_eq!(corruption, 1, "{:#?}", report.findings);
+}
+
 /// fsck checks every readable pack's keys row against its index (council
 /// s17, B1c): a missing row, or one that does not check, is reported.
 #[test]

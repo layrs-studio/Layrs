@@ -159,6 +159,13 @@ pub trait ScmReader: Send + Sync {
         let _ = (files, space);
         Ok(std::collections::BTreeSet::new())
     }
+    /// Whether a durably admitted manifest proves its File closed by its
+    /// admission alone. A writer's reader beside an unreadable pack answers
+    /// false: the manifest's chunks may have been in that pack, so they must
+    /// be shown readable (Layrs council s18 r1). The default: true.
+    fn durable_admission_proves_closure(&self) -> Result<bool> {
+        Ok(true)
+    }
     /// Whether the Tree is installed, from metadata where the Store verified
     /// it on installation; the default reads it. Never proof of intact bytes.
     fn tree_present_metadata(&self, id: &TreeId) -> Result<bool> {

@@ -120,7 +120,7 @@ impl Context<'_> {
         }
         // Every readable pack's keys row, against its index (council s17,
         // B1c): a wrong row would turn a lost pack into a false "absent".
-        match catalog.keys_row_problems(self.connection) {
+        match catalog.keys_row_problems(self.connection, &cas) {
             Ok(problems) => {
                 for (path, problem) in problems {
                     self.finding(
@@ -164,11 +164,14 @@ impl Context<'_> {
             // unknowable, not missing: it is left out of every check that
             // would read it (and of edge comparisons), the pack being
             // reported above.
+            // Only when the unreadable pack's keys row does not exclude it
+            // (council s18 r1): otherwise it is missing, and reported.
             if self.compact_damaged
                 && catalog
                     .placements(&object_id)
                     .is_ok_and(|placements| placements.is_empty())
                 && cas.loose_length(&object_id).ok().flatten().is_none()
+                && catalog.may_hold_unreadably(&object_id).unwrap_or(true)
             {
                 self.unreadable_sources.insert(id_text);
                 continue;
@@ -387,16 +390,15 @@ impl Context<'_> {
                     error,
                 );
             }
-            // With an unreadable registered pack every FileId listing fails
-            // the same way: reported once by the audit, skipped here.
-            if damaged {
-                continue;
-            }
+            // Beside an unreadable registered pack, a listing its keys row
+            // does not exclude is unknown: that pack is reported once by the
+            // audit, and only that listing is skipped (council s18 r1).
             let listed = match catalog.file_manifests(manifest.file_id()) {
                 Ok(entries) => entries
                     .into_iter()
                     .find(|entry| &entry.id == manifest.id())
                     .map(|entry| entry.file_length),
+                Err(_) if damaged => continue,
                 Err(error) => {
                     self.compact_lookup_failed(&error);
                     continue;
@@ -421,13 +423,12 @@ impl Context<'_> {
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(true);
         };
-        // An unreadable registered pack makes presence unknown, not absent:
-        // it is reported once, and Tree closure is not judged on it.
-        if self.compact_damaged {
-            return Ok(true);
-        }
+        // Beside an unreadable registered pack, presence its keys row does
+        // not exclude is unknown, not absent: that pack is reported once,
+        // and Tree closure is not judged on it (council s18 r1).
         match catalog.file_manifests(file_id) {
             Ok(entries) => Ok(!entries.is_empty()),
+            Err(_) if self.compact_damaged => Ok(true),
             Err(error) => {
                 self.compact_lookup_failed(&error);
                 Ok(true)
@@ -443,11 +444,10 @@ impl Context<'_> {
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
-        // Admission answers of a catalog with an unreadable registered pack
-        // are all errors: reported once by the audit, not judged here.
-        if self.compact_damaged {
-            return Ok(());
-        }
+        // Beside an unreadable registered pack, an admission answer its keys
+        // row does not exclude is unknown: that pack is reported once by the
+        // audit, and only that answer is skipped (council s18 r1).
+        let damaged = self.compact_damaged;
         let spaces = query_strings_no_param(
             self.connection,
             "SELECT space_id FROM space_pack_admissions UNION SELECT space_id FROM space_loose_admissions",
@@ -483,6 +483,7 @@ impl Context<'_> {
                 match catalog.admitted(&admissions, &object) {
                     Ok(true) => {}
                     Ok(false) => continue,
+                    Err(_) if damaged => continue,
                     Err(error) => {
                         self.compact_lookup_failed(&error);
                         continue;
@@ -492,6 +493,7 @@ impl Context<'_> {
                     let chunk_object = StoreObjectId::ChunkRaw(chunk.chunk_id().clone());
                     let admitted = match catalog.admitted(&admissions, &chunk_object) {
                         Ok(admitted) => admitted,
+                        Err(_) if damaged => continue,
                         Err(error) => {
                             self.compact_lookup_failed(&error);
                             continue;

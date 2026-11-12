@@ -413,6 +413,12 @@ impl<'a> CompositeAdmissionResolver<'a> {
             matches!(admission.object_id(), StoreObjectId::FileManifest(_))
                 && self.overlay_object(admission.object_id()).is_none()
         });
+        // Beside an unreadable pack, a durable admission does not prove a
+        // manifest's chunks readable: every File takes the per-File path,
+        // which checks them (council s18 r1).
+        if !self.reader.durable_admission_proves_closure()? {
+            return Ok(());
+        }
         for space in spaces {
             // Files a durably admitted manifest closes need no manifest id
             // (council s13 Q2); the others take the exact path.
@@ -854,14 +860,16 @@ impl<'a> CompositeAdmissionResolver<'a> {
         // Durable manifests were verified (with their chunks) when installed;
         // list them from metadata instead of re-hashing every chunk.
         candidates.extend(self.reader.file_manifest_ids_metadata(file_id)?);
+        let durable_proves = self.reader.durable_admission_proves_closure()?;
         let mut selected = None;
         for manifest_id in candidates {
             let object_id = StoreObjectId::FileManifest(manifest_id.clone());
             // A durably admitted manifest had this exact check (file identity,
             // manifest validity, every chunk admitted) when its batch was
             // validated; admissions are never deleted. Same selection, decided
-            // from metadata before reading the object.
-            if self.reader.object_admitted_metadata(&object_id, space)? {
+            // from metadata before reading the object; beside an unreadable
+            // pack, the chunks are checked again (council s18 r1).
+            if durable_proves && self.reader.object_admitted_metadata(&object_id, space)? {
                 selected = Some(manifest_id);
                 break;
             }

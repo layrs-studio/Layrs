@@ -379,6 +379,8 @@ impl ScmReader for NativeScmReader<'_> {
     ) -> Result<bool> {
         let admitted = if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
             self.content_admitted_compact(object_id, space_id)?
+        } else if self.unproven_copy(object_id)? {
+            false
         } else {
             self.exists(
                 "SELECT 1 FROM space_object_admissions WHERE object_id = ?1 AND space_id = ?2",
@@ -403,7 +405,12 @@ impl ScmReader for NativeScmReader<'_> {
     }
 
     /// A verified `objects` row, as for chunks (`chunk_present_metadata`).
+    /// A writer's reader in a Store with an unreadable pack also needs a
+    /// readable copy (council s18 r1).
     fn tree_present_metadata(&self, id: &layrs_core::scm::TreeId) -> Result<bool> {
+        if self.unproven_copy(&StoreObjectId::Tree(id.clone()))? {
+            return Ok(false);
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare_cached(
@@ -441,6 +448,10 @@ impl ScmReader for NativeScmReader<'_> {
         NativeScmReader::files_durably_closed_metadata(self, files.iter().copied(), space)
     }
 
+    fn durable_admission_proves_closure(&self) -> Result<bool> {
+        Ok(!(self.positive && self.catalog_damaged()?))
+    }
+
     /// Installation verifies a chunk's bytes against its id before writing
     /// its `verified` object row (`repository.rs` insert_object_rows), and
     /// every read verifies them again; presence is answered from that row.
@@ -469,6 +480,12 @@ impl ScmReader for NativeScmReader<'_> {
         if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
             return self.content_admitted_compact(object_id, space_id);
         }
+        // An admission row proves an object was admitted, not that a copy
+        // is still readable: a writer in a Store with an unreadable pack
+        // carries it again (council s18 r1).
+        if self.unproven_copy(object_id)? {
+            return Ok(false);
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare_cached(
@@ -491,6 +508,14 @@ impl ScmReader for NativeScmReader<'_> {
         }
         let descendant = match self.get_step(descendant)? {
             Some(value) => value,
+            // A writer's reader (council s17, B1a) cannot tell a Step it
+            // cannot read from one that is not there: never "not an
+            // ancestor" from it (council s18 r1).
+            None if self.positive => {
+                return Err(corruption(format!(
+                    "Step DAG references Step {descendant} that cannot be read"
+                )));
+            }
             None => return Ok(false),
         };
         let mut pending: Vec<_> = descendant.parent_step_ids().to_vec();

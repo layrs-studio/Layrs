@@ -411,7 +411,9 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
             [],
         )
         .map_err(sql)?;
-    if keys_retired != consolidation.packs.len() {
+    // A candidate whose keys row is missing is replaced by a pack that has
+    // one (council s18 r1); never more rows than candidates.
+    if keys_retired > consolidation.packs.len() {
         return Err("consolidated packs differ from their keys rows".into());
     }
     // The images of the inline packs retired, before their rows: exactly

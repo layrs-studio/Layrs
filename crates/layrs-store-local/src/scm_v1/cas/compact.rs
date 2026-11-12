@@ -462,6 +462,31 @@ impl RegisteredCatalog {
     /// budgets: larger tiers wait for maintenance, and a batch no longer
     /// reopens the CAS to find nothing (council s17, B2a).
     pub(crate) fn consolidation_due(&self, added: Option<(bool, PackStats)>) -> bool {
+        // Counts and inline sizes first (no block is walked): the common
+        // batch decides here (council s18 r1).
+        let (mut inline_count, mut inline_bytes, mut file_count) = (0_usize, 0_u64, 0_usize);
+        for pack in &self.packs {
+            if pack.pack.is_inline() {
+                inline_count += 1;
+                inline_bytes = inline_bytes.saturating_add(pack.pack.index.file_len);
+            } else {
+                file_count += 1;
+            }
+        }
+        match added {
+            Some((true, (size, ..))) => {
+                inline_count += 1;
+                inline_bytes = inline_bytes.saturating_add(size);
+            }
+            Some((false, _)) => file_count += 1,
+            None => {}
+        }
+        if inline_count < CONSOLIDATE_INLINE_AT
+            && inline_bytes < CONSOLIDATE_INLINE_BYTES
+            && file_count < CONSOLIDATE_AT_PACKS
+        {
+            return false;
+        }
         let mut inline = self.by_size(&[], true);
         let mut files = self.by_size(&[], false);
         if let Some((is_inline, (size, records, blocks, raw))) = added {
@@ -691,7 +716,6 @@ fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Ve
 }
 
 impl LoadedPack {
-    /// The identity and form of each logical ordinal of this pack.
     /// The keys row this pack's index gives: what its builder wrote when it
     /// sealed it (`Pack2Builder::keys`), rebuilt from the index (each file
     /// record's alias manifest rebuilt and hashed).
@@ -752,6 +776,7 @@ impl LoadedPack {
             .map_err(|error| pack2::pack2_corruption(&self.path, error.to_string()))
     }
 
+    /// The identity and form of each logical ordinal of this pack.
     fn logical_keys(&self) -> CasResult<Vec<(LogicalKey, Identity)>> {
         let index = &self.index;
         let chunk = pack2::kind_code(StoreObjectKind::ChunkRaw);
@@ -1671,30 +1696,48 @@ impl RegisteredCatalog {
     /// excludes them all (council s17, B1b). Otherwise a negative or
     /// complete answer is refused with that pack's error: never absent,
     /// never present.
-    fn complete<T>(&self, keys: &[super::keys::Key], value: T) -> CasResult<T> {
-        match self.unknown_to(keys) {
+    fn complete<T>(
+        &self,
+        keys: impl FnOnce() -> CasResult<Vec<super::keys::Key>>,
+        value: T,
+    ) -> CasResult<T> {
+        match self.unknown_to(keys)? {
             Some(error) => Err(error.clone()),
             None => Ok(value),
         }
     }
 
-    /// The error of the first unreadable pack that may hold one of `keys`.
-    fn unknown_to(&self, keys: &[super::keys::Key]) -> Option<&CasError> {
-        self.damaged
+    /// The error of the first unreadable pack that may hold one of `keys`
+    /// (built only when a pack is unreadable).
+    pub(crate) fn unknown_to(
+        &self,
+        keys: impl FnOnce() -> CasResult<Vec<super::keys::Key>>,
+    ) -> CasResult<Option<&CasError>> {
+        if self.damaged.is_empty() {
+            return Ok(None);
+        }
+        let keys = keys()?;
+        Ok(self
+            .damaged
             .iter()
             .find(|(seq, _)| {
                 self.damaged_filters
                     .get(seq)
                     .is_none_or(|filter| keys.iter().any(|key| filter.may_contain(key)))
             })
-            .map(|(_, error)| error)
+            .map(|(_, error)| error))
     }
 
     /// `complete`, or for a `positive` question (a writer's: council s17,
     /// B1a) the answer of the readable packs alone: what they prove, where
     /// "not found" means "not proven", never "absent". A writer then keeps
     /// or writes its own copy, and a closure only they could prove fails.
-    fn settle<T>(&self, positive: bool, keys: &[super::keys::Key], value: T) -> CasResult<T> {
+    fn settle<T>(
+        &self,
+        positive: bool,
+        keys: impl FnOnce() -> CasResult<Vec<super::keys::Key>>,
+        value: T,
+    ) -> CasResult<T> {
         if positive {
             Ok(value)
         } else {
@@ -1747,7 +1790,7 @@ impl RegisteredCatalog {
     /// `contains`, `positive` as in `settle`.
     pub(crate) fn contains_with(&self, id: &StoreObjectId, positive: bool) -> CasResult<bool> {
         if self.placements(id)?.is_empty() {
-            return self.settle(positive, &object_keys(id)?, false);
+            return self.settle(positive, || object_keys(id), false);
         }
         Ok(true)
     }
@@ -1755,7 +1798,7 @@ impl RegisteredCatalog {
     /// Canonical byte length of `id`'s first copy, from metadata only.
     pub(crate) fn stored_length(&self, id: &StoreObjectId) -> CasResult<Option<u64>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
-            return self.complete(&object_keys(id)?, None);
+            return self.complete(|| object_keys(id), None);
         };
         self.placement_length(id, placement).map(Some)
     }
@@ -1887,7 +1930,7 @@ impl RegisteredCatalog {
     ) -> CasResult<Option<CanonicalObject>> {
         let placements = self.placements(id)?;
         if placements.is_empty() {
-            return self.settle(positive, &object_keys(id)?, None);
+            return self.settle(positive, || object_keys(id), None);
         }
         let mut first_error = None;
         for placement in placements {
@@ -1912,7 +1955,7 @@ impl RegisteredCatalog {
         let id = StoreObjectId::ChunkRaw(chunk_id.clone());
         let placements = self.placements(&id)?;
         if placements.is_empty() {
-            self.complete(&object_keys(&id)?, ())?;
+            self.complete(|| object_keys(&id), ())?;
             return Err(CasError::NotFound {
                 kind: StoreObjectKind::ChunkRaw,
                 id: chunk_id.to_string(),
@@ -1983,7 +2026,7 @@ impl RegisteredCatalog {
         if length.is_some() {
             return Ok(length);
         }
-        self.settle(positive, &file_keys(file_id), length)
+        self.settle(positive, || Ok(file_keys(file_id)), length)
     }
 
     /// Every registered manifest of `file_id`, sorted by id, with its file
@@ -2041,7 +2084,11 @@ impl RegisteredCatalog {
                 placement: Placement::Loose,
             });
         }
-        self.settle(positive, &file_keys(file_id), found.into_values().collect())
+        self.settle(
+            positive,
+            || Ok(file_keys(file_id)),
+            found.into_values().collect(),
+        )
     }
 
     /// Whether a registered whole file record is named `chunk_id` (its
@@ -2285,9 +2332,14 @@ impl RegisteredCatalog {
         // manifests unknown: the exact path reports it (council s14 r2).
         // One whose keys exclude the File changes nothing (council s17,
         // B1b).
-        if self.unknown_to(&file_keys(file_id)).is_some() {
+        if self.unknown_to(|| Ok(file_keys(file_id)))?.is_some() {
             return Ok(false);
         }
+        // With a pack unreadable, an explicit manifest's bit proves it was
+        // admitted, not that its chunks are still readable (they may have
+        // been in that pack): only a file record, whose chunk is in its own
+        // readable pack, proves the File closed (council s18 r1).
+        let explicit_counts = self.damaged.is_empty();
         let raw = file_id.digest_bytes();
         let set = |placement: Placement| {
             self.logical(placement).is_some_and(|(seq, ordinal)| {
@@ -2312,7 +2364,7 @@ impl RegisteredCatalog {
                     pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
                 })?;
                 placements += 1;
-                admitted |= set(Placement::Record { pack, ordinal });
+                admitted |= explicit_counts && set(Placement::Record { pack, ordinal });
             }
             if let Some(file) = loaded.index.find_file(&raw) {
                 placements += 1;
@@ -2321,7 +2373,7 @@ impl RegisteredCatalog {
         }
         for (digest, _) in self.loose_by_file.get(&raw).into_iter().flatten() {
             placements += 1;
-            admitted |= admissions.loose.contains(digest);
+            admitted |= explicit_counts && admissions.loose.contains(digest);
         }
         Ok(admitted && placements <= max_manifests)
     }
@@ -2348,7 +2400,7 @@ impl RegisteredCatalog {
                 return Ok(true);
             }
         }
-        self.settle(positive, &object_keys(id)?, false)
+        self.settle(positive, || object_keys(id), false)
     }
 
     /// Where `id`'s first copy is (`CasLocation`), from metadata.
@@ -2358,7 +2410,7 @@ impl RegisteredCatalog {
         id: &StoreObjectId,
     ) -> CasResult<Option<CasLocation>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
-            return self.complete(&object_keys(id)?, None);
+            return self.complete(|| object_keys(id), None);
         };
         let length = self.placement_length(id, placement)?;
         let packed = |pack: usize, location: Location| {
@@ -3374,6 +3426,7 @@ impl RegisteredCatalog {
     pub(crate) fn keys_row_problems(
         &self,
         connection: &Connection,
+        cas: &NativeCas,
     ) -> CasResult<Vec<(PathBuf, String)>> {
         let mut statement = connection
             .prepare(
@@ -3445,7 +3498,31 @@ impl RegisteredCatalog {
                 Err(error) => problems.push((path, error.to_string())),
             }
         }
+        // An unreadable pack's row cannot be checked against its index, but
+        // it must exist and check: without it, every negative answer about
+        // the Store is unknown (council s18 r1).
+        for (seq, _) in &self.damaged {
+            if self.damaged_filters.contains_key(seq) {
+                continue;
+            }
+            let path = self
+                .rows
+                .iter()
+                .find(|row| row.seq == *seq)
+                .map_or_else(|| cas.objects_dir.join(PACKS_DIR), |row| row.location(cas));
+            problems.push((
+                path,
+                "unreadable pack has no usable keys row: no absence can be proven beside it"
+                    .to_owned(),
+            ));
+        }
         Ok(problems)
+    }
+
+    /// Whether an unreadable registered pack may hold `id` (its keys row
+    /// does not exclude it): `false` on a sound catalog.
+    pub(crate) fn may_hold_unreadably(&self, id: &StoreObjectId) -> CasResult<bool> {
+        Ok(self.unknown_to(|| object_keys(id))?.is_some())
     }
 
     /// The registered packs that cannot be read, with their paths.

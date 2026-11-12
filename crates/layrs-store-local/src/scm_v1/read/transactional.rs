@@ -134,6 +134,10 @@ impl ScmReader for NativeTransactionalScmReader<'_> {
             .files_durably_closed_metadata(files.iter().copied(), space)
     }
 
+    fn durable_admission_proves_closure(&self) -> Result<bool> {
+        ScmReader::durable_admission_proves_closure(self.active_reader()?)
+    }
+
     fn object_admitted_to_space(
         &self,
         object_id: &StoreObjectId,

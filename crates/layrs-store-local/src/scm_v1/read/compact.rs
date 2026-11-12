@@ -149,9 +149,13 @@ impl NativeScmReader<'_> {
         }
         // A registered pack record, or the loose file the row authorizes;
         // either is verified against its content address by the read below.
-        let registered = if self.positive && !catalog.contains_with(id, true).unwrap_or(false) {
-            // A writer: a row whose only copy no readable pack holds proves
-            // nothing (council s17, B1a).
+        // A writer's reader beside an unreadable pack (council s17, B1a): a
+        // row whose only copy no readable pack holds proves nothing. Only
+        // then: a sound catalog answers exactly as before (council s18 r1).
+        let unproven = self.positive
+            && catalog.damage().is_some()
+            && !catalog.contains_with(id, true).map_err(cas_read_error)?;
+        let registered = if unproven {
             None
         } else {
             catalog.stored_length(id).map_err(cas_read_error)?
@@ -160,7 +164,7 @@ impl NativeScmReader<'_> {
             Some(length) => Some(length),
             None => self.cas.loose_length(id).map_err(cas_read_error)?,
         };
-        if self.positive && length.is_none() {
+        if unproven && length.is_none() {
             return Ok(None);
         }
         let length =
@@ -252,13 +256,26 @@ impl NativeScmReader<'_> {
     }
 
     pub(super) fn file_length_metadata_compact(&self, id: &FileId) -> Result<Option<u64>> {
-        // Every manifest of a File records the same validated length; the
-        // smallest, as the format 5 query answered.
-        Ok(self
-            .file_manifest_entries(id)?
-            .iter()
-            .map(|entry| entry.file_length)
-            .min())
+        // Every manifest of a File records the same validated length (its
+        // id sets it): one a readable pack holds answers, as for many Files
+        // (council s18 r1).
+        self.catalog()?
+            .file_length_with(id, self.positive)
+            .map_err(cas_read_error)
+    }
+
+    /// For a writer's reader in a Store with an unreadable registered pack:
+    /// whether no readable pack and no loose file holds a copy of `id`
+    /// (council s18 r1). `false` on a sound catalog, without a lookup.
+    pub(super) fn unproven_copy(&self, id: &StoreObjectId) -> Result<bool> {
+        if !self.positive || !self.compact() {
+            return Ok(false);
+        }
+        let catalog = self.catalog()?;
+        if catalog.damage().is_none() {
+            return Ok(false);
+        }
+        Ok(!self.stored_copy_proven(id)?)
     }
 
     pub(super) fn file_lengths_metadata_compact<'f>(

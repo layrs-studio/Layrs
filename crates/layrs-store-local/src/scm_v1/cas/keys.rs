@@ -149,7 +149,7 @@ impl PackKeys {
         let keys_digest = *digest.finalize().as_bytes();
         keys.sort_unstable();
         keys.dedup();
-        let filter = encode(&keys_digest, &keys, rice_bits)?;
+        let (filter, values) = encode(&keys_digest, &keys, rice_bits)?;
         let built = Self {
             key_count: keys.len() as u64,
             rice_bits,
@@ -157,10 +157,9 @@ impl PackKeys {
             group_digests,
             filter,
         };
-        // Never a false "absent": every key is checked against the decoded
-        // filter before the row is written.
-        let decoded = built.decode()?;
-        if keys.iter().any(|key| !decoded.may_contain(key)) {
+        // Never a false "absent": the row decodes to every key's
+        // fingerprint before it is written.
+        if built.decode()?.values != values {
             return Err(io::Error::other("pack keys filter misses a key"));
         }
         Ok(built)
@@ -289,9 +288,10 @@ fn fingerprint(keys_digest: &[u8; 32], key: &Key, range: u64) -> u64 {
     ((u128::from(u64::from_le_bytes(word)) * u128::from(range)) >> 64) as u64
 }
 
-fn encode(keys_digest: &[u8; 32], keys: &[Key], rice_bits: u8) -> io::Result<Vec<u8>> {
+/// The coded set of `keys`, and the sorted fingerprints it codes.
+fn encode(keys_digest: &[u8; 32], keys: &[Key], rice_bits: u8) -> io::Result<(Vec<u8>, Vec<u64>)> {
     if keys.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let range = range(keys.len() as u64, rice_bits)?;
     let mut values: Vec<u64> = keys
@@ -301,7 +301,7 @@ fn encode(keys_digest: &[u8; 32], keys: &[Key], rice_bits: u8) -> io::Result<Vec
     values.sort_unstable();
     let mut bits = BitWriter::default();
     let mut previous = 0_u64;
-    for value in values {
+    for &value in &values {
         let delta = value - previous;
         previous = value;
         let quotient = delta >> rice_bits;
@@ -313,7 +313,7 @@ fn encode(keys_digest: &[u8; 32], keys: &[Key], rice_bits: u8) -> io::Result<Vec
             bits.push((delta >> bit) & 1 == 1);
         }
     }
-    Ok(bits.finish())
+    Ok((bits.finish(), values))
 }
 
 fn decode(bytes: &[u8], count: u64, rice_bits: u8) -> io::Result<Vec<u64>> {

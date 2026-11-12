@@ -82,6 +82,12 @@ fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
 
     // A read-only observation still answers.
     assert_eq!(workspace.status_report(true).unwrap().dirty, Some(false));
+    // A plain step that trusts its index still finds nothing to capture
+    // (its best-effort recovery cannot carry files it did not read).
+    assert!(matches!(
+        workspace.capture().unwrap(),
+        CapturePlan::Unchanged { .. }
+    ));
     // A full capture reads every file and carries what the Store can no
     // longer prove: the lost content is readable again.
     workspace
