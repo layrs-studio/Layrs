@@ -356,11 +356,6 @@ impl<'a> CompositeAdmissionResolver<'a> {
         self.take_failure().map_or(Ok(()), Err)
     }
 
-    /// Answers, in bulk, the per-File metadata questions that validating the
-    /// batch's Trees asks one File at a time: presence (Tree validation) and
-    /// the durably admitted manifest (admission closure). Only Files without a
-    /// manifest in this batch are prefetched, and only sound answers are
-    /// cached, so every decision is the one the per-File path would make.
     /// Whether `file_id` was proven closed in `space` from the bitmaps
     /// (council s13 Q2) and has no manifest in this batch.
     pub(super) fn durably_closed(&self, file_id: &FileId, space: &SpaceId) -> bool {
@@ -378,6 +373,13 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .any(|manifests| manifests.contains(manifest))
     }
 
+    /// Answers, in bulk, the per-File metadata questions that validating the
+    /// batch's Trees asks one File at a time: presence (Tree validation) and
+    /// the admission closure. Only Files without a manifest in this batch
+    /// are prefetched, and only sound answers are cached. A File a durably
+    /// admitted manifest closes (from the bitmaps, council s13 Q2) needs no
+    /// manifest id; the others take the exact path, whose decisions are the
+    /// per-File path's.
     fn prefetch_tree_files(&self) -> Result<()> {
         let _span = crate::perf::span("validate.prefetch_tree_files");
         let mut files = BTreeSet::new();
@@ -426,6 +428,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 continue;
             }
             let closed = self.reader.files_durably_closed_metadata(&files, space)?;
+            #[cfg(any(test, feature = "test-support"))]
+            EXISTENCE_PROOFS.with(|count| count.set(count.get() + closed.len()));
             let remaining: Vec<&FileId> = files
                 .iter()
                 .copied()
@@ -1130,3 +1134,15 @@ mod closure;
 mod resolver;
 mod worktree_parents;
 use closure::*;
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static EXISTENCE_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test support: Files that batch validation on this thread proved closed
+/// by existence (council s13 Q2), since the thread started.
+#[cfg(any(test, feature = "test-support"))]
+pub fn existence_proofs_on_this_thread() -> usize {
+    EXISTENCE_PROOFS.with(std::cell::Cell::get)
+}

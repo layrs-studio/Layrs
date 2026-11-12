@@ -1956,6 +1956,11 @@ impl RegisteredCatalog {
         file_id: &FileId,
         max_manifests: usize,
     ) -> CasResult<bool> {
+        // A damaged catalog proves nothing from its bitmaps: the exact path
+        // reports the damage (council s14 r2).
+        if self.damage().is_some() {
+            return Ok(false);
+        }
         let raw = file_id.digest_bytes();
         let set = |placement: Placement| {
             self.logical(placement).is_some_and(|(seq, ordinal)| {

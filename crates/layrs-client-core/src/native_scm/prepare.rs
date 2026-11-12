@@ -265,6 +265,13 @@ impl NativeClient {
         let view = reader
             .get_repository_view(operation.resulting_view_id())?
             .ok_or(NativeClientError::Missing("RepositoryView"))?;
+        // As the VFS locator: the active Operation and its View belong to
+        // the Worktree's Space (council s14 r2).
+        if operation.space_id() != worktree.space_id() || view.space_id() != worktree.space_id() {
+            return Err(NativeClientError::InvalidState(
+                "the Room's Operation belongs to another Space",
+            ));
+        }
         let state = view
             .worktrees()
             .iter()

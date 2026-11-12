@@ -19,7 +19,8 @@ use layrs_store::scm::{
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
-    fsck_existing, held_pack_files, init, open, open_exclusive, set_inline_pack_limit,
+    existence_proofs_on_this_thread, fsck_existing, held_pack_files, init, open, open_exclusive,
+    set_inline_pack_limit,
 };
 use rusqlite::Connection;
 
@@ -413,6 +414,32 @@ fn reader_answers(root: &Path, files: &[File], space: &SpaceId) -> Vec<String> {
         ));
     }
     answers
+}
+
+/// A step carrying the manifest of its new content still proves its other
+/// Files closed by existence (council s14 r2): only a manifest a batch
+/// admits without carrying it sends the batch's Files to the exact path.
+#[test]
+fn a_step_with_new_content_proves_its_other_files_by_existence() {
+    let root = TestRoot::new("existence-step");
+    create(&root.0, "existence-step", "6");
+    let mut files = vec![
+        file("a.txt", b"alpha", Recipe::Fixed),
+        file("b.txt", b"beta", Recipe::Fixed),
+    ];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let added = file("c.txt", b"gamma", Recipe::Fixed);
+    let carried = file_objects(std::slice::from_ref(&added));
+    files.push(added);
+    let before = existence_proofs_on_this_thread();
+    repository
+        .apply_batch(&lane.capture(&files, carried))
+        .unwrap();
+    assert_eq!(existence_proofs_on_this_thread() - before, 2);
+    drop(repository);
+    assert_closure_matches(&root.0, &files, lane.space.id());
 }
 
 /// The Files the bitmaps prove closed (council s13 Q2) are exactly those
