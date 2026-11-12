@@ -1817,6 +1817,19 @@ impl RegisteredCatalog {
         self.complete(found.into_values().collect())
     }
 
+    /// Whether a registered whole file record is named `chunk_id` (its
+    /// chunk is then in the file domain).
+    pub(crate) fn whole_record(&self, chunk_id: &ChunkId) -> bool {
+        let raw = chunk_id.digest_bytes();
+        self.packs.iter().any(|registered| {
+            registered
+                .pack
+                .index
+                .find_file(&raw)
+                .is_some_and(|file| registered.pack.index.files[file].recipe == Recipe::Whole)
+        })
+    }
+
     /// The chunk the file record `file` of the registered pack at `pack`
     /// stands for.
     pub(crate) fn alias_chunk(&self, pack: usize, file: usize) -> CasResult<ChunkId> {
@@ -3176,6 +3189,9 @@ fn scrub_record(
         }
     }
 }
+
+// A whole file is one record of its pack: its largest size is a record's.
+const _: () = assert!(layrs_core::scm::WHOLE_MAX_BYTES as usize <= pack2::MAX_RECORD_BYTES);
 
 /// A file record's body as its chunk: named in the file domain for a
 /// `whole` record (council s13 Q5), else as any raw chunk.

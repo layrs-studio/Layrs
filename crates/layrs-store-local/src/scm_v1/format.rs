@@ -65,21 +65,15 @@ pub const NEWEST_FORMAT_VERSION: u32 = WHOLE_FILES_FORMAT_VERSION;
 pub const MAX_FORMAT_BYTES: u64 = 64 * 1024;
 
 /// The format `init` creates: packed (5), unless `LAYRS_STORE_FORMAT` asks
-/// for 2, for the compact format 6 or for 7.
-fn creation_format_version() -> u32 {
+/// for 2, for the compact format 6 or for 7. A caller that captures before
+/// creating the Store reads it once and passes it to `init_with_format`.
+pub fn creation_format_version() -> u32 {
     match std::env::var("LAYRS_STORE_FORMAT").as_deref() {
         Ok("2") => FORMAT_VERSION,
         Ok("6") => COMPACT_FORMAT_VERSION,
         Ok("7") => WHOLE_FILES_FORMAT_VERSION,
         _ => PACKED_FORMAT_VERSION,
     }
-}
-
-/// Whether `init` creates a Store of format 7 (`LAYRS_STORE_FORMAT=7`),
-/// whose captures keep small files `whole`: a first capture runs before the
-/// Store exists.
-pub fn creation_keeps_whole_files() -> bool {
-    creation_format_version() == WHOLE_FILES_FORMAT_VERSION
 }
 
 /// Whether this reader reads complete Stores of `version` (3 and 4 belong

@@ -80,10 +80,14 @@ impl NativeWorkspace {
     /// metadata is refused by init; it is never migrated or removed.
     pub fn initialize(root: impl AsRef<Path>, name: &str) -> Result<Self> {
         let root = std::path::absolute(root)?;
+        // The format is read once: the first capture runs before the Store
+        // exists, and must match it.
+        let format = scm_v1::creation_format_version();
         let (identity, snapshot, proven, entries) =
             super::filesystem::capture_checkout_streaming_indexed(
                 &root,
-                SnapshotLimits::streaming().with_whole_files(scm_v1::creation_keeps_whole_files()),
+                SnapshotLimits::streaming()
+                    .with_whole_files(format == scm_v1::WHOLE_FILES_FORMAT_VERSION),
             )?;
         let root_tree = snapshot.root_tree_id().clone();
         let stamp = MutationStamp::fresh()?;
@@ -119,7 +123,11 @@ impl NativeWorkspace {
             Metadata::empty(),
         )?;
         let change = prepare_initialize(space, layer, worktree.clone(), snapshot, stamp)?;
-        drop(scm_v1::init(root.join(".layrs"), store_id)?);
+        drop(scm_v1::init_with_format(
+            root.join(".layrs"),
+            store_id,
+            format,
+        )?);
         let client = NativeClient::open(root.join(".layrs"))?;
         client.accept(&change)?;
         // The folder's change index (ADR 0025) starts with what this first

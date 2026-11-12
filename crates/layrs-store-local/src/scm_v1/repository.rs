@@ -431,7 +431,18 @@ impl NativeScmRepository {
         // object is installed as by `put`, concurrently; outcomes and fault
         // boundaries are consumed in the original order. A chunk a `whole`
         // manifest of the batch names is checked in the file domain.
-        let whole = whole_chunk_ids(batch);
+        let mut whole = whole_chunk_ids(batch);
+        // An external chunk no manifest of the batch names takes the domain
+        // its registered record declares (a whole file's own record).
+        if compact {
+            if let Some(catalog) = cas.compact_catalog() {
+                for (id, _) in chunks {
+                    if !whole.contains(id) && catalog.whole_record(id) {
+                        whole.insert(id.clone());
+                    }
+                }
+            }
+        }
         let mut external = chunks.iter();
         let mut objects = batch.canonical_objects().iter();
         let outcomes = cas.put_ordered(|| {

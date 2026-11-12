@@ -457,21 +457,35 @@ impl NativeClient {
         {
             layrs_store_local::perf::count("capture.forget_admitted_skipped_shared", 1);
         }
+        // A File the Space already holds in another form (received v1, kept
+        // whole) is not stored again (council s16 r1). Only when its chunks
+        // can leave the spool with it.
+        let (mut redundant, mut redundant_chunks) =
+            redundant_file_objects(&reader, worktree.space_id(), snapshot.objects())?;
         if let Some(spool) = snapshot.chunks.as_mut().and_then(std::sync::Arc::get_mut) {
             let _span = layrs_store_local::perf::span("capture.forget_admitted_chunks");
             spool.forget_known(|id| {
+                if redundant_chunks.contains(id) {
+                    return Ok(true);
+                }
                 reader.object_admitted_metadata(
                     &layrs_store::scm::StoreObjectId::ChunkRaw(id.clone()),
                     worktree.space_id(),
                 )
             })?;
+        } else if snapshot.chunks.is_some() {
+            redundant.clear();
+            redundant_chunks.clear();
         }
         let chunks = snapshot.chunks.clone();
-        let objects = retain_new_objects(
+        let objects: Vec<CanonicalObject> = retain_new_objects(
             &reader,
             worktree.space_id(),
             objects(snapshot, &step, &next),
-        )?;
+        )?
+        .into_iter()
+        .filter(|object| !redundant_object(object, &redundant, &redundant_chunks))
+        .collect();
         let admissions = admissions_with_chunks(worktree.space_id(), &objects, chunks.as_deref());
         let batch = WriteBatch::new(
             stamp.transaction_id,
@@ -608,6 +622,70 @@ fn retain_new_objects(
         }
     }
     Ok(kept)
+}
+
+/// What a batch would add for Files the Space already holds: the new
+/// manifests of a File durably closed in `space` (an admitted manifest whose
+/// closure is admitted), and the chunks only those manifests name. A Store
+/// keeps one form of such a File (council s16 r1): a received v1 file it
+/// keeps whole, a whole capture of a file received v1, a VFS capture. Trees
+/// name FileIds, which the admitted manifest already closes.
+pub(super) fn redundant_file_objects(
+    reader: &NativeScmReader<'_>,
+    space: &layrs_core::scm::SpaceId,
+    objects: &[CanonicalObject],
+) -> Result<(
+    std::collections::BTreeSet<layrs_store::scm::StoreObjectId>,
+    std::collections::BTreeSet<layrs_core::scm::ChunkId>,
+)> {
+    use layrs_store::scm::StoreObjectId;
+    let manifests: Vec<&layrs_core::scm::FileManifest> = objects
+        .iter()
+        .filter_map(|object| match object {
+            CanonicalObject::FileManifest(manifest) => Some(manifest),
+            _ => None,
+        })
+        .collect();
+    let mut dropped = std::collections::BTreeSet::new();
+    let mut dropped_chunks = std::collections::BTreeSet::new();
+    if manifests.is_empty() {
+        return Ok((dropped, dropped_chunks));
+    }
+    let _span = layrs_store_local::perf::span("capture.redundant_files");
+    let files: std::collections::BTreeSet<&layrs_core::scm::FileId> = manifests
+        .iter()
+        .map(|manifest| manifest.file_id())
+        .collect();
+    let closed = reader.files_durably_closed_metadata(files.iter().copied(), space)?;
+    let mut kept_chunks = std::collections::BTreeSet::new();
+    for manifest in manifests {
+        let id = StoreObjectId::FileManifest(manifest.id().clone());
+        let chunks = manifest
+            .chunks()
+            .iter()
+            .map(|chunk| chunk.chunk_id().clone());
+        if closed.contains(manifest.file_id()) && !reader.object_admitted_metadata(&id, space)? {
+            dropped.insert(id);
+            dropped_chunks.extend(chunks);
+        } else {
+            kept_chunks.extend(chunks);
+        }
+    }
+    dropped_chunks.retain(|chunk| !kept_chunks.contains(chunk));
+    Ok((dropped, dropped_chunks))
+}
+
+/// Whether `object` is one of `redundant_file_objects`.
+pub(super) fn redundant_object(
+    object: &CanonicalObject,
+    manifests: &std::collections::BTreeSet<layrs_store::scm::StoreObjectId>,
+    chunks: &std::collections::BTreeSet<layrs_core::scm::ChunkId>,
+) -> bool {
+    match object {
+        CanonicalObject::ChunkRaw(chunk) => chunks.contains(chunk.id()),
+        CanonicalObject::FileManifest(_) => manifests.contains(&object.object_id()),
+        _ => false,
+    }
 }
 
 fn objects(snapshot: PreparedSnapshot, step: &Step, view: &RepositoryView) -> Vec<CanonicalObject> {

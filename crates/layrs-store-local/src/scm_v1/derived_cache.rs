@@ -445,7 +445,13 @@ fn get(
              FROM projection WHERE root = ?1"
         }
     };
-    let limit = i64::try_from(max_bytes).unwrap_or(i64::MAX);
+    // The bound is on the stored frame, a few bytes over its content when
+    // the content does not compress (council s16 r1).
+    let limit = usize::try_from(max_bytes)
+        .ok()
+        .map(zstd::zstd_safe::compress_bound)
+        .and_then(|bound| i64::try_from(bound).ok())
+        .unwrap_or(i64::MAX);
     match connection
         .query_row(query, params![key, limit], |row| {
             row.get::<_, Option<Vec<u8>>>(0)

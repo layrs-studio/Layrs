@@ -710,10 +710,22 @@ impl NativeRemote {
                 None => entities.push(EntityRecord::Release(release.record.clone())),
             }
         }
-        let external_chunks = graph.chunk_descriptors();
+        // Files this Store already holds (kept whole, the v1 form received or
+        // rebuilt from them) are not stored again (council s16 r1).
+        let graph_objects: Vec<CanonicalObject> = graph.objects.values().cloned().collect();
+        let (redundant, redundant_chunks) =
+            prepare::redundant_file_objects(&reader, source.space.id(), &graph_objects)?;
+        let external_chunks: Vec<_> = graph
+            .chunk_descriptors()
+            .into_iter()
+            .filter(|(id, _)| !redundant_chunks.contains(id))
+            .collect();
         let next_operations =
             worktree_operations::advance_heads(&operations, source.operation.id(), operation.id());
-        let mut objects: Vec<_> = graph.objects.values().cloned().collect();
+        let mut objects: Vec<_> = graph_objects
+            .into_iter()
+            .filter(|object| !prepare::redundant_object(object, &redundant, &redundant_chunks))
+            .collect();
         objects.push(CanonicalObject::RepositoryView(view.clone()));
         let mut admissions = prepare::admissions(source.space.id(), &objects);
         admissions.extend(external_chunks.iter().map(|(id, _)| {

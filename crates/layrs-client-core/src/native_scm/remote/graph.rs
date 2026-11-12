@@ -536,14 +536,23 @@ pub(super) fn v1_file(
     whole: &layrs_core::scm::Chunk,
     file_id: &FileId,
 ) -> RemoteResult<(layrs_core::scm::Chunk, FileManifest)> {
-    let chunk = layrs_core::scm::Chunk::new(whole.bytes().to_vec())?;
-    let manifest = FileManifest::from_chunks(
-        layrs_core::scm::fixed_chunking(whole.byte_length()),
-        std::slice::from_ref(&chunk),
-    )?;
-    if manifest.file_id() != file_id {
+    // A verified whole chunk is named by its FileId: the bytes are hashed
+    // once more, in the chunk domain, and the FileId is not.
+    if !whole.is_whole() || whole.id() != &ChunkId::of_whole_file(file_id) {
         return Err(NativeRemoteError::Invalid("whole file identity mismatch"));
     }
+    let chunk = layrs_core::scm::Chunk::new(whole.bytes().to_vec())?;
+    let length = whole.byte_length();
+    let manifest = FileManifest::new(
+        file_id.clone(),
+        length,
+        layrs_core::scm::fixed_chunking(length),
+        vec![layrs_core::scm::FileChunk::new(
+            chunk.id().clone(),
+            0,
+            length,
+        )?],
+    )?;
     Ok((chunk, manifest))
 }
 

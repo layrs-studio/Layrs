@@ -628,6 +628,20 @@ fn admitted_small_delta_reuses_bytes_and_batches_exact_path_claims() {
     .unwrap();
     assert!(audit.is_clean(), "{:?}", audit.findings);
     assert!(!audit.is_truncated());
+    // A file the Store already holds (whole in format 7) is not stored again
+    // in the v1 form the server holds (council s16 r1).
+    {
+        let store = fixture.workspace.open_store().unwrap();
+        let reader = scm_v1::NativeScmReader::new(&store).unwrap();
+        for byte in [1_u8, 2, 3] {
+            let file = layrs_core::scm::FileId::from_bytes(&vec![byte; 32 * 1024]);
+            assert_eq!(
+                reader.file_manifest_ids_metadata(&file).unwrap().len(),
+                1,
+                "{file}"
+            );
+        }
+    }
     fixture.reset_counts();
     fixture.remote.receive(&fixture.workspace).unwrap();
     assert_eq!(fixture.counts().plans, 0);
