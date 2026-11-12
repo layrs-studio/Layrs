@@ -451,6 +451,12 @@ impl<'a> CompositeAdmissionResolver<'a> {
         files: &[&FileId],
         space: &SpaceId,
     ) -> Result<()> {
+        // Beside an unreadable pack an admitted manifest's chunks may be
+        // lost: every caller (Tree Files, Weave closure) takes the per-File
+        // path, which checks them (council s18 r3).
+        if !self.reader.durable_admission_proves_closure()? {
+            return Ok(());
+        }
         let unknown: Vec<&FileId> = {
             let cache = self.file_manifest_cache.lock().ok();
             files

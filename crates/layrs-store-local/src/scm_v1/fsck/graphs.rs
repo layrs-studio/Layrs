@@ -488,6 +488,9 @@ impl Context<'_> {
         for root in &roots {
             if known.contains(root) {
                 queue.push_back(root.clone());
+            } else if self.unreadable_sources.contains(root) {
+                // Held only by an unreadable pack: unknown, not missing
+                // (council s18 r3); that pack is reported once.
             } else {
                 self.finding(
                     FsckFindingCode::GcRootInvalid,

@@ -229,7 +229,11 @@ impl Context<'_> {
                             .or_else(|| target.symlink_id().map(ToString::to_string))
                             .or_else(|| target.tombstone_id().map(ToString::to_string));
                         if let Some(target_id) = target_id {
-                            if !self.object_ids.contains_key(&target_id) {
+                            // An object an unreadable pack may hold is
+                            // unknown, not missing (council s18 r3).
+                            if !self.object_ids.contains_key(&target_id)
+                                && !self.unreadable_sources.contains(&target_id)
+                            {
                                 self.finding(
                                     FsckFindingCode::TreeClosureBroken,
                                     FsckSeverity::Error,

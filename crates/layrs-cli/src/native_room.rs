@@ -984,6 +984,14 @@ fn verify_all(
     match room.kind {
         #[cfg(windows)]
         RoomKind::Virtual => {
+            // A virtual Room's verifying capture keeps in-sync files by
+            // reference and cannot store again what an unreadable pack held:
+            // its folder may hold the only copy (council s18 r3).
+            if project.store_has_unreadable_pack().map_err(error)? {
+                return Err(CliError::runtime(
+                    "A registered pack of this Store cannot be read: a virtual Room is not deleted while its folder may hold the only copy of content. Copy what it holds, or repair the Store first.",
+                ));
+            }
             let value = host_request(
                 cli,
                 project,

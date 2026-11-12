@@ -444,6 +444,13 @@ impl NativeWorkspace {
             })
     }
 
+    /// Whether a registered pack of this Workspace's Store cannot be read
+    /// (format 6 and 7; council s17, s18).
+    pub fn store_has_unreadable_pack(&self) -> Result<bool> {
+        let store = self.open_store()?;
+        Ok(NativeScmReader::new(&store)?.catalog_damaged()?)
+    }
+
     /// Reads every file even when this Worktree has a change index (ADR 0025):
     /// the full content verification required before deleting a Room. The
     /// index is rebuilt from what this capture proves.
