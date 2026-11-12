@@ -157,26 +157,27 @@ fichier dans l'index du pack.
   FileId (son chunk et son manifeste `deterministic_fixed`) : les serveurs
   vérifient les chunks dans le domaine chunk. Arbres et Steps ne nomment
   que des FileId : ils ne changent pas.
-- **Schéma SQLite v4.** Les tables de v3 sans les tables `pending_*` que le
-  format 6 n'écrit jamais, `WITHOUT ROWID` pour les clés textuelles ou
-  composées (plus d'index de clé séparé), une instruction par ligne
-  (SQLite garde le texte de chaque instruction ; les commentaires sont
-  entre les instructions). Mêmes colonnes et contraintes : chaque requête
-  de v3 s'exécute telle quelle. Gain mesuré modeste (~8 Ko après le
-  scénario) : avec des pages de 1 Kio, une ligne `WITHOUT ROWID` de plus de
-  ~230 octets déborde, et les identifiants TEXT de 71 caractères y
-  arrivent vite ; les identifiants binaires de 32 octets lèveraient cette
-  limite.
-- **Mesures** (10 000 fichiers, scénario du banc) : pack d'init 1 249 →
-  909 Ko ; Store 1 761 → 1 385 Kio après `init`, 2 246 → 1 906 Kio après
-  le scénario (git : 1 868 / 1 908).
+- **Schéma SQLite : celui du format 6 (v3).** Un schéma v4 (Q6) a été
+  essayé puis retiré (conseil s16 r1) : sans les tables `pending_*`, avec
+  une instruction par ligne et `WITHOUT ROWID` pour les clés textuelles ou
+  composées, il ne gagnait que ~8 Ko après le scénario. Avec des pages de
+  1 Kio, une ligne `WITHOUT ROWID` de plus de ~230 octets déborde, et les
+  identifiants TEXT de 71 caractères y arrivent vite ; l'historique et
+  fsck lisent aussi le `rowid`. Sans `WITHOUT ROWID`, le reste vaut ~10 Ko
+  fixes (moins de 1 % du Store). Le gain de Q6 passe par les identifiants
+  binaires de 32 octets.
+- **Cache dérivé compressé** (ADR 0025) : chaque valeur est une trame zstd.
+- **Mesures** (10 000 fichiers, scénario du banc, format 7 et cache
+  compressé) : pack d'init 1 249 → 909 Ko ; Store 1 180 Kio après `init`,
+  1 636–1 640 Kio après le scénario (git : 1 892 / 1 932).
 - **Compatibilité.** `formatVersion = minReaderVersion = 7`, en opt-in
   (`LAYRS_STORE_FORMAT=7`) ; un lecteur du format 6 refuse le Store. Un
   Store au format 6 n'est jamais réinterprété ; sa conversion sera
   explicite.
-- **Reporté** : identifiants binaires de 32 octets dans SQLite, purge des
-  opérations de récupération terminées (leur clé d'idempotence), Trees et
-  manifestes binaires (phase 4).
+- **Reporté** : schéma v4 avec identifiants binaires de 32 octets dans
+  SQLite (Q6), purge des opérations de récupération terminées (leur clé
+  d'idempotence), Trees et manifestes binaires (phase 4), conversion d'un
+  Store du format 6.
 
 ## Phases
 

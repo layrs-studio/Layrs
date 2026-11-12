@@ -646,6 +646,17 @@ impl NativeCas {
             .map_err(general)?;
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
+        // A File kept whole in one candidate and as a v1 file record in
+        // another (received, or captured before format 7): the whole record
+        // keeps the file record, the v1 chunk and manifest are copied as
+        // explicit records (council s16 r1). Both identities stay.
+        let whole_files: HashSet<[u8; 32]> = candidates
+            .iter()
+            .filter_map(|position| catalog.packs.get(*position))
+            .flat_map(|registered| registered.pack.index.files.iter())
+            .filter(|record| record.recipe == Recipe::Whole)
+            .map(|record| record.file_id)
+            .collect();
         let mut packs = Vec::with_capacity(candidates.len());
         let mut keys_of = Vec::with_capacity(candidates.len());
         for &position in candidates {
@@ -683,6 +694,7 @@ impl NativeCas {
                         loaded,
                         &raw,
                         record,
+                        &whole_files,
                         &mut explicit_written,
                         &mut files_written,
                     )
@@ -732,16 +744,27 @@ impl NativeCas {
                 let mut ordinals = Vec::with_capacity(keys.len());
                 let mut old_identities = Vec::with_capacity(keys.len());
                 for (key, identity) in keys {
+                    // By identity: an alias only when the new file record
+                    // stands for exactly this object, else the explicit
+                    // record it was copied as (council s16 r1).
+                    let explicit = || index.find(identity.0, &identity.1).map(|o| o as u64);
                     let ordinal = match key {
                         LogicalKey::Explicit(code, id) => {
                             index.find(code, &id).map(|ordinal| ordinal as u64)
                         }
                         LogicalKey::ChunkAlias(file_id) => index
                             .find_file(&file_id)
-                            .map(|file| index.chunk_alias_ordinal(file)),
+                            .filter(|file| index.files[*file].chunk_id == identity.1)
+                            .map(|file| index.chunk_alias_ordinal(file))
+                            .or_else(explicit),
                         LogicalKey::ManifestAlias(file_id) => index
                             .find_file(&file_id)
-                            .map(|file| index.manifest_alias_ordinal(file)),
+                            .filter(|file| {
+                                new.alias_manifest_digest(*file)
+                                    .is_ok_and(|digest| digest == identity.1)
+                            })
+                            .map(|file| index.manifest_alias_ordinal(file))
+                            .or_else(explicit),
                     }
                     .ok_or_else(missing)?;
                     ordinals.push(ordinal);
@@ -773,6 +796,7 @@ impl NativeCas {
         loaded: &LoadedPack,
         raw: &[u8],
         record: pack2::RecordRef,
+        whole_files: &HashSet<[u8; 32]>,
         explicit_written: &mut HashSet<(u8, [u8; 32])>,
         files_written: &mut HashMap<[u8; 32], FileIdentity>,
     ) -> Result<(), CopyFailure> {
@@ -832,6 +856,42 @@ impl NativeCas {
                 let (_, chunk_id) = loaded.alias_ids(file)?;
                 let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
                 validate_file_record_chunk(chunk_id, body, record.recipe)?;
+                if record.recipe != Recipe::Whole && whole_files.contains(&record.file_id) {
+                    // Its File is kept whole too: this v1 chunk and manifest
+                    // become explicit records.
+                    let chunk_code = pack2::kind_code(StoreObjectKind::ChunkRaw);
+                    if explicit_written.insert((chunk_code, record.chunk_id)) {
+                        open.builder
+                            .add_record(
+                                sink,
+                                StoreObjectKind::ChunkRaw,
+                                record.chunk_id,
+                                body,
+                                None,
+                            )
+                            .map_err(write)?;
+                    }
+                    let manifest_code = pack2::kind_code(StoreObjectKind::FileManifest);
+                    if explicit_written.insert((manifest_code, identity.manifest_id)) {
+                        let manifest = loaded.alias_manifest(file)?;
+                        let encoded = encode_object(&CanonicalObject::FileManifest(manifest))?;
+                        open.builder
+                            .add_record(
+                                sink,
+                                StoreObjectKind::FileManifest,
+                                identity.manifest_id,
+                                &encoded,
+                                None,
+                            )
+                            .map_err(write)?;
+                        open.builder.add_manifest_file(
+                            record.file_id,
+                            identity.manifest_id,
+                            u64::from(record.location.length),
+                        );
+                    }
+                    return Ok(());
+                }
                 open.builder
                     .add_file(sink, identity, body, None)
                     .map_err(write)?;
@@ -2489,17 +2549,48 @@ impl NativeCas {
         let code = pack2::kind_code(object_id.kind());
         // A large record is compressed before taking the batch lock, so
         // workers compress in parallel.
-        let planned = match object {
+        let mut planned = match object {
             CanonicalObject::ChunkRaw(_) => {
                 self.compact_state(|batch| Ok(batch.plan.by_chunk.get(&raw).copied()))?
             }
             _ => None,
         };
-        if whole_chunk.is_some() && planned.is_none() {
-            return Err(corruption(
-                &object_id,
-                "a whole file chunk is stored only as its file record",
-            ));
+        if let (Some(chunk_id), None) = (&whole_chunk, planned) {
+            // A whole chunk is stored only as its file's record: one not
+            // planned (its manifest is not in the batch, or a registered
+            // copy proved damaged above) gets its record now, which stands
+            // for its manifest too (council s16 r1). One record per FileId
+            // in a batch.
+            let file_id = layrs_core::scm::FileId::from_digest_bytes(&chunk_id.digest_bytes());
+            let manifest = layrs_core::scm::FileManifest::whole(file_id, bytes_len)
+                .map_err(|error| corruption(&object_id, error.to_string()))?;
+            let identity = FileIdentity {
+                file_id: raw,
+                chunk_id: raw,
+                recipe: Recipe::Whole,
+                manifest_id: pack2::raw_digest(&StoreObjectId::FileManifest(
+                    manifest.id().clone(),
+                ))?,
+            };
+            let file = PlannedFile {
+                identity,
+                byte_length: bytes_len,
+            };
+            planned = self.compact_state(|batch| {
+                if batch
+                    .plan
+                    .by_chunk
+                    .values()
+                    .any(|planned| planned.identity.file_id == raw)
+                {
+                    return Err(corruption(
+                        &object_id,
+                        "a batch keeps one file record per FileId",
+                    ));
+                }
+                batch.plan.by_chunk.insert(raw, file);
+                Ok(Some(file))
+            })?;
         }
         let covered = matches!(object, CanonicalObject::FileManifest(_))
             && self.compact_state(|batch| Ok(batch.plan.covered_manifests.contains(&raw)))?;

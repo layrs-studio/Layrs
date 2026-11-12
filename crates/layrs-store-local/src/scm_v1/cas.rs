@@ -730,6 +730,7 @@ impl NativeCas {
     /// Encodes, writes, syncs, rereads, and validates one exclusive staging
     /// file. No database reference should be created from a PreparedObject.
     fn stage(&self, object: &CanonicalObject) -> CasResult<PreparedObject> {
+        self.refuse_whole_elsewhere(object)?;
         self.stage_encoded(object.object_id(), encode_object(object)?)
     }
 
@@ -1048,12 +1049,17 @@ impl NativeCas {
 
     /// The first copy of `object_id` that verifies (see `with_copy`).
     pub fn read(&self, object_id: &StoreObjectId) -> CasResult<CanonicalObject> {
-        if let Some(catalog) = self.compact_view()? {
-            return self.read_registered(catalog, object_id);
-        }
-        match self.with_copy(object_id, false, || self.read_loose(object_id))? {
-            Found::Packed(_, object) | Found::Loose(object) => Ok(object),
-        }
+        let object = if let Some(catalog) = self.compact_view()? {
+            self.read_registered(catalog, object_id)?
+        } else {
+            match self.with_copy(object_id, false, || self.read_loose(object_id))? {
+                Found::Packed(_, object) | Found::Loose(object) => object,
+            }
+        };
+        // A whole object found outside format 7 was never written by this
+        // reader's rules: corruption, never content (council s16 r1).
+        self.refuse_whole_elsewhere(&object)?;
+        Ok(object)
     }
 
     fn read_loose(&self, object_id: &StoreObjectId) -> CasResult<CanonicalObject> {

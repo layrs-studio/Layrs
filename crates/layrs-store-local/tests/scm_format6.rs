@@ -636,6 +636,169 @@ fn whole_files_and_their_packs_stay_in_format_7() {
     assert!(reader.get_chunk(files[0].chunks[0].id()).is_err());
 }
 
+/// A File kept whole in one pack and as a v1 file record in another (its
+/// v1 representation received after, or captured before): consolidation
+/// keeps both identities, in either order (council s16 r1).
+#[test]
+fn a_whole_and_a_v1_record_of_one_file_consolidate_in_either_order() {
+    for whole_first in [true, false] {
+        let label = format!("mixed-{whole_first}");
+        let root = TestRoot::new(&label);
+        create(&root.0, &label, "7");
+        let content = b"the same bytes, twice represented";
+        let whole = file("whole.txt", content, Recipe::Whole);
+        let v1 = file("v1.txt", content, Recipe::Fixed);
+        let (first, second) = if whole_first {
+            (whole.clone(), v1.clone())
+        } else {
+            (v1.clone(), whole.clone())
+        };
+        let mut files = vec![first];
+        let (mut lane, batch) = Lane::begin("alpha", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let carried = file_objects(std::slice::from_ref(&second));
+        files.push(second);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+        for step in 0..6 {
+            let added = file(&format!("f{step}.bin"), &noise(300, step), Recipe::Fixed);
+            let carried = file_objects(std::slice::from_ref(&added));
+            files.push(added);
+            repository
+                .apply_batch(&lane.capture(&files, carried))
+                .unwrap();
+        }
+        drop(repository);
+        assert!(registered_packs(&root.0).len() < 8, "{label}");
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let mut both = vec![whole.manifest.id().clone(), v1.manifest.id().clone()];
+        both.sort();
+        assert_eq!(
+            reader
+                .file_manifest_ids_metadata(whole.manifest.file_id())
+                .unwrap(),
+            both
+        );
+        assert_eq!(
+            reader.get_chunk(whole.chunks[0].id()).unwrap().as_ref(),
+            Some(&whole.chunks[0])
+        );
+        assert_eq!(
+            reader.get_chunk(v1.chunks[0].id()).unwrap().as_ref(),
+            Some(&v1.chunks[0])
+        );
+        drop(reader);
+        drop(store);
+        let answers = reader_answers(&root.0, &files, lane.space.id());
+        assert!(
+            answers
+                .iter()
+                .all(|answer| !answer.contains("admitted=false")),
+            "{answers:?}"
+        );
+        assert_closure_matches(&root.0, &files, lane.space.id());
+        assert_fsck_clean(&root.0);
+    }
+}
+
+/// A whole chunk is stored only as its file's record, even when the batch
+/// does not plan one: a chunk carried without its manifest, or a sound copy
+/// of a record whose block is damaged (council s16 r1).
+#[test]
+fn a_whole_chunk_alone_or_replacing_a_damaged_record_gets_its_record() {
+    let root = TestRoot::new("whole-alone");
+    create(&root.0, "whole-alone", "7");
+    let damaged = file(
+        "damaged.txt",
+        b"bytes whose block is damaged",
+        Recipe::Whole,
+    );
+    let files = vec![damaged.clone()];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    flip_located(
+        &root.0,
+        &StoreObjectId::ChunkRaw(damaged.chunks[0].id().clone()),
+    );
+    // The sound bytes again: a new record, read before the damaged one.
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository
+        .apply_batch(&lane.capture(&files, file_objects(&files)))
+        .unwrap();
+    // A whole chunk without its manifest, admitted to another Space.
+    let alone = Chunk::whole(b"a whole chunk carried alone".to_vec()).unwrap();
+    let (lane_b, batch) = Lane::begin("beta", &[]);
+    repository.apply_batch(&batch).unwrap();
+    repository
+        .apply_batch(
+            &WriteBatch::new(
+                TransactionId::new("transaction:whole-alone").unwrap(),
+                vec![CanonicalObject::ChunkRaw(alone.clone())],
+                vec![],
+                vec![SpaceObjectAdmission::new(
+                    lane_b.space.id().clone(),
+                    StoreObjectId::ChunkRaw(alone.id().clone()),
+                )],
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(repository);
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert_eq!(
+        reader.get_chunk(damaged.chunks[0].id()).unwrap().as_ref(),
+        Some(&damaged.chunks[0])
+    );
+    assert_eq!(reader.get_chunk(alone.id()).unwrap().as_ref(), Some(&alone));
+    let alone_file = FileId::from_bytes(alone.bytes());
+    assert_eq!(
+        reader.file_manifest_ids_metadata(&alone_file).unwrap(),
+        vec![
+            FileManifest::whole(alone_file.clone(), alone.byte_length())
+                .unwrap()
+                .id()
+                .clone()
+        ]
+    );
+}
+
+struct NoCasFault;
+impl CasFaultInjector for NoCasFault {
+    fn check(&self, _: CasFaultPoint) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A Store that is not format 7 refuses a whole object on every write
+/// path, staging included (council s16 r1).
+#[test]
+fn a_store_before_format_7_refuses_to_stage_a_whole_object() {
+    let root = TestRoot::new("whole-stage-5");
+    create(&root.0, "whole-stage-5", "5");
+    let whole = file("a.txt", b"alpha", Recipe::Whole);
+    let exclusive = open_exclusive(&root.0).unwrap();
+    let cas = layrs_store_local::scm_v1::NativeCasWriter::with_fault_injector(
+        &exclusive,
+        Arc::new(NoCasFault),
+    )
+    .unwrap();
+    assert!(
+        cas.stage(&CanonicalObject::FileManifest(whole.manifest.clone()))
+            .is_err()
+    );
+    assert!(
+        cas.stage(&CanonicalObject::ChunkRaw(whole.chunks[0].clone()))
+            .is_err()
+    );
+}
+
 /// A step carrying the manifest of its new content still proves its other
 /// Files closed by existence (council s14 r2): only a manifest a batch
 /// admits without carrying it sends the batch's Files to the exact path.
