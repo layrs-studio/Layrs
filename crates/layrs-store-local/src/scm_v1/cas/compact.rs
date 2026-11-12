@@ -406,6 +406,25 @@ pub(crate) struct Consolidation {
     pub(crate) identities: Vec<Identity>,
 }
 
+/// A consolidation candidate: its registration (sequence, name, metadata
+/// digest) and whether it is an inline image.
+pub(crate) type CandidatePack = (i64, OsString, [u8; 32], bool);
+
+/// Name prefix of a maintenance pack being built (`.maint-…tmp`).
+const MAINTENANCE_PREFIX: &str = "maint-";
+
+/// A maintenance consolidation built outside the exclusive Store lock
+/// (`NativeCas::build_maintenance`), not yet published.
+pub(crate) struct BuiltPack {
+    open: OpenPack,
+    sealed: pack2::SealedPack2,
+    packs: Vec<CandidatePack>,
+    keys_of: CandidateKeys,
+}
+
+/// Each candidate's logical keys with their identities, for the remap.
+type CandidateKeys = Vec<Vec<(LogicalKey, Identity)>>;
+
 /// Which side of a record copy failed: reading or verifying the candidate's
 /// record (the candidate is at fault), or writing the new pack (it is not).
 enum CopyFailure {
@@ -451,6 +470,28 @@ const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// it costs, not by its size on disk.
 const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
+/// What one consolidation may write: its new pack's size on disk and its
+/// decompressed bytes (half the reader's limits always apply too).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Budget {
+    bytes: u64,
+    raw: u64,
+}
+
+impl Budget {
+    /// Inside a batch's exclusive session (council s6).
+    pub(crate) const IN_BATCH: Self = Self {
+        bytes: INLINE_BUDGET_BYTES,
+        raw: INLINE_RAW_BUDGET_BYTES,
+    };
+    /// A maintenance pass, built outside the lock (council s17, B2b): only
+    /// the reader's limits.
+    pub(crate) const MAINTENANCE: Self = Self {
+        bytes: u64::MAX,
+        raw: u64::MAX,
+    };
+}
+
 impl RegisteredCatalog {
     /// Whether a consolidation would find a group once `added` (a pack the
     /// batch registered: inline or not, and its sizes) joins this catalog,
@@ -461,7 +502,11 @@ impl RegisteredCatalog {
     /// Q1). At `CONSOLIDATE_AT_PACKS` pack files, only when a group fits the
     /// budgets: larger tiers wait for maintenance, and a batch no longer
     /// reopens the CAS to find nothing (council s17, B2a).
-    pub(crate) fn consolidation_due(&self, added: Option<(bool, PackStats)>) -> bool {
+    pub(crate) fn consolidation_due(
+        &self,
+        added: Option<(bool, PackStats)>,
+        budget: Budget,
+    ) -> bool {
         // Counts and inline sizes first (no block is walked): the common
         // batch decides here (council s18 r1).
         let (mut inline_count, mut inline_bytes, mut file_count) = (0_usize, 0_u64, 0_usize);
@@ -495,7 +540,7 @@ impl RegisteredCatalog {
             list.sort_unstable();
         }
         let file_count = files.len();
-        candidates_among(&inline, &files, file_count).len() >= 2
+        candidates_among_within(&inline, &files, file_count, budget).len() >= 2
     }
 
     /// The packs to consolidate now, positions in increasing order, leaving
@@ -507,18 +552,30 @@ impl RegisteredCatalog {
     /// the small ones have grown to its size. Only sound packs: a damaged one
     /// keeps its row and bitmaps as they are, and does not stop the others
     /// (council s6 r1).
-    pub(crate) fn consolidation_candidates(&self, excluded: &[usize]) -> Vec<usize> {
+    pub(crate) fn consolidation_candidates(
+        &self,
+        excluded: &[usize],
+        budget: Budget,
+    ) -> Vec<usize> {
         let files = self.packs.len()
             - self
                 .packs
                 .iter()
                 .filter(|pack| pack.pack.is_inline())
                 .count();
-        candidates_among(
+        candidates_among_within(
             &self.by_size(excluded, true),
             &self.by_size(excluded, false),
             files,
+            budget,
         )
+    }
+
+    /// The pack files a maintenance pass consolidates (council s17, B2b):
+    /// a geometric group of at least two, within half the reader's limits
+    /// only, leaving out `excluded`; empty when none.
+    pub(crate) fn maintenance_candidates(&self, excluded: &[usize]) -> Vec<usize> {
+        consolidation_group_within(&self.by_size(excluded, false), Budget::MAINTENANCE)
     }
 
     /// (size, records, blocks, decompressed bytes, position) of the inline
@@ -644,16 +701,27 @@ pub(super) fn pack_stats(index: &pack2::Pack2Index) -> PackStats {
 /// s8 r2, r3); else, at `CONSOLIDATE_AT_PACKS` pack files, a geometric group
 /// of files. Inline packs never join pack files (they wait for their own
 /// merge). Empty when none is due.
+#[cfg(test)]
 fn candidates_among(
     inline: &[(u64, u64, u64, u64, usize)],
     files: &[(u64, u64, u64, u64, usize)],
     file_count: usize,
 ) -> Vec<usize> {
+    candidates_among_within(inline, files, file_count, Budget::IN_BATCH)
+}
+
+/// `candidates_among` within `budget`.
+fn candidates_among_within(
+    inline: &[(u64, u64, u64, u64, usize)],
+    files: &[(u64, u64, u64, u64, usize)],
+    file_count: usize,
+    budget: Budget,
+) -> Vec<usize> {
     let inline_bytes = inline
         .iter()
         .fold(0_u64, |total, pack| total.saturating_add(pack.0));
     if inline.len() >= CONSOLIDATE_INLINE_AT || inline_bytes >= CONSOLIDATE_INLINE_BYTES {
-        let group = bounded_group(inline, false);
+        let group = bounded_group_within(inline, false, budget);
         if group.len() >= 2 {
             return group;
         }
@@ -661,7 +729,7 @@ fn candidates_among(
     if file_count < CONSOLIDATE_AT_PACKS {
         return Vec::new();
     }
-    consolidation_group(files)
+    consolidation_group_within(files, budget)
 }
 
 /// The packs to consolidate among `by_size` (size, records, blocks,
@@ -670,9 +738,18 @@ fn candidates_among(
 /// r1), the first group of at least two, each next pack at most twice the
 /// group's total, within half the reader's limits for one pack and the
 /// inline budgets (on disk and decompressed). Positions in increasing order.
+#[cfg(test)]
 fn consolidation_group(by_size: &[(u64, u64, u64, u64, usize)]) -> Vec<usize> {
+    consolidation_group_within(by_size, Budget::IN_BATCH)
+}
+
+/// `consolidation_group` within `budget`.
+fn consolidation_group_within(
+    by_size: &[(u64, u64, u64, u64, usize)],
+    budget: Budget,
+) -> Vec<usize> {
     for start in 0..by_size.len() {
-        let chosen = bounded_group(&by_size[start..], true);
+        let chosen = bounded_group_within(&by_size[start..], true, budget);
         if chosen.len() >= 2 {
             return chosen;
         }
@@ -686,7 +763,17 @@ fn consolidation_group(by_size: &[(u64, u64, u64, u64, usize)]) -> Vec<usize> {
 /// at most twice the group's total. Without the geometric rule a pack that
 /// does not fit is skipped, so one oversized pack never blocks the others
 /// (council s8 r3). Positions in increasing order.
+#[cfg(test)]
 fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Vec<usize> {
+    bounded_group_within(by_size, geometric, Budget::IN_BATCH)
+}
+
+/// `bounded_group` within `budget`.
+fn bounded_group_within(
+    by_size: &[(u64, u64, u64, u64, usize)],
+    geometric: bool,
+    budget: Budget,
+) -> Vec<usize> {
     let mut chosen = Vec::new();
     let (mut total, mut records, mut blocks, mut raw) = (0_u64, 0_u64, 0_u64, 0_u64);
     for &(size, pack_records, pack_blocks, pack_raw, position) in by_size {
@@ -695,8 +782,8 @@ fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Ve
         }
         // Within the inline budgets, and half the reader's limits for one
         // pack so the new pack always loads.
-        let fits = total.saturating_add(size) <= INLINE_BUDGET_BYTES
-            && raw.saturating_add(pack_raw) <= INLINE_RAW_BUDGET_BYTES
+        let fits = total.saturating_add(size) <= budget.bytes
+            && raw.saturating_add(pack_raw) <= budget.raw
             && records + pack_records <= pack2::MAX_PACK_ENTRIES / 2
             && blocks + pack_blocks <= pack2::MAX_PACK_BLOCKS / 2;
         if !fits {
@@ -822,6 +909,22 @@ impl NativeCas {
         let mut open = self
             .open_new_pack(self.inline_pack_limit().min(MERGED_INLINE_MAX))
             .map_err(general)?;
+        let (packs, keys_of) = self.copy_candidates(catalog, candidates, &mut open)?;
+        let (pack, inline, _, pack_keys) = self.publish_pack2(open).map_err(general)?;
+        self.finish_consolidation(pack, inline, pack_keys, packs, keys_of)
+    }
+
+    /// Copies every record of the `candidates` (positions in `catalog`)
+    /// into `open`, each block read once and each record verified against
+    /// its id; a record held by several candidates is written once. Returns
+    /// each candidate's registration and logical keys, for the remap.
+    fn copy_candidates(
+        &self,
+        catalog: &RegisteredCatalog,
+        candidates: &[usize],
+        open: &mut OpenPack,
+    ) -> Result<(Vec<CandidatePack>, CandidateKeys), ConsolidationFailure> {
+        let general = |error| ConsolidationFailure { pack: None, error };
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
         // A File kept whole in one candidate and as a v1 file record in
@@ -868,7 +971,7 @@ impl NativeCas {
                     .map_err(failed)?;
                 for record in records {
                     self.copy_record(
-                        &mut open,
+                        open,
                         loaded,
                         &raw,
                         record,
@@ -881,7 +984,7 @@ impl NativeCas {
                         // A write error (disk full) blames no candidate.
                         CopyFailure::Target(error) => general(error),
                     })?;
-                    self.spill_if_over(&mut open).map_err(general)?;
+                    self.spill_if_over(open).map_err(general)?;
                 }
             }
             keys_of.push(keys);
@@ -892,7 +995,21 @@ impl NativeCas {
                 loaded.is_inline(),
             ));
         }
-        let (pack, inline, _, pack_keys) = self.publish_pack2(open).map_err(general)?;
+        Ok((packs, keys_of))
+    }
+
+    /// The consolidation of the published `pack` (with its `inline` image
+    /// and keys row): each candidate's admitted ordinals remapped by
+    /// identity into the new pack, for `consolidation::register`.
+    fn finish_consolidation(
+        &self,
+        pack: PackRegistration,
+        inline: Option<Vec<u8>>,
+        pack_keys: super::keys::PackKeys,
+        packs: Vec<CandidatePack>,
+        keys_of: CandidateKeys,
+    ) -> Result<Consolidation, ConsolidationFailure> {
+        let general = |error| ConsolidationFailure { pack: None, error };
         let new = match &inline {
             Some(image) => self
                 .inline_pack(&pack.0, Arc::from(image.as_slice()), true)
@@ -965,6 +1082,157 @@ impl NativeCas {
             packs,
             identities,
         })
+    }
+
+    /// Builds, outside the exclusive Store lock (council s17, B2b), the
+    /// consolidation of `candidates`: a sealed, synced and verified pack
+    /// file under a temporary name in the packs directory, which orphan
+    /// collection ignores (not a pack name) and which is unlinked if it is
+    /// dropped unpublished. `publish_maintenance` publishes it under the
+    /// exclusive lock.
+    pub(crate) fn build_maintenance(
+        &self,
+        catalog: &RegisteredCatalog,
+        candidates: &[usize],
+    ) -> Result<BuiltPack, ConsolidationFailure> {
+        let _span = crate::perf::span("cas.maintenance_build");
+        let general = |error| ConsolidationFailure { pack: None, error };
+        let mut open = self.open_maintenance_pack().map_err(general)?;
+        let (packs, keys_of) = self.copy_candidates(catalog, candidates, &mut open)?;
+        let builder = std::mem::replace(&mut open.builder, empty_builder());
+        let sealed = builder
+            .finish(&mut open.sink)
+            .map_err(|error| general(io_error("write CAS pack index", &open.path, error)))?;
+        open.file()
+            .map_err(general)?
+            .file()
+            .sync_all()
+            .map_err(|error| general(io_error("sync CAS pack", &open.path, error)))?;
+        pack2::verify_written(open.file().map_err(general)?.file(), &open.path, &sealed)
+            .map_err(general)?;
+        Ok(BuiltPack {
+            open,
+            sealed,
+            packs,
+            keys_of,
+        })
+    }
+
+    /// Under the exclusive Store lock: publishes `built` under a pack name
+    /// (no clobber) and returns what `consolidation::register` registers.
+    /// The caller checked first that every candidate is still registered as
+    /// it was when the pack was built.
+    pub(crate) fn publish_maintenance(
+        &self,
+        built: BuiltPack,
+    ) -> Result<Consolidation, ConsolidationFailure> {
+        let general = |error| ConsolidationFailure { pack: None, error };
+        let BuiltPack {
+            mut open,
+            sealed,
+            packs,
+            keys_of,
+        } = built;
+        let path = open.path.clone();
+        let objects = self.pinned_objects().map_err(general)?;
+        let packs_path = self.objects_dir.join(PACKS_DIR);
+        let packs_dir = objects
+            .ensure_child_unsynced(OsStr::new(PACKS_DIR))
+            .map_err(|error| general(io_error("open CAS packs directory", &packs_path, error)))?;
+        let name = pack2::new_pack2_name();
+        let target = packs_path.join(&name);
+        if publish_no_clobber(open.file().map_err(general)?, &packs_dir, &name).map_err(general)? {
+            return Err(general(io_error(
+                "publish CAS pack",
+                &target,
+                io::Error::new(io::ErrorKind::AlreadyExists, "pack name collision"),
+            )));
+        }
+        // From here the file is the published pack: never unlink it.
+        open.published = true;
+        let installed = packs_dir
+            .open_file(&name)
+            .map_err(|error| general(io_error("reread published CAS pack", &target, error)))?;
+        if !open.file().map_err(general)?.same_file(&installed) {
+            return Err(general(pack2::pack2_corruption(
+                &target,
+                "published pack is not the file written",
+            )));
+        }
+        sync_directory_compatible(packs_dir.sync())
+            .map_err(|error| general(io_error("sync CAS packs directory", &packs_path, error)))?;
+        self.cleanup_published_staging(open.file().map_err(general)?, &path, false)
+            .map_err(general)?;
+        crate::perf::count("cas.maintenance_published", sealed.logical);
+        self.finish_consolidation(
+            (name, sealed.digest, sealed.logical),
+            None,
+            sealed.keys,
+            packs,
+            keys_of,
+        )
+    }
+
+    /// A new pack file for maintenance, in the packs directory under a
+    /// temporary name (`.maint-<id>.tmp`), with no staging lease: it is
+    /// never staging, and orphan collection keeps only pack names.
+    fn open_maintenance_pack(&self) -> CasResult<OpenPack> {
+        let objects = self.pinned_objects()?;
+        let packs_path = self.objects_dir.join(PACKS_DIR);
+        let packs = objects
+            .ensure_child_unsynced(OsStr::new(PACKS_DIR))
+            .map_err(|error| io_error("open CAS packs directory", &packs_path, error))?;
+        let mut last_error = None;
+        for _ in 0..64 {
+            let name = format!(".{MAINTENANCE_PREFIX}{}.tmp", staging_name());
+            match packs.create_file(OsStr::new(&name)) {
+                Ok(file) => {
+                    let path = packs_path.join(&name);
+                    let mut sink = PackSink::File { file, _lease: None };
+                    let builder = Pack2Builder::start(&mut sink, self.whole_files)
+                        .map_err(|error| io_error("write CAS pack", &path, error))?;
+                    return Ok(OpenPack {
+                        sink,
+                        path,
+                        builder,
+                        published: false,
+                        inline_limit: 0,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(io_error("create CAS pack", &packs_path, error)),
+            }
+        }
+        Err(io_error(
+            "allocate CAS pack",
+            &packs_path,
+            last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "collision")),
+        ))
+    }
+
+    /// Removes the temporary maintenance packs a crashed pass left behind.
+    /// Only under the maintenance lock: no pass is building one.
+    pub(crate) fn remove_stale_maintenance_packs(&self) -> CasResult<usize> {
+        let packs_path = self.objects_dir.join(PACKS_DIR);
+        let entries = match std::fs::read_dir(&packs_path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(io_error("list CAS packs directory", &packs_path, error)),
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .is_some_and(|name| name.starts_with(&format!(".{MAINTENANCE_PREFIX}")))
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// Copies one record of `loaded` from its decompressed block `raw` into
@@ -1139,6 +1407,11 @@ pub(crate) struct RegisteredPack {
 }
 
 impl RegisteredPack {
+    /// Its registered metadata digest.
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        self.pack.index.digest
+    }
+
     /// Its file name in the packs directory.
     pub(crate) fn name(&self) -> &OsStr {
         &self.pack.name
@@ -2589,7 +2862,9 @@ enum PackSink {
     Memory(Vec<u8>),
     File {
         file: PinnedFile,
-        _lease: StagingLease,
+        /// A staging pack's shared staging lease; none for a maintenance
+        /// pack built in the packs directory.
+        _lease: Option<StagingLease>,
     },
 }
 
@@ -2677,6 +2952,50 @@ fn inline_limit_overrides() -> &'static Mutex<HashMap<PathBuf, usize>> {
 
 static INLINE_LIMIT_FORCED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Test support: per Store root, the in-batch consolidation budget tests
+/// force (on disk and decompressed). Consulted only once one was set.
+fn budget_overrides() -> &'static Mutex<HashMap<PathBuf, u64>> {
+    static OVERRIDES: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+    OVERRIDES.get_or_init(Default::default)
+}
+
+static BUDGET_FORCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Test support: forces the in-batch consolidation budget of the Store at
+/// `root` in this process to `bytes` (on disk and decompressed), so packs
+/// past it wait for maintenance; `None` restores the default.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_consolidation_budget(root: &Path, bytes: Option<u64>) {
+    BUDGET_FORCED.store(true, std::sync::atomic::Ordering::Release);
+    if let Ok(mut overrides) = budget_overrides().lock() {
+        match bytes {
+            Some(bytes) => {
+                overrides.insert(root.to_path_buf(), bytes);
+            }
+            None => {
+                overrides.remove(root);
+            }
+        }
+    }
+}
+
+impl NativeCas {
+    /// This Store's in-batch consolidation budget (`Budget::IN_BATCH`,
+    /// unless a test forced one).
+    pub(crate) fn consolidation_budget(&self) -> Budget {
+        if BUDGET_FORCED.load(std::sync::atomic::Ordering::Acquire) {
+            if let Some(bytes) = budget_overrides()
+                .lock()
+                .ok()
+                .and_then(|overrides| overrides.get(&self.root).copied())
+            {
+                return Budget { bytes, raw: bytes };
+            }
+        }
+        Budget::IN_BATCH
+    }
+}
 
 /// Test support: forgets every pack this process loaded, as a new process
 /// would start (a pack file removed meanwhile is then found unreadable).
@@ -3097,7 +3416,7 @@ impl NativeCas {
         let written = file.file_mut().write_all(image);
         let spilled = PackSink::File {
             file,
-            _lease: lease,
+            _lease: Some(lease),
         };
         // From here the staging file is the pack (removed if it fails).
         let PackSink::Memory(_) = std::mem::replace(&mut open.sink, spilled) else {
@@ -3678,7 +3997,7 @@ fn open_pack(
     let (file, path) = create_staging_pack(staging, staging_dir)?;
     let mut sink = PackSink::File {
         file,
-        _lease: lease,
+        _lease: Some(lease),
     };
     let builder = Pack2Builder::start(&mut sink, whole_files)
         .map_err(|error| io_error("write CAS pack", &path, error))?;

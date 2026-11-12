@@ -232,6 +232,9 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
         Err(e) => return Some(Err(error(e))),
     };
     Some((|| {
+        if matches!(cli.command, CliCommand::Maintenance) {
+            return maintenance::maintain(workspace.store_root());
+        }
         if let CliCommand::Diff {
             step_id,
             stat,

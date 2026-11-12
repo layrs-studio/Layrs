@@ -52,6 +52,7 @@ pub enum CliCommand {
     Compact {
         resume: bool,
     },
+    Maintenance,
     ConflictVariant {
         layer: String,
         conflict: String,
@@ -410,6 +411,7 @@ where
             let resume = take_bool_flag(&mut args, "--resume")?;
             parse_no_extra(args, CliCommand::Compact { resume })?
         }
+        "maintenance" => parse_no_extra(args, CliCommand::Maintenance)?,
         "git" => git::parse(args)?,
         "restore" | "restore-view" => {
             let mut args = args;

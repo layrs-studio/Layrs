@@ -333,6 +333,16 @@ and `layrs store repair` come after). Agreed by all three, in this order:
    publish, and register with the existing exact remap (reading the
    current bitmaps). No grace period: the pack is published by the session
    that registers it.
+   Done: `layrs maintenance` (`scm_v1::maintain`). One pass at a time
+   (`metadata/maintenance.lock`, else `Busy`); the group is a geometric
+   one within half the reader's limits only (`Budget::MAINTENANCE`),
+   leaving out the packs consolidation skipped; the pack is built as
+   `objects/packs/.maint-<id>.tmp` (synced and verified), which a crashed
+   pass leaves and the next removes; a candidate retired meanwhile (or its
+   file collected) abandons the pass and unlinks the file (`Abandoned`).
+   Tests: `scm_format6` `maintenance_*` (consolidation, admissions made
+   while it builds, moved candidates, busy and crash cleanup), CLI
+   `native_maintenance`.
 6. B2c: the batch path marks maintenance due (from its catalog); the CLI
    starts it detached after releasing its lock; `LAYRS_AUTO_MAINTENANCE=0`
    disables it.
@@ -444,6 +454,9 @@ and `layrs store repair` come after). Agreed by all three, in this order:
     packs opens a consolidation that finds no group. An explicit
     maintenance pass (`layrs store gc` or a detached pass taking the lock
     itself, with a grace period for orphan collection) is required.
+    Lifted: B2a (a batch opens a consolidation only when a group fits) and
+    B2b (`layrs maintenance`, built outside the lock under a temporary
+    name, so no grace period); B2c starts it detached.
 
 Known limits before phase 5 (now lifted for inline tiers): every batch
 added one pack, so lookups and the catalog load grew with the number of

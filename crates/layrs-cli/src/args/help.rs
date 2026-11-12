@@ -45,6 +45,9 @@ Commands:
   layrs compact [--resume]
     Compact native metadata, retaining all history and objects plus a backup.
     Resume an interrupted compaction with --resume; restart history pagination.
+  layrs maintenance
+    Consolidate the pack files batches leave out (compact Store formats), as git maintenance repacks.
+    Builds outside the Store lock; one pass at a time. Safe to run while other commands work.
   layrs identity [--actor ACTOR_ID [--device DEVICE_ID] [--name NAME]]
   layrs history STEP_OR_REFERENCE [--path PATH] [--actor ACTOR_ID] [--since RFC3339] [--until RFC3339] [--limit N] [--cursor JSON]
   layrs replay STEP_OR_REFERENCE [--mainline PARENT] [--preview]

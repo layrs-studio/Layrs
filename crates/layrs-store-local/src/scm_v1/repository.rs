@@ -532,9 +532,9 @@ impl NativeScmRepository {
                             .map(|stats| (publication.inline.is_some(), stats))
                     });
                 let due = compact
-                    && cas
-                        .compact_catalog()
-                        .is_some_and(|catalog| catalog.consolidation_due(added));
+                    && cas.compact_catalog().is_some_and(|catalog| {
+                        catalog.consolidation_due(added, cas.consolidation_budget())
+                    });
                 drop(cas);
                 if due {
                     let after_commit = || {

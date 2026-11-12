@@ -33,6 +33,170 @@ const FAILURES_BEFORE_PAUSE: u64 = 2;
 const FAILURE_PAUSE_MS: u64 = 60 * 60 * 1000;
 /// The most bytes a consolidation note may hold.
 const NOTE_MAX_BYTES: u64 = 64 * 1024;
+/// Under `metadata/`: held exclusively by the one maintenance pass running
+/// (council s17, B2b).
+const MAINTENANCE_LOCK: &str = "maintenance.lock";
+
+/// What a maintenance pass did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceOutcome {
+    /// Another pass holds the maintenance lock.
+    Busy,
+    /// No group of pack files to consolidate (or not a compact Store).
+    NothingToDo,
+    /// The candidates changed while their pack was built: nothing was
+    /// published, the built file is removed.
+    Abandoned,
+    /// `packs` registered packs were written into one.
+    Consolidated { packs: usize },
+}
+
+/// Consolidates the pack files a batch's own consolidation leaves out
+/// (those above its budgets), as `git maintenance` repacks (council s17,
+/// B2b). One pass at a time. The group is chosen in a short shared session;
+/// the new pack is built and verified with no Store lock, under a temporary
+/// name orphan collection ignores; then the exclusive session checks every
+/// candidate is still registered as it was, publishes the pack and registers
+/// it with the exact admission remap of `register` (reading the bitmaps as
+/// they are then, so admissions made meanwhile are kept). A crash before
+/// that commit leaves only the temporary file, removed by the next pass.
+pub fn maintain(root: impl AsRef<std::path::Path>) -> Result<MaintenanceOutcome, String> {
+    maintain_pausing(root.as_ref(), &mut || Ok(()))
+}
+
+/// Test support: `maintain`, running `between` once the pack is built and
+/// before the exclusive session.
+#[cfg(any(test, feature = "test-support"))]
+pub fn maintain_with_pause(
+    root: impl AsRef<std::path::Path>,
+    between: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MaintenanceOutcome, String> {
+    maintain_pausing(root.as_ref(), between)
+}
+
+fn maintain_pausing(
+    root: &std::path::Path,
+    between: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MaintenanceOutcome, String> {
+    let _span = crate::perf::span("store.maintenance");
+    // The group, from a short shared session.
+    let (cas, catalog, candidates, lock) = {
+        let store = super::open(root).map_err(|error| error.to_string())?;
+        if !store.compact() {
+            return Ok(MaintenanceOutcome::NothingToDo);
+        }
+        let metadata = store.layout().metadata_dir().to_path_buf();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(metadata.join(MAINTENANCE_LOCK))
+            .map_err(|error| error.to_string())?;
+        if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+            return Ok(MaintenanceOutcome::Busy);
+        }
+        let cas = NativeCas::open_lazy(&store).map_err(|error| error.to_string())?;
+        cas.remove_stale_maintenance_packs()
+            .map_err(|error| error.to_string())?;
+        let catalog = cas
+            .store_catalog(&store)
+            .map_err(|error| error.to_string())?;
+        let skipped = skipped_at(&metadata);
+        let excluded: Vec<usize> = catalog
+            .packs()
+            .iter()
+            .enumerate()
+            .filter(|(_, pack)| {
+                pack.name()
+                    .to_str()
+                    .is_some_and(|name| skipped.contains(name))
+            })
+            .map(|(position, _)| position)
+            .collect();
+        let candidates = catalog.maintenance_candidates(&excluded);
+        (cas, catalog, candidates, lock)
+    };
+    if candidates.len() < 2 {
+        return Ok(MaintenanceOutcome::NothingToDo);
+    }
+    // The pack, with no Store lock held.
+    let wanted: Vec<_> = candidates
+        .iter()
+        .map(|&position| {
+            let pack = &catalog.packs()[position];
+            (pack.seq, pack.name().to_os_string(), pack.digest())
+        })
+        .collect();
+    let built = match cas.build_maintenance(&catalog, &candidates) {
+        Ok(built) => built,
+        Err(failure) => {
+            // A batch may have retired a candidate meanwhile and collected
+            // its file: that is a moved candidate, not a failure.
+            let store = super::open(root).map_err(|error| error.to_string())?;
+            let current = NativeCas::open_lazy(&store)
+                .and_then(|cas| cas.store_catalog(&store))
+                .map_err(|error| error.to_string())?;
+            if !all_registered(current.packs(), &wanted) {
+                crate::perf::count("store.maintenance_abandoned", 1);
+                return Ok(MaintenanceOutcome::Abandoned);
+            }
+            return Err(failure.error.to_string());
+        }
+    };
+    drop(catalog);
+    between()?;
+    // Published and registered by the exclusive session, if nothing moved.
+    let store = super::open_exclusive(root).map_err(|error| error.to_string())?;
+    let writer = NativeCas::open_exclusive(&store).map_err(|error| error.to_string())?;
+    let current = writer
+        .compact_catalog()
+        .cloned()
+        .ok_or("a compact Store has no registered catalog")?;
+    if !all_registered(current.packs(), &wanted) {
+        crate::perf::count("store.maintenance_abandoned", 1);
+        return Ok(MaintenanceOutcome::Abandoned);
+    }
+    let consolidation = writer
+        .publish_maintenance(built)
+        .map_err(|failure| failure.error.to_string())?;
+    register(&store, &consolidation)?;
+    let retired: Vec<_> = consolidation
+        .packs
+        .iter()
+        .map(|pack| pack.name.clone())
+        .collect();
+    writer.forget_packs(&retired);
+    drop(writer);
+    // Opening the CAS again removes the retired files.
+    drop(NativeCas::open_exclusive(&store).map_err(|error| error.to_string())?);
+    drop(lock);
+    crate::perf::count("store.maintenance_packs", candidates.len() as u64);
+    Ok(MaintenanceOutcome::Consolidated {
+        packs: candidates.len(),
+    })
+}
+
+/// Whether every `(seq, name, digest)` of `wanted` is still registered as it
+/// was.
+fn all_registered(
+    packs: &[super::cas::compact::RegisteredPack],
+    wanted: &[(i64, std::ffi::OsString, [u8; 32])],
+) -> bool {
+    wanted.iter().all(|(seq, name, digest)| {
+        packs.iter().any(|pack| {
+            pack.seq == *seq && pack.name() == name.as_os_str() && pack.digest() == *digest
+        })
+    })
+}
+
+/// The packs consolidation left out (`SKIPPED_FILE`), from the metadata
+/// directory itself (a maintenance pass holds no exclusive session there).
+fn skipped_at(metadata: &std::path::Path) -> BTreeSet<String> {
+    read_note_at(metadata, SKIPPED_FILE)
+        .map(|text| text.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
 
 /// Consolidates the Store's packs if due. Returns the number of packs
 /// consolidated (0 when none was due). `after_commit` runs right after the
@@ -90,7 +254,12 @@ fn recent_failures(store: &NativeStoreExclusive) -> Option<(u64, u64)> {
 /// A note under `metadata/`, read without following links: a regular file
 /// of at most `NOTE_MAX_BYTES`, else absent (council s6 r3).
 fn read_note(store: &NativeStoreExclusive, name: &str) -> Option<String> {
-    let path = store.layout().metadata_dir().join(name);
+    read_note_at(store.layout().metadata_dir(), name)
+}
+
+/// `read_note` from the metadata directory `metadata`.
+fn read_note_at(metadata: &std::path::Path, name: &str) -> Option<String> {
+    let path = metadata.join(name);
     let metadata = std::fs::symlink_metadata(&path).ok()?;
     if !metadata.is_file() || metadata.len() > NOTE_MAX_BYTES {
         return None;
@@ -151,7 +320,7 @@ fn consolidate(
         }
     };
     for _ in 0..MAX_ATTEMPTS {
-        let candidates = catalog.consolidation_candidates(&excluded);
+        let candidates = catalog.consolidation_candidates(&excluded, cas.consolidation_budget());
         if candidates.len() < 2 {
             return Ok(0);
         }

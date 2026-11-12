@@ -94,6 +94,11 @@ fn parses_compact() {
     );
     assert!(parse_args(["compact", "--delete-history"]).is_err());
     assert!(parse_args(["compact", "extra"]).is_err());
+    assert_eq!(
+        parse_args(["maintenance"]).unwrap().command,
+        CliCommand::Maintenance
+    );
+    assert!(parse_args(["maintenance", "extra"]).is_err());
 }
 
 #[test]

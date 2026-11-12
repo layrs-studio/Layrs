@@ -224,3 +224,34 @@ fn cli_compacts_from_nested_checkout_and_resumes_a_fenced_store_without_losing_h
     run(&fixture.0, &["doctor"], true);
     run(&fixture.0, &["compact", "--resume"], false);
 }
+
+/// `layrs maintenance` runs one pack maintenance pass on the Store a
+/// checkout uses, from a secondary worktree too (council s17, B2b).
+#[test]
+fn cli_maintenance_runs_a_pass_on_the_checkout_store() {
+    let fixture = Fixture::new();
+    let (primary, secondary) = fixture.workspaces();
+    let primary = primary.checkout_root().unwrap();
+    let secondary = secondary.checkout_root().unwrap();
+    for n in 0..4 {
+        fs::write(primary.join(format!("f{n}")), format!("content {n}")).unwrap();
+        run(&primary, &["step"], true);
+    }
+    for root in [&primary, &secondary] {
+        let data = run(root, &["maintenance"], true);
+        assert!(
+            matches!(
+                data["status"].as_str(),
+                Some("nothingToDo" | "consolidated")
+            ),
+            "{data}"
+        );
+    }
+    run(&primary, &["status"], true);
+    run(&secondary, &["status"], true);
+    assert!(
+        run(&primary, &["doctor"], true)["findings"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+}

@@ -18,9 +18,10 @@ use layrs_store::scm::{
 };
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
-    NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
-    existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing, held_pack_files, init,
-    open, open_exclusive, set_inline_pack_limit,
+    MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
+    RepositoryFaultPoint, existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing,
+    held_pack_files, init, maintain, maintain_with_pause, open, open_exclusive,
+    set_consolidation_budget, set_inline_pack_limit,
 };
 use rusqlite::Connection;
 
@@ -1918,6 +1919,194 @@ fn a_lost_content_only_pack_does_not_block_an_unrelated_step() {
     NativeScmRepository::new(&root.0)
         .apply_batch(&admit(objects, "new-step"))
         .unwrap();
+}
+
+/// A Store whose pack files all exceed the in-batch budget (forced tiny
+/// here), as packs written past 64 MiB do: one pack per batch, never
+/// consolidated by a batch (council s17, B2a), each of `files` captured in
+/// its own batch.
+fn store_of_unmerged_packs(label: &str, count: usize) -> (TestRoot, Lane, Vec<File>) {
+    let root = TestRoot::new(label);
+    create(&root.0, label, "7");
+    set_consolidation_budget(&root.0, Some(1));
+    let (mut lane, batch) = Lane::begin(label, &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let mut files = Vec::new();
+    for n in 0..count {
+        let next = file(
+            &format!("f{n}.txt"),
+            format!("{label} content number {n}").as_bytes(),
+            Recipe::Whole,
+        );
+        files.push(next.clone());
+        repository
+            .apply_batch(&lane.capture(&files, file_objects(&[next])))
+            .unwrap();
+    }
+    drop(repository);
+    assert!(
+        registered_packs(&root.0).len() > count,
+        "batches consolidated"
+    );
+    (root, lane, files)
+}
+
+fn maintenance_leftovers(root: &Path) -> usize {
+    fs::read_dir(root.join("objects/packs"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".maint-")
+        })
+        .count()
+}
+
+/// A maintenance pass writes the pack files batches leave out into one,
+/// built outside the exclusive lock and registered with the exact admission
+/// remap (council s17, B2b): everything stays readable and admitted, fsck
+/// is clean, and a second pass has nothing to do.
+#[test]
+fn maintenance_consolidates_the_packs_batches_leave_out() {
+    let (root, lane, files) = store_of_unmerged_packs("maintenance", 7);
+    let before = registered_packs(&root.0).len();
+    let MaintenanceOutcome::Consolidated { packs } = maintain(&root.0).unwrap() else {
+        panic!("nothing consolidated");
+    };
+    assert!(packs >= 2);
+    assert_eq!(registered_packs(&root.0).len(), before - packs + 1);
+    assert_eq!(maintenance_leftovers(&root.0), 0);
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    for file in &files {
+        assert_eq!(
+            repository.get_chunk(file.chunks[0].id()).unwrap().as_ref(),
+            Some(&file.chunks[0])
+        );
+        assert!(
+            repository
+                .object_admitted_metadata(
+                    &StoreObjectId::ChunkRaw(file.chunks[0].id().clone()),
+                    lane.space.id()
+                )
+                .unwrap()
+        );
+    }
+    drop(repository);
+    assert_fsck_clean(&root.0);
+    let again = maintain(&root.0).unwrap();
+    assert!(
+        matches!(
+            again,
+            MaintenanceOutcome::NothingToDo | MaintenanceOutcome::Consolidated { .. }
+        ),
+        "{again:?}"
+    );
+}
+
+/// Admissions made while the maintenance pack is built are kept: the
+/// registration remaps the bitmaps as they are then (council s17, B2b).
+#[test]
+fn maintenance_keeps_admissions_made_while_it_builds() {
+    let (root, _lane, files) = store_of_unmerged_packs("maintenance-admit", 6);
+    let (other, batch) = Lane::begin("maintenance-other", &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    let chunk = files[0].chunks[0].clone();
+    let admit = WriteBatch::new(
+        TransactionId::new("transaction:maintenance-admit").unwrap(),
+        vec![CanonicalObject::ChunkRaw(chunk.clone())],
+        vec![],
+        vec![SpaceObjectAdmission::new(
+            other.space.id().clone(),
+            StoreObjectId::ChunkRaw(chunk.id().clone()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    let outcome = maintain_with_pause(&root.0, &mut || {
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&admit)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    assert!(
+        matches!(outcome, MaintenanceOutcome::Consolidated { .. }),
+        "{outcome:?}"
+    );
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    assert!(
+        repository
+            .object_admitted_metadata(
+                &StoreObjectId::ChunkRaw(chunk.id().clone()),
+                other.space.id()
+            )
+            .unwrap()
+    );
+    drop(repository);
+    assert_fsck_clean(&root.0);
+}
+
+/// Candidates retired while the pack is built (a batch's consolidation
+/// took them) abandon the pass: nothing is published and the built file is
+/// removed (council s17, B2b).
+#[test]
+fn maintenance_abandons_a_pack_whose_candidates_moved() {
+    let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-moved", 6);
+    let outcome = maintain_with_pause(&root.0, &mut || {
+        // The default budget again: the next batch consolidates them all.
+        set_consolidation_budget(&root.0, None);
+        let next = file("late.txt", b"a late file", Recipe::Whole);
+        files.push(next.clone());
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&lane.capture(&files, file_objects(&[next])))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    assert_eq!(outcome, MaintenanceOutcome::Abandoned);
+    assert_eq!(maintenance_leftovers(&root.0), 0);
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    for file in &files {
+        assert_eq!(
+            repository.get_chunk(file.chunks[0].id()).unwrap().as_ref(),
+            Some(&file.chunks[0])
+        );
+    }
+    drop(repository);
+    assert_fsck_clean(&root.0);
+}
+
+/// One pass at a time: a pass started while another builds is `Busy`. A
+/// crashed pass's temporary pack is removed by the next one (council s17,
+/// B2b).
+#[test]
+fn maintenance_runs_one_pass_at_a_time_and_cleans_a_crashed_one() {
+    let (root, _lane, _files) = store_of_unmerged_packs("maintenance-busy", 5);
+    let crashed = root.0.join("objects/packs/.maint-crashed.tmp");
+    fs::write(&crashed, b"a pack a crashed pass left").unwrap();
+    let mut inner = None;
+    let outcome = maintain_with_pause(&root.0, &mut || {
+        inner = Some(maintain(&root.0)?);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(inner, Some(MaintenanceOutcome::Busy));
+    assert!(
+        matches!(outcome, MaintenanceOutcome::Consolidated { .. }),
+        "{outcome:?}"
+    );
+    assert!(!crashed.exists());
+    assert_eq!(maintenance_leftovers(&root.0), 0);
+    assert_fsck_clean(&root.0);
 }
 
 /// fsck checks every readable pack's keys row against its index (council

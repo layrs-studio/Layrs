@@ -42,7 +42,12 @@ pub use cas::{
     PreparedObject, PutItem,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use cas::{forget_loaded_packs, held_pack_files, set_inline_pack_limit};
+pub use cas::{
+    forget_loaded_packs, held_pack_files, set_consolidation_budget, set_inline_pack_limit,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use consolidation::maintain_with_pause;
+pub use consolidation::{MaintenanceOutcome, maintain};
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
     NativeFsck, ProjectionAction, ProjectionRebuildPlan, fsck, fsck_existing,
