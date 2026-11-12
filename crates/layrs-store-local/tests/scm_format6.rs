@@ -2327,7 +2327,7 @@ fn large_inline_packs_merge_by_size_into_a_file() {
     drop(repository);
     // Seven packs over 1 MiB: merged into one pack file.
     assert_eq!(packs(&root.0).len(), 1);
-    assert!(inline_rows(&root.0) < 7);
+    assert_eq!(inline_rows(&root.0), 0);
     let answers = reader_answers(&root.0, &files, lane.space.id());
     assert!(
         answers

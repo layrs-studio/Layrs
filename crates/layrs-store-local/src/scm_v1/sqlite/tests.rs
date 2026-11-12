@@ -554,16 +554,23 @@ fn a_writer_takes_back_a_linked_database_and_never_writes_through_it() {
         .unwrap();
     assert_eq!(count, 1);
     drop(reader);
-    // A linked WAL that holds frames is refused: they are the other
-    // link's too.
+    // A linked WAL that holds frames is copied too: the other link keeps
+    // its bytes, this Store folds in (here, discards as invalid) its own
+    // copy.
     fs::remove_file(&backup_wal).unwrap();
     if wal.exists() {
         fs::remove_file(&wal).unwrap();
     }
     fs::write(&backup_wal, vec![1_u8; 64]).unwrap();
     fs::hard_link(&backup_wal, &wal).unwrap();
-    assert!(checkpoint_orphaned_wal(&path, Duration::from_millis(100)).is_err());
+    checkpoint_orphaned_wal(&path, Duration::from_millis(100)).unwrap();
     assert_eq!(fs::read(&backup_wal).unwrap(), vec![1_u8; 64]);
+    assert_ne!(
+        super::super::guarded_vfs::link_count(&wal).unwrap(),
+        Some(2)
+    );
+    let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
+    validate_store_identity(&reader, &test_store_id()).unwrap();
 }
 
 /// Unix: a linked database taken back keeps its mode (a `0600` database

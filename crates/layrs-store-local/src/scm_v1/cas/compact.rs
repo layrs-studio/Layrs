@@ -1969,7 +1969,7 @@ impl RegisteredCatalog {
     /// manifest is reachable from its FileId (FileId sections, file records,
     /// loose manifests). Positive answers only: `false` also when the File
     /// has more placements than `max_manifests` (the exact path then
-    /// reports it); callers never ask a damaged catalog (the exact path then
+    /// reports it); a damaged catalog answers false itself (the exact path then
     /// reports it, council s14 r1).
     ///
     /// A file record's manifest bit is never set unless its alias rebuilt

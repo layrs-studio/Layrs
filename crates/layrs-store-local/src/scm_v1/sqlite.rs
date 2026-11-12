@@ -788,8 +788,13 @@ fn open_guarded_writer(path: &Path, flags: OpenFlags) -> Result<Connection> {
 ///   inherits the folder's access rules, as the database did when created.
 ///   A failed copy removes the staged file.
 /// - An empty `-wal`: its name is removed (SQLite makes a new one).
-/// - A `-wal` holding frames is refused: they belong to the database the
-///   other link also names.
+/// - A `-wal` holding frames: copied like the database, so the other link
+///   keeps its frames and this Store folds in its own copy (council s15
+///   r2).
+///
+/// A copy is staged beside its name, created `0600` on Unix, given the
+/// source's mode (and, where permitted, its owner) before it is published,
+/// and removed if the copy fails.
 fn take_back_linked_names(path: &Path) -> Result<()> {
     let _span = crate::perf::span("sqlite.take_back");
     let linked = |path: &Path| -> Result<bool> {
@@ -797,18 +802,20 @@ fn take_back_linked_names(path: &Path) -> Result<()> {
     };
     let wal = sidecar_path(path, "-wal");
     if linked(&wal)? {
-        if fs::symlink_metadata(&wal)?.len() != 0 {
-            return Err(ScmSchemaError::InvalidMetadata(format!(
-                "{} holds frames and has another hard link (a hard-link backup?): \
-                 copy the folder instead of linking it",
-                wal.display()
-            )));
+        if fs::symlink_metadata(&wal)?.len() == 0 {
+            fs::remove_file(&wal)?;
+        } else {
+            give_own_file(&wal, linked)?;
         }
-        fs::remove_file(&wal)?;
     }
-    if !linked(path)? {
-        return Ok(());
+    if linked(path)? {
+        give_own_file(path, linked)?;
     }
+    Ok(())
+}
+
+/// Replaces the name `path` with a copy of its bytes in a file of its own.
+fn give_own_file(path: &Path, linked: impl Fn(&Path) -> Result<bool>) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         ScmSchemaError::InvalidMetadata("database path has no parent directory".into())
     })?;
@@ -823,7 +830,14 @@ fn take_back_linked_names(path: &Path) -> Result<()> {
         let mut copy = create_private_file_no_follow(&staged)?;
         std::io::copy(&mut source, &mut copy)?;
         #[cfg(unix)]
-        copy.set_permissions(source.metadata()?.permissions())?;
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = source.metadata()?;
+            // Only root may give the copy another owner; anyone else already
+            // owns it as the original's owner would.
+            let _ = std::os::unix::fs::fchown(&copy, Some(metadata.uid()), Some(metadata.gid()));
+            copy.set_permissions(metadata.permissions())?;
+        }
         copy.sync_all()
     })();
     if let Err(error) = copied {

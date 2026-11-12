@@ -276,7 +276,7 @@ impl NativeClient {
         // the Worktree's Space (council s14 r2).
         if operation.space_id() != worktree.space_id() || view.space_id() != worktree.space_id() {
             return Err(NativeClientError::InvalidState(
-                "the Room's Operation belongs to another Space",
+                "the Room's Operation or View belongs to another Space",
             ));
         }
         let state = view

@@ -143,11 +143,15 @@ L'index est un cache :
     r1). Une base ou un `-wal` vide qui partage son fichier avec un autre
     lien (sauvegarde par liens physiques, `cp -al`) reçoit d'abord un
     fichier à lui : la base est copiée, synchronisée et renommée sur son nom,
-    le nom du `-wal` vide est retiré ; l'autre lien garde ses octets, comme
-    avec git. Un `-wal` lié qui contient des trames est refusé. Risques
-    acceptés : sous Unix, SQLite ne donne pas son descripteur, le nom est
-    revérifié après l'ouverture ; un nom remplacé entre les contrôles et
-    l'ouverture reste possible. Un `-wal` planté *avec des trames valides*
+    le nom du `-wal` vide est retiré, un `-wal` qui contient des trames est
+    copié lui aussi ; l'autre lien garde ses octets, comme avec git. Risques
+    acceptés : un nom remplacé entre le contrôle et l'ouverture reste
+    possible (sous Unix, SQLite ne donne pas son descripteur et le nom est
+    revérifié après ; sous Windows, un lien symbolique planté là pour un
+    `-wal` absent fait créer sa cible, vide, avant le refus : il faut le
+    privilège des liens symboliques). Ces garanties couvrent
+    `layrs.sqlite3` et `derived.sqlite3`, pas encore les autres bases ni le
+    fichier de verrou. Un `-wal` planté *avec des trames valides*
     est replié dans la base par le prochain écrivain, comme le ferait
     SQLite : un processus qui peut écrire dans `metadata/` peut aussi
     remplacer la base elle-même, ce n'est donc pas une élévation. La base

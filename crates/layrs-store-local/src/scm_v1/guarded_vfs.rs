@@ -21,10 +21,13 @@
 //!   of a linked `-wal` (council s15 r1). After, on Windows, the file SQLite
 //!   opened must be a regular file with a single link and no reparse point,
 //!   and its name, opened without following links, must be that same file
-//!   (its 128-bit file id): a name swapped for a link, or a hard link to a
-//!   file outside the Store, is refused. On Unix the name is checked again
-//!   after the open (a swap racing these checks stays possible; protected
-//!   links on Linux mitigate it); callers open with `SQLITE_OPEN_NOFOLLOW`,
+//!   (its 128-bit file id where the file system has one, else its 64-bit
+//!   index): a name swapped for a link, or a hard link to a file outside the
+//!   Store, is refused. On Unix the name is checked again after the open. A
+//!   name swapped between the first check and the open stays possible on
+//!   both systems (on Windows, a symlink planted there for an absent `-wal`
+//!   makes its target, empty, before the open is refused; planting one needs
+//!   the symlink privilege); callers open with `SQLITE_OPEN_NOFOLLOW`,
 //!   so SQLite refuses a path whose resolution follows a link. A read-only
 //!   open never writes.
 //!
@@ -290,21 +293,26 @@ unsafe fn opened_as_named(file: *mut ffi::sqlite3_file, name: *const c_char) -> 
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle,
         GetFileInformationByHandleEx,
     };
-    let info = |handle: *mut c_void| -> Option<(BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO)> {
+    // The 128-bit id when the file system answers it (ReFS ids do not fit
+    // 64 bits); some drivers (FAT, SMB, user-mode file systems) do not, and
+    // the 64-bit index is compared then (council s15 r2).
+    let info = |handle: *mut c_void| -> Option<(BY_HANDLE_FILE_INFORMATION, Option<FILE_ID_INFO>)> {
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
-        // SAFETY: `handle` is open for the calls; both outputs are writable
-        // and `id` is exactly `size_of::<FILE_ID_INFO>()` bytes.
-        let read = unsafe {
-            GetFileInformationByHandle(handle, &mut info) != 0
-                && GetFileInformationByHandleEx(
-                    handle,
-                    FileIdInfo,
-                    (&mut id as *mut FILE_ID_INFO).cast(),
-                    std::mem::size_of::<FILE_ID_INFO>() as u32,
-                ) != 0
+        // SAFETY: `handle` is open for the calls; both outputs are
+        // writable and `id` is exactly `size_of::<FILE_ID_INFO>()` bytes.
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return None;
+        }
+        let has_id = unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileIdInfo,
+                (&mut id as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            ) != 0
         };
-        read.then_some((info, id))
+        Some((info, has_id.then_some(id)))
     };
     // SAFETY: the file was just opened by the default VFS, whose methods
     // answer SQLITE_FCNTL_WIN32_GET_HANDLE with its HANDLE.
@@ -340,11 +348,21 @@ unsafe fn opened_as_named(file: *mut ffi::sqlite3_file, name: *const c_char) -> 
     let Some((named_info, named_id)) = info(named.as_raw_handle()) else {
         return false;
     };
+    let same = match (named_id, opened_id) {
+        (Some(named), Some(opened)) => {
+            named.VolumeSerialNumber == opened.VolumeSerialNumber
+                && named.FileId.Identifier == opened.FileId.Identifier
+        }
+        _ => {
+            named_info.dwVolumeSerialNumber == opened.dwVolumeSerialNumber
+                && named_info.nFileIndexHigh == opened.nFileIndexHigh
+                && named_info.nFileIndexLow == opened.nFileIndexLow
+        }
+    };
     opened.nNumberOfLinks == 1
         && opened.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
         && named_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && named_id.VolumeSerialNumber == opened_id.VolumeSerialNumber
-        && named_id.FileId.Identifier == opened_id.FileId.Identifier
+        && same
 }
 
 /// Elsewhere: the name, not followed, is still a regular file with one link.
@@ -627,6 +645,51 @@ mod tests {
         let plain = Connection::open(&path).unwrap();
         assert_eq!(value(&plain), 1);
         drop(plain);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Unix: a `-wal` hard-linked to a file outside is refused before
+    /// SQLite's Unix VFS opens it, which would give the outside file the
+    /// database's mode (council s15 r1, r2).
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_wal_is_refused_before_it_is_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp();
+        let path = root.join("store.sqlite3");
+        {
+            let plain = Connection::open(&path).unwrap();
+            plain
+                .query_row("PRAGMA journal_mode = WAL", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap();
+            plain.execute_batch("CREATE TABLE t (x);").unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let wal = root.join("store.sqlite3-wal");
+        let _ = fs::remove_file(&wal);
+        let secret = root.join("secret");
+        fs::write(&secret, b"").unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&secret, &wal).unwrap();
+        assert!(register());
+        let refused = (|| -> rusqlite::Result<i64> {
+            let connection = Connection::open_with_flags_and_vfs(
+                &path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                MAIN_AND_WAL,
+            )?;
+            connection.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |row| {
+                row.get::<_, String>(0)
+            })?;
+            connection.query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+        })();
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(
+            fs::metadata(&secret).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = fs::remove_dir_all(root);
     }
 

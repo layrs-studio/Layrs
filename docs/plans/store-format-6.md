@@ -354,8 +354,9 @@ part.
     files are removed when the CAS is opened exclusively again; a reader
     holding an older catalog reloads it when a pack it names is gone.
   - Inline packs (council s7 Q1, decided with Opus's design: Astra and Sol
-    judged it credible): a pack whose whole image is at most 64 KiB
-    (`LAYRS_CAS_INLINE_MAX`, 0 disables) is not a file. Its exact pack v2
+    judged it credible): a batch's pack whose whole image is at most
+    256 KiB (council s13 Q1; `LAYRS_CAS_INLINE_MAX`, 0 disables) is not a
+    file. Its exact pack v2
     image is a row of `cas_pack_inline` (pack_seq, image), inserted with
     its `cas_packs` row in the batch transaction: durable with the
     registration at the checked checkpoint, so the batch publishes no file
@@ -368,10 +369,11 @@ part.
     is declared (`cas_packs.stored_inline`): a missing image is corruption
     of that row, never read as a file, and a file carrying an inline pack's
     name is never that pack. A scrub reads the images from the database
-    now. Inline packs do not count toward the 6-pack trigger: at 8 they
-    merge together, as many as fit the consolidation budgets (on disk,
-    decompressed, reader limits; one that does not fit is skipped), inline
-    while the result fits, else into a pack file. An image is read only
+    now. Inline packs do not count toward the 6-pack trigger: at 8 of them
+    or 1 MiB together (council s13 Q1) they merge, as many as fit the
+    consolidation budgets (on disk, decompressed, reader limits; one that
+    does not fit is skipped), inline while the result is at most 64 KiB,
+    else into a pack file. An image is read only
     once its length is within the limit; only an error the stored bytes
     prove damages its pack, any other fails the catalog (retried). Orphan
     collection keeps every registered name, whatever form its row declares
