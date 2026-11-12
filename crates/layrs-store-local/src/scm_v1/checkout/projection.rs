@@ -47,6 +47,34 @@ pub fn validate_streaming_projection(entries: &[CheckoutProjectionEntry]) -> io:
     )
 }
 
+/// What a read-only observation (`status`) checks of a projection it never
+/// records: every rule `projection_tree_id` applies before building Trees
+/// (paths, entry count, depth, symlink targets, total size), without
+/// building them (council s12 r1).
+pub fn validate_observed_projection(entries: &[CheckoutProjectionEntry]) -> io::Result<()> {
+    if entries.len() > 100_000 {
+        return Err(invalid("checkout entry limit exceeded"));
+    }
+    validate_streaming_projection(entries)?;
+    let mut total = 0u64;
+    for entry in entries {
+        if entry.path.split('/').count() > 128 {
+            return Err(invalid("invalid checkout projection path"));
+        }
+        let length = match &entry.content {
+            CheckoutProjectionContent::File { byte_length, .. } => *byte_length,
+            CheckoutProjectionContent::Symlink { target } => {
+                Symlink::new(target).map_err(|e| invalid(&e.to_string()))?;
+                target.len() as u64
+            }
+        };
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| invalid("checkout size overflow"))?;
+    }
+    Ok(())
+}
+
 /// Content fingerprint of a projection (every path, kind, id, flag and
 /// length, unambiguously framed): the key of `projection_tree_id`'s memo.
 fn projection_fingerprint(entries: &[CheckoutProjectionEntry]) -> [u8; 32] {

@@ -176,7 +176,7 @@ impl NativeWorkspace {
             .ok_or(NativeClientError::Missing("base Step"))?
             .root_tree_id()
             .clone();
-        let bound = self.resolve_change_index(Some(store), &mut index, before);
+        let bound = self.resolve_change_index(Some(store), &mut index, before, None);
         drop(span);
         Ok(Some((index, root, bound)))
     }

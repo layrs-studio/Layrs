@@ -89,12 +89,27 @@ Une Room reconnaît un fichier inchangé **sans le relire**, avec un contrat
 L'index est un cache :
 
 - il est rangé, avec le cache de projections, dans une base SQLite de caches
-  dérivés (`metadata/derived.sqlite3`, sans synchronisation, journal de
-  retour arrière ; chaque valeur garde son encodage et sa somme de contrôle).
-  Une commande relit ce que la précédente vient d'écrire, et sur une machine
-  dont l'antivirus analyse en temps réel, ouvrir un fichier de données
-  fraîchement écrit coûte ~5 ms de plus qu'une page de cette base (mesuré en
-  novembre 2026) ;
+  dérivés (`metadata/derived.sqlite3`). Une commande relit ce que la
+  précédente vient d'écrire, et sur une machine dont l'antivirus analyse en
+  temps réel, ouvrir un fichier de données fraîchement écrit coûte ~5 ms de
+  plus qu'une page de cette base (mesuré en novembre 2026). Contrat de cette
+  base (conseil s12) :
+  - chaque valeur garde son encodage, sa liaison et sa somme de contrôle ; la
+    base n'est qu'un conteneur ;
+  - écritures sans synchronisation, journal en mémoire : aucun autre fichier
+    que la base n'est jamais écrit. Une base où traîne un fichier annexe
+    (`-journal`, `-wal`, `-shm`), ou qui n'est pas en mode retour arrière,
+    n'est jamais ouverte par un lecteur ; un écrivain retire d'abord ces noms
+    (retirer un nom n'écrit jamais dans le fichier qu'il désigne) ;
+  - tout accès vérifie le schéma exact (marqueur, version, deux tables, rien
+    d'autre) puis n'exécute que des requêtes fixes (`trusted_schema=OFF`,
+    mode défensif) ; une valeur est lue par la requête qui vérifie son type
+    et sa taille ;
+  - un écrivain ne remplace qu'une base prouvée étrangère ou abîmée ; une
+    base vide est initialisée sur place ; une base occupée, ou d'une version
+    plus récente de ce cache, est un défaut de cache et reste en place ;
+  - un index illisible (base occupée ou inutilisable) est lu vide et n'est
+    jamais réécrit par-dessus ;
 - s'il est illisible, tout est relu ;
 - il n'est écrit qu'après acceptation de la capture ;
 - une entrée ne naît que d'un contenu prouvé : soit haché par la capture, soit

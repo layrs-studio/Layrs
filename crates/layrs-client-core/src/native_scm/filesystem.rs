@@ -222,7 +222,13 @@ impl super::NativeWorkspace {
         let _span = layrs_store_local::perf::span("capture.indexed");
         // Entries written against a projection trust nothing until it is
         // supplied again (council s3, D1).
-        self.resolve_change_index(None, index, &base);
+        self.resolve_change_index(
+            None,
+            index,
+            &base,
+            refs.as_ref()
+                .map(|refs| refs as &dyn scm_v1::projection_cache::FileRefs),
+        );
         let index = &*index;
         // The base's admitted chunks only avoid spooling bytes the Store has.
         // With an index covering most of the base, few files are read: their

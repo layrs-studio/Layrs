@@ -425,7 +425,7 @@ impl CheckoutReader {
             if relist {
                 projection_tree_id(&scan.entries)?;
             } else {
-                super::validate_streaming_projection(&scan.entries)?;
+                super::validate_observed_projection(&scan.entries)?;
             }
         }
         self.directory.verify_path_identity()?;

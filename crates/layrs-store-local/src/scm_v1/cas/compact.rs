@@ -1752,8 +1752,10 @@ impl RegisteredCatalog {
             .index
             .files
             .get(usize::try_from(ordinal).ok()?)?;
-        let file_id = FileId::parse(pack2::digest_text(&record.file_id)).ok()?;
-        Some((file_id, u64::from(record.location.length)))
+        Some((
+            FileId::from_digest_bytes(&record.file_id),
+            u64::from(record.location.length),
+        ))
     }
 
     /// Every registered content object: explicit content records, the chunk

@@ -64,6 +64,7 @@ impl NativeWorkspace {
         store: Option<&layrs_store_local::scm_v1::NativeStoreOpen>,
         index: &mut layrs_store_local::scm_v1::change_index::ChangeIndex,
         base: &[CheckoutProjectionEntry],
+        known_refs: Option<&dyn layrs_store_local::scm_v1::projection_cache::FileRefs>,
     ) -> bool {
         use layrs_store_local::scm_v1::{change_index, projection_cache};
         let digest = change_index::projection_digest(base);
@@ -77,7 +78,13 @@ impl NativeWorkspace {
             return false;
         };
         // The cached projection names most files by their pack records:
-        // reading it needs the Store's catalog.
+        // reading it needs the Store's catalog, which a caller may hold.
+        if let Some(refs) = known_refs {
+            let cached = projection_cache::load(self.store_root(), &tree, Some(refs));
+            if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
+                return false;
+            }
+        }
         let opened;
         let store = match store {
             Some(store) => store,
@@ -106,17 +113,24 @@ impl NativeWorkspace {
         };
         index.resolve(&projection);
         if cached.as_ref() != Some(&projection) {
-            if cached.is_some() {
-                projection_cache::remove(self.store_root(), &tree);
-            }
-            if let Ok(projection_tree) = projection_tree_id(&projection) {
-                projection_cache::save(
+            match projection_tree_id(&projection) {
+                // A wrong value is replaced in one write (council s12 r1).
+                Ok(projection_tree) if cached.is_some() => projection_cache::replace(
                     self.store_root(),
                     &tree,
                     &projection_tree,
                     &projection,
                     refs,
-                );
+                ),
+                Ok(projection_tree) => projection_cache::save(
+                    self.store_root(),
+                    &tree,
+                    &projection_tree,
+                    &projection,
+                    refs,
+                ),
+                Err(_) if cached.is_some() => projection_cache::remove(self.store_root(), &tree),
+                Err(_) => {}
             }
         }
         false
@@ -284,7 +298,14 @@ pub(super) fn read_admitted_step_projection(
                 layrs_store_local::perf::count("projection_cache.sampled_ok", 1);
             } else {
                 layrs_store_local::perf::count("projection_cache.mismatch", 1);
-                projection_cache::remove(root, root_tree);
+                // Replaced in one write (council s12 r1): a busy database
+                // cannot leave the wrong value answering.
+                match projection_tree_id(&computed) {
+                    Ok(projection) => {
+                        projection_cache::replace(root, root_tree, &projection, &computed, refs)
+                    }
+                    Err(_) => projection_cache::remove(root, root_tree),
+                }
             }
             return Ok(computed);
         }

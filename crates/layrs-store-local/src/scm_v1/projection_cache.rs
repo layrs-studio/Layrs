@@ -192,12 +192,13 @@ fn read(
     // Taken before the read: bytes read before a projection is forgotten
     // are never remembered after it (council s9 r2).
     let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
-    let bytes = {
+    let fetched = {
         let _span = crate::perf::span("projection_cache.read_file");
-        cache.get(root_tree.as_str(), MAX_BYTES)?
+        cache.fetch(root_tree.as_str(), MAX_BYTES)
     };
-    *stored = true;
-    verified(bytes, root_tree, generation, decoding)
+    // A value there but unreadable is removed like a damaged one.
+    *stored = !matches!(fetched, Ok(None));
+    verified(fetched.ok()??, root_tree, generation, decoding)
 }
 
 /// `bytes` parsed if their checksum holds; a complete projection's bytes are
@@ -483,14 +484,44 @@ pub fn save(
     entries: &[CheckoutProjectionEntry],
     refs: Option<&dyn FileRefs>,
 ) {
+    record(store_root, root_tree, projection_tree, entries, refs, false);
+}
+
+/// Replaces the cached projection of `root_tree` (found to differ from its
+/// recomputation) with `entries`, in one write: unlike a removal followed by
+/// `save`, a busy database cannot leave the wrong value answering.
+pub fn replace(
+    store_root: &Path,
+    root_tree: &TreeId,
+    projection_tree: &TreeId,
+    entries: &[CheckoutProjectionEntry],
+    refs: Option<&dyn FileRefs>,
+) {
+    // Forgotten first (council s9 r3): this process never answers a delta
+    // from the wrong bytes again, written or not.
+    forget_complete(root_tree);
+    record(store_root, root_tree, projection_tree, entries, refs, true);
+}
+
+fn record(
+    store_root: &Path,
+    root_tree: &TreeId,
+    projection_tree: &TreeId,
+    entries: &[CheckoutProjectionEntry],
+    refs: Option<&dyn FileRefs>,
+    replacing: bool,
+) {
     let _span = crate::perf::span("projection_cache.save");
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
+        if replacing {
+            remove(store_root, root_tree);
+        }
         return;
     }
     let Some(cache) = Projections::open(store_root, Access::Create) else {
         return;
     };
-    if cache.touch(root_tree.as_str()) {
+    if !replacing && cache.touch(root_tree.as_str()) {
         // Recorded already: only marked recent, so pruning keeps it.
         return;
     }
@@ -500,11 +531,13 @@ pub fn save(
     };
     let mut packs: Vec<[u8; 32]> = Vec::new();
     let mut form = Vec::with_capacity(16 + entries.len() * 16);
+    // Taken before the base is read (council s9 r2, s12 r1): bytes read
+    // before a projection is forgotten are never remembered after it.
+    let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
     let delta = cache
-        .newest_complete(MAX_BYTES)
+        .newest_complete(MAX_BYTES, refs.is_some())
         .and_then(|(base_root, bytes)| {
             let base_root = TreeId::parse(base_root).ok()?;
-            let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
             let base = verified(bytes, &base_root, generation, &decoding)?;
             let Form::Complete(base_entries) = &base.form else {
                 return None;
@@ -558,7 +591,12 @@ pub fn save(
     let checksum = blake3::hash(&body);
     body.extend_from_slice(checksum.as_bytes());
     if cache
-        .insert(root_tree.as_str(), base.as_deref(), &body)
+        .insert(
+            root_tree.as_str(),
+            base.as_deref(),
+            !packs.is_empty(),
+            &body,
+        )
         .is_err()
     {
         return;
@@ -835,13 +873,13 @@ mod tests {
         let other = TreeId::parse(format!("blake3:{}", blake3::hash(b"other"))).unwrap();
         let cache = Projections::open(&root, Access::Read).unwrap();
         let bytes = cache.get(tree.as_str(), MAX_BYTES).unwrap();
-        cache.insert(other.as_str(), None, &bytes).unwrap();
+        cache.insert(other.as_str(), None, false, &bytes).unwrap();
         assert_eq!(load(&root, &other, None), None);
         // Any flipped byte fails the checksum, and the value is removed.
         let mut damaged = bytes.clone();
         let middle = damaged.len() / 2;
         damaged[middle] ^= 1;
-        cache.insert(tree.as_str(), None, &damaged).unwrap();
+        cache.insert(tree.as_str(), None, false, &damaged).unwrap();
         assert_eq!(load(&root, &tree, None), None);
         assert!(cache.get(tree.as_str(), MAX_BYTES).is_none());
         save(&root, &tree, &tree, &entries(), None);

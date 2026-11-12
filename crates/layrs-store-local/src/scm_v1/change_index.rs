@@ -143,6 +143,9 @@ pub struct ChangeIndex {
     margin_nanos: i64,
     entries: BTreeMap<String, Slot>,
     binding: Option<Binding>,
+    /// Loaded empty because the stored index could not be read (a busy or
+    /// unusable cache database): never saved over it (council s12 r1).
+    unreadable: bool,
 }
 
 /// The projection an index is bound to: its `projection_digest`, which
@@ -291,6 +294,7 @@ impl ChangeIndex {
             margin_nanos: margin_nanos(checkout_root),
             entries: BTreeMap::new(),
             binding: None,
+            unreadable: false,
         }
         .save(store_root)
     }
@@ -317,6 +321,7 @@ impl ChangeIndex {
             margin_nanos: COARSE_MARGIN_NANOS,
             entries: BTreeMap::new(),
             binding: None,
+            unreadable: false,
         };
         let read = crate::perf::span("change_index.read");
         let bytes = match super::derived_cache::change_index_get(
@@ -325,7 +330,12 @@ impl ChangeIndex {
             MAX_INDEX_BYTES,
         ) {
             super::derived_cache::Stored::Present(bytes) => Some(bytes),
-            super::derived_cache::Stored::Unreadable => None,
+            super::derived_cache::Stored::Unreadable => {
+                return Some(Self {
+                    unreadable: true,
+                    ..empty()
+                });
+            }
             super::derived_cache::Stored::Missing => {
                 let path = Self::file(store_root, worktree_id);
                 let metadata = fs::symlink_metadata(&path).ok()?;
@@ -364,6 +374,7 @@ impl ChangeIndex {
                 margin_nanos: document.margin_nanos,
                 entries: document.entries,
                 binding: document.binding,
+                unreadable: false,
             },
             None => empty(),
         })
@@ -374,6 +385,10 @@ impl ChangeIndex {
     /// capture read more (a torn value fails its checksum).
     pub fn save(&self, store_root: &Path) -> io::Result<()> {
         let _span = crate::perf::span("change_index.save");
+        if self.unreadable {
+            crate::perf::count("change_index.save_skipped_unreadable", 1);
+            return Ok(());
+        }
         let bytes = encode_bound(self);
         super::derived_cache::change_index_put(store_root, self.worktree_id.as_str(), &bytes)?;
         let legacy = Self::file(store_root, &self.worktree_id);
@@ -384,7 +399,7 @@ impl ChangeIndex {
     }
 
     pub fn remove(store_root: &Path, worktree_id: &WorktreeId) -> io::Result<()> {
-        super::derived_cache::change_index_delete(store_root, worktree_id.as_str())?;
+        super::derived_cache::change_index_delete(store_root, worktree_id.as_str());
         match fs::remove_file(Self::file(store_root, worktree_id)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -579,6 +594,7 @@ impl ChangeIndex {
             margin_nanos: self.margin_nanos,
             entries: BTreeMap::new(),
             binding: self.binding.clone(),
+            unreadable: self.unreadable,
         }
     }
     pub fn len(&self) -> usize {
