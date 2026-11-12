@@ -633,7 +633,30 @@ fn whole_files_and_their_packs_stay_in_format_7() {
     let store = open(&root.0).unwrap();
     assert_eq!(store.format_version(), 6);
     let reader = NativeScmReader::new(&store).unwrap();
+    // This process cached the pack while it wrote it.
     assert!(reader.get_chunk(files[0].chunks[0].id()).is_err());
+    drop(reader);
+    drop(store);
+    // A copy elsewhere: the pack is loaded cold, from its file.
+    let cold = TestRoot::new("whole-marker-cold");
+    copy_tree(&root.0, &cold.0);
+    let store = open(&cold.0).unwrap();
+    assert_eq!(store.format_version(), 6);
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(reader.get_chunk(files[0].chunks[0].id()).is_err());
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
 }
 
 /// A File kept whole in one pack and as a v1 file record in another (its
@@ -767,6 +790,45 @@ fn a_whole_chunk_alone_or_replacing_a_damaged_record_gets_its_record() {
                 .clone()
         ]
     );
+}
+
+/// A v1 manifest naming a whole chunk (the same bytes, its file-domain
+/// id) is refused: a chunk is checked in the domain its manifest's recipe
+/// declares, not in the one its stored copy has (council s16 r1).
+#[test]
+fn a_v1_manifest_naming_a_whole_chunk_is_refused() {
+    let root = TestRoot::new("v1-names-whole");
+    create(&root.0, "v1-names-whole", "7");
+    let whole = file("a.txt", b"alpha bytes", Recipe::Whole);
+    let mut files = vec![whole.clone()];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let wrong = FileManifest::new(
+        whole.manifest.file_id().clone(),
+        whole.manifest.byte_length(),
+        ChunkingDescriptor::single(),
+        whole.manifest.chunks().to_vec(),
+    )
+    .unwrap();
+    let forged = File {
+        name: "b.txt".into(),
+        chunks: whole.chunks.clone(),
+        manifest: wrong.clone(),
+    };
+    files.push(forged.clone());
+    let batch = lane.capture(&files, vec![CanonicalObject::FileManifest(wrong.clone())]);
+    let refused = repository.apply_batch(&batch).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("admission rejected for FileManifest"),
+        "{refused}"
+    );
+    drop(repository);
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(reader.get_file_manifest(wrong.id()).unwrap().is_none());
 }
 
 struct NoCasFault;

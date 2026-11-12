@@ -316,11 +316,11 @@ impl NativeScmReader<'_> {
                 // A file record's chunk is in its index entry; an explicit
                 // manifest is decoded (no projection rows in format 6).
                 let chunks: Vec<ChunkId> = match entry.placement {
-                    Placement::Manifest { .. } => catalog
-                        .file_record_chunk(file)
-                        .map_err(cas_read_error)?
-                        .into_iter()
-                        .collect(),
+                    // That record's own chunk: a File may have a whole and
+                    // a v1 record in different packs (council s16 r1).
+                    Placement::Manifest { pack, file: record } => {
+                        vec![catalog.alias_chunk(pack, record).map_err(cas_read_error)?]
+                    }
                     // A manifest the catalog lists must read: absence here
                     // is corruption, never an empty chunk list.
                     _ => self

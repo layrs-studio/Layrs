@@ -709,14 +709,22 @@ fn decode(
             "pack chunk aliases are not strictly sorted",
         ));
     }
-    // A ChunkId names one record: never a whole record's FileId as well.
+    // A ChunkId names one record: never a whole record's FileId as well,
+    // whether the other is a file record's chunk or an explicit chunk.
+    let whole_named = |chunk: &[u8; 32]| {
+        files
+            .binary_search_by(|record| record.file_id.cmp(chunk))
+            .is_ok_and(|found| files[found].recipe == Recipe::Whole)
+    };
+    let explicit_chunks = runs
+        .iter()
+        .find(|run| run.kind == kind_code(StoreObjectKind::ChunkRaw))
+        .map_or(&ids[0..0], |run| &ids[run.start..run.end]);
     if version == PACK2_VERSION_WHOLE
-        && chunk_order.iter().any(|file| {
-            let chunk = &files[*file as usize].chunk_id;
-            files
-                .binary_search_by(|record| record.file_id.cmp(chunk))
-                .is_ok_and(|found| files[found].recipe == Recipe::Whole)
-        })
+        && (chunk_order
+            .iter()
+            .any(|file| whole_named(&files[*file as usize].chunk_id))
+            || explicit_chunks.iter().any(whole_named))
     {
         return Err(pack2_corruption(
             path,
@@ -1306,14 +1314,22 @@ impl Pack2Builder {
                 .chunk_id
                 .cmp(&self.files[*right as usize].0.chunk_id)
         });
-        if chunk_order.windows(2).any(|pair| {
-            self.files[pair[0] as usize].0.chunk_id == self.files[pair[1] as usize].0.chunk_id
-        }) || chunk_order.iter().any(|file| {
-            let chunk = &self.files[*file as usize].0.chunk_id;
+        let whole_named = |chunk: &[u8; 32]| {
             self.files
                 .binary_search_by(|record| record.0.file_id.cmp(chunk))
                 .is_ok_and(|found| self.files[found].0.recipe == Recipe::Whole)
-        }) {
+        };
+        let chunk_code = kind_code(StoreObjectKind::ChunkRaw);
+        if chunk_order.windows(2).any(|pair| {
+            self.files[pair[0] as usize].0.chunk_id == self.files[pair[1] as usize].0.chunk_id
+        }) || chunk_order
+            .iter()
+            .any(|file| whole_named(&self.files[*file as usize].0.chunk_id))
+            || self
+                .explicit
+                .iter()
+                .any(|entry| entry.0 == chunk_code && whole_named(&entry.1))
+        {
             return Err(invalid("two file records share a chunk"));
         }
         for file in &chunk_order {

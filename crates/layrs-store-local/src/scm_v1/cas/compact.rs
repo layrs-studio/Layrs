@@ -790,6 +790,7 @@ impl NativeCas {
 
     /// Copies one record of `loaded` from its decompressed block `raw` into
     /// `open`, verified against its id, unless an equal one was copied.
+    #[allow(clippy::too_many_arguments)]
     fn copy_record(
         &self,
         open: &mut OpenPack,
@@ -1816,23 +1817,19 @@ impl RegisteredCatalog {
         self.complete(found.into_values().collect())
     }
 
-    /// The file record of `file_id` in some registered pack: its chunk id
-    /// and alias placements (phase 3), for index-only chunk answers.
-    pub(crate) fn file_record_chunk(&self, file_id: &FileId) -> CasResult<Option<ChunkId>> {
-        let Some(raw) =
-            pack2::hex_digest(file_id.as_str().strip_prefix("blake3:").unwrap_or_default())
-        else {
-            return Ok(None);
-        };
-        for registered in &self.packs {
-            if let Some(file) = registered.pack.index.find_file(&raw) {
-                return registered
-                    .pack
-                    .alias_ids(file)
-                    .map(|(_, chunk)| Some(chunk));
-            }
+    /// The chunk the file record `file` of the registered pack at `pack`
+    /// stands for.
+    pub(crate) fn alias_chunk(&self, pack: usize, file: usize) -> CasResult<ChunkId> {
+        let registered = self.packs.get(pack).ok_or_else(|| {
+            pack2::pack2_corruption(&self_path(), "file record of an unknown pack")
+        })?;
+        if file >= registered.pack.index.files.len() {
+            return Err(pack2::pack2_corruption(
+                &registered.pack.path,
+                "unknown file record",
+            ));
         }
-        Ok(None)
+        registered.pack.alias_ids(file).map(|(_, chunk)| chunk)
     }
 
     /// An exact position naming `file_id`'s file record, for derived data

@@ -92,11 +92,19 @@ impl Context<'_> {
             if !self.object_ids.contains_key(entry.chunk_id().as_str()) {
                 return Err(format!("missing verified Chunk {}", entry.chunk_id()));
             }
+            // The chunk is also checked in the domain the manifest's recipe
+            // declares, not only in the one its stored copy has (council s16
+            // r1): a `single` manifest never names a whole chunk.
+            let mut bytes = Vec::with_capacity(usize::try_from(entry.byte_length()).unwrap_or(0));
             let chunk_length = cas
-                .stream_verified_chunk(entry.chunk_id(), |bytes| {
-                    hasher.update(bytes);
+                .stream_verified_chunk(entry.chunk_id(), |part| {
+                    bytes.extend_from_slice(part);
                 })
                 .map_err(|error| error.to_string())?;
+            manifest
+                .chunk(entry, bytes)
+                .map(|chunk| hasher.update(chunk.bytes()))
+                .map_err(|error| format!("Chunk {}: {error}", entry.chunk_id()))?;
             if chunk_length != entry.byte_length() {
                 return Err(format!(
                     "Chunk {} length is {}, expected {}",
