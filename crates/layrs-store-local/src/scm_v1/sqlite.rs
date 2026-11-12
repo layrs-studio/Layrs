@@ -782,7 +782,10 @@ fn open_guarded_writer(path: &Path, flags: OpenFlags) -> Result<Connection> {
 /// (council s15 r1). The caller holds the Store's exclusive lock.
 /// - The database: its bytes are copied to a staged file in the same
 ///   folder, synced, and renamed over its name; the other link keeps its
-///   bytes.
+///   bytes. On Unix the staged file is created `0600` and takes the
+///   database's mode before it is published (council s15 r2); on Windows it
+///   inherits the folder's access rules, as the database did when created.
+///   A failed copy removes the staged file.
 /// - An empty `-wal`: its name is removed (SQLite makes a new one).
 /// - A `-wal` holding frames is refused: they belong to the database the
 ///   other link also names.
@@ -814,11 +817,17 @@ fn take_back_linked_names(path: &Path) -> Result<()> {
         .ok_or_else(|| ScmSchemaError::InvalidMetadata("database name is not UTF-8".into()))?;
     let staged = parent.join(format!(".{name}.unlinking"));
     remove_regular_staged_file(&staged)?;
-    {
+    let copied = (|| -> std::io::Result<()> {
         let mut source = crate::layout::open_read_no_follow(path)?;
-        let mut copy = create_new_file_no_follow(&staged)?;
+        let mut copy = create_private_file_no_follow(&staged)?;
         std::io::copy(&mut source, &mut copy)?;
-        copy.sync_all()?;
+        #[cfg(unix)]
+        copy.set_permissions(source.metadata()?.permissions())?;
+        copy.sync_all()
+    })();
+    if let Err(error) = copied {
+        let _ = remove_regular_staged_file(&staged);
+        return Err(error.into());
     }
     super::format::atomic_replace(&staged, path)?;
     sync_directory(parent)?;
@@ -829,6 +838,36 @@ fn take_back_linked_names(path: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// A new file only its owner can read and write on Unix (`0600`, whatever
+/// the umask), not following a link at its name.
+fn create_private_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc_o_nofollow())
+            .open(path)?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        create_new_file_no_follow(path)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn libc_o_nofollow() -> i32 {
+    0o400_000
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn libc_o_nofollow() -> i32 {
+    0x100
 }
 
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {

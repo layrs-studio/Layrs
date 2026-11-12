@@ -566,6 +566,37 @@ fn a_writer_takes_back_a_linked_database_and_never_writes_through_it() {
     assert_eq!(fs::read(&backup_wal).unwrap(), vec![1_u8; 64]);
 }
 
+/// Unix: a linked database taken back keeps its mode (a `0600` database
+/// never becomes readable by others, council s15 r2).
+#[cfg(unix)]
+#[test]
+fn a_linked_database_taken_back_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TempDirectory::new("linked-mode");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let backup = path.parent().unwrap().join("backup.sqlite3");
+    fs::hard_link(&path, &backup).unwrap();
+    drop(
+        open_writer_existing_no_mutation(
+            &path,
+            Duration::from_millis(100),
+            &test_store_id(),
+            WriterDurability::EachCommit,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        super::super::guarded_vfs::link_count(&path).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 /// Unix: a name whose resolution follows a link is refused (SQLite's
 /// NOFOLLOW), and an empty `-wal` linked to a file outside never has its
 /// mode changed by SQLite's Unix VFS (council s15 r1).
