@@ -127,6 +127,9 @@ impl CompositeAdmissionResolver<'_> {
         let mut conflicts = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut pending = vec![StoreObjectId::Tree(result.root_tree_id().clone())];
+        // Beside an unreadable pack a durable Tree does not prove its Files
+        // closed (council s18 r2).
+        let durable_proves = self.reader.durable_admission_proves_closure()?;
         while let Some(id) = pending.pop() {
             if !seen.insert(id.clone()) {
                 continue;
@@ -143,7 +146,8 @@ impl CompositeAdmissionResolver<'_> {
                     // A durably admitted Tree had its Files closed when it
                     // was admitted (admissions are never withdrawn): only
                     // its descendants still need visiting, for Conflicts.
-                    let durable = self.overlay_object(&id).is_none()
+                    let durable = durable_proves
+                        && self.overlay_object(&id).is_none()
                         && self.reader.object_admitted_metadata(&id, space)?;
                     if !durable {
                         // One batched query for this Tree's Files, not two each.

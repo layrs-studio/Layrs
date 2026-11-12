@@ -463,6 +463,17 @@ impl NativeWorkspace {
     /// racy and unproven entries are read). Without an index, every file is
     /// read.
     pub fn capture_before_deletion(&self, reason: CaptureReason) -> Result<CapturePlan> {
+        // Beside an unreadable pack the index does not prove that the Store
+        // still holds what it vouches for: every file is read, and what the
+        // Store cannot prove is stored again before the folder can go
+        // (council s18 r2).
+        let damaged = {
+            let store = self.open_store()?;
+            NativeScmReader::new(&store)?.catalog_damaged()?
+        };
+        if damaged {
+            return self.capture_verifying_all(reason);
+        }
         let index = scm_v1::change_index::ChangeIndex::load(self.store_root(), &self.worktree_id);
         self.capture_using_passes(reason, index, None, false)
     }
@@ -497,25 +508,94 @@ impl NativeWorkspace {
     fn capture_using_passes_opened(
         &self,
         reason: CaptureReason,
+        index: Option<scm_v1::change_index::ChangeIndex>,
+        loading: Option<
+            std::thread::ScopedJoinHandle<'_, Option<scm_v1::change_index::ChangeIndex>>,
+        >,
+        single_pass: bool,
+        opened: Option<(scm_v1::NativeStoreOpen, WorkspaceState)>,
+    ) -> Result<CapturePlan> {
+        let _total = layrs_store_local::perf::span("capture.total");
+        // Captures before the folder is rewritten, and those that read every
+        // file, must store again what a Store with an unreadable pack cannot
+        // prove; only a plain step's recovery is best effort (council s18 r2).
+        let before_rewrite = matches!(
+            reason,
+            CaptureReason::BeforeOperation
+                | CaptureReason::BeforeLayerSwitch
+                | CaptureReason::BeforeWorktreeSwitch
+        );
+        let recovery_required = !single_pass || before_rewrite;
+        let result = self.capture_attempts(
+            reason,
+            index,
+            loading,
+            single_pass,
+            opened,
+            before_rewrite,
+            recovery_required,
+        );
+        self.explain_damage(result)
+    }
+
+    /// A capture's error beside an unreadable pack names the remedy
+    /// (council s18 r2): a writer's refusal there means "not provable".
+    fn explain_damage<T>(&self, result: Result<T>) -> Result<T> {
+        let error = match result {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let refusal = matches!(
+            error,
+            NativeClientError::Store(
+                layrs_store::scm::StoreError::AdmissionRejected { .. }
+                    | layrs_store::scm::StoreError::NotFound { .. }
+                    | layrs_store::scm::StoreError::Corruption { .. }
+            ) | NativeClientError::Missing(_)
+        );
+        let damaged = refusal
+            && self
+                .open_store()
+                .ok()
+                .and_then(|store| {
+                    NativeScmReader::new(&store)
+                        .ok()
+                        .and_then(|reader| reader.catalog_damaged().ok())
+                })
+                .unwrap_or(false);
+        if !damaged {
+            return Err(error);
+        }
+        Err(NativeClientError::InvalidSnapshot(format!(
+            "{error}. A registered pack of this Store cannot be read: `layrs step --full` stores again what this folder still holds"
+        )))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_attempts(
+        &self,
+        reason: CaptureReason,
         mut index: Option<scm_v1::change_index::ChangeIndex>,
         mut loading: Option<
             std::thread::ScopedJoinHandle<'_, Option<scm_v1::change_index::ChangeIndex>>,
         >,
         single_pass: bool,
         mut opened: Option<(scm_v1::NativeStoreOpen, WorkspaceState)>,
+        before_rewrite: bool,
+        recovery_required: bool,
     ) -> Result<CapturePlan> {
-        let _total = layrs_store_local::perf::span("capture.total");
         for _ in 0..8 {
             let attempt = (|| {
                 let plan = {
                     let _span = layrs_store_local::perf::span("capture.prepare");
                     let disk = || -> Result<_> {
                         Ok((
-                            self.client.prepare_disk_capture_with_reason(
+                            self.client.prepare_disk_capture_recovering(
                                 &self.worktree_id,
                                 SnapshotLimits::streaming(),
                                 MutationStamp::fresh()?,
                                 reason,
+                                recovery_required,
                             )?,
                             None,
                             None,
@@ -559,6 +639,16 @@ impl NativeWorkspace {
                         if let Some(loading) = loading.take() {
                             index = loading.join().ok().flatten();
                         }
+                        // Before an operation rewrites the folder, beside an
+                        // unreadable pack, the index does not prove that the
+                        // Store holds what it vouches for: every file is read,
+                        // and what the Store cannot prove must be stored again
+                        // first (council s18 r2).
+                        if damaged && before_rewrite {
+                            if let Some(index) = index.as_mut() {
+                                index.clear();
+                            }
+                        }
                         match index.as_mut() {
                             Some(index) => {
                                 let (snapshot, next, pending) = self
@@ -572,11 +662,12 @@ impl NativeWorkspace {
                                         refs,
                                         damaged,
                                     )?;
-                                let plan = self.client.prepare_capture_with_reason(
+                                let plan = self.client.prepare_capture_recovering(
                                     &base,
                                     snapshot,
                                     MutationStamp::fresh()?,
                                     reason,
+                                    recovery_required,
                                 )?;
                                 (plan, Some(next), pending)
                             }

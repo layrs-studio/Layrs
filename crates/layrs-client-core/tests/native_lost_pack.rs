@@ -88,8 +88,16 @@ fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
         workspace.capture().unwrap(),
         CapturePlan::Unchanged { .. }
     ));
-    // A full capture reads every file and carries what the Store can no
-    // longer prove: the lost content is readable again.
+    // The capture before a folder is deleted reads every file beside an
+    // unreadable pack, and stores again what the Store can no longer prove
+    // (council s18 r2): the lost content is readable again.
+    assert!(matches!(
+        workspace
+            .capture_before_deletion(CaptureReason::ManualSnapshot)
+            .unwrap(),
+        CapturePlan::Unchanged { .. }
+    ));
+    // A full capture then finds everything proven.
     workspace
         .capture_verifying_all(CaptureReason::ManualSnapshot)
         .unwrap();
@@ -107,5 +115,7 @@ fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
     fs::write(root.join("f.txt"), b"phi\n").unwrap();
     let refused = workspace.capture().unwrap_err().to_string();
     assert!(refused.contains("Step parent"), "{refused}");
+    // The refusal names the remedy (council s18 r2).
+    assert!(refused.contains("layrs step --full"), "{refused}");
     drop(fixture);
 }

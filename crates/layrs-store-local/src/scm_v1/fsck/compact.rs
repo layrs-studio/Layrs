@@ -398,7 +398,7 @@ impl Context<'_> {
                     .into_iter()
                     .find(|entry| &entry.id == manifest.id())
                     .map(|entry| entry.file_length),
-                Err(_) if damaged => continue,
+                Err(_) if damaged && catalog.file_may_be_unreadable(manifest.file_id()) => continue,
                 Err(error) => {
                     self.compact_lookup_failed(&error);
                     continue;
@@ -428,7 +428,7 @@ impl Context<'_> {
         // and Tree closure is not judged on it (council s18 r1).
         match catalog.file_manifests(file_id) {
             Ok(entries) => Ok(!entries.is_empty()),
-            Err(_) if self.compact_damaged => Ok(true),
+            Err(_) if self.compact_damaged && catalog.file_may_be_unreadable(file_id) => Ok(true),
             Err(error) => {
                 self.compact_lookup_failed(&error);
                 Ok(true)
@@ -483,7 +483,9 @@ impl Context<'_> {
                 match catalog.admitted(&admissions, &object) {
                     Ok(true) => {}
                     Ok(false) => continue,
-                    Err(_) if damaged => continue,
+                    Err(_) if damaged && catalog.may_hold_unreadably(&object).unwrap_or(true) => {
+                        continue;
+                    }
                     Err(error) => {
                         self.compact_lookup_failed(&error);
                         continue;
@@ -493,7 +495,12 @@ impl Context<'_> {
                     let chunk_object = StoreObjectId::ChunkRaw(chunk.chunk_id().clone());
                     let admitted = match catalog.admitted(&admissions, &chunk_object) {
                         Ok(admitted) => admitted,
-                        Err(_) if damaged => continue,
+                        Err(_)
+                            if damaged
+                                && catalog.may_hold_unreadably(&chunk_object).unwrap_or(true) =>
+                        {
+                            continue;
+                        }
                         Err(error) => {
                             self.compact_lookup_failed(&error);
                             continue;
@@ -527,7 +534,13 @@ impl Context<'_> {
                 if !self.consume_cpu(1) {
                     return Ok(());
                 }
-                if !self.object_ids.contains_key(&id) {
+                // Beside an unreadable pack, an object it may hold is
+                // unknown, not absent (council s18 r2).
+                if !self.object_ids.contains_key(&id)
+                    && !(damaged
+                        && (self.unreadable_sources.contains(&id)
+                            || may_be_unreadable(&catalog, &id)))
+                {
                     self.finding(
                         FsckFindingCode::ForeignKeyViolation,
                         FsckSeverity::Error,
@@ -543,4 +556,24 @@ impl Context<'_> {
         }
         Ok(())
     }
+}
+
+/// Whether an unreadable registered pack may hold the object named `id`,
+/// whatever its kind: its keys row does not exclude it as any of them.
+fn may_be_unreadable(catalog: &RegisteredCatalog, id: &str) -> bool {
+    use layrs_store::scm::StoreObjectKind;
+    [
+        StoreObjectKind::ChunkRaw,
+        StoreObjectKind::FileManifest,
+        StoreObjectKind::Tree,
+        StoreObjectKind::Symlink,
+        StoreObjectKind::Tombstone,
+        StoreObjectKind::Step,
+        StoreObjectKind::RepositoryView,
+        StoreObjectKind::Conflict,
+        StoreObjectKind::Product,
+    ]
+    .into_iter()
+    .filter_map(|kind| super::parse_object_id(kind, id))
+    .any(|object| catalog.may_hold_unreadably(&object).unwrap_or(true))
 }

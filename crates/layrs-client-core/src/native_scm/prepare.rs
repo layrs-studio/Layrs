@@ -336,9 +336,24 @@ impl NativeClient {
     pub fn prepare_capture_with_reason(
         &self,
         expected: &CaptureBase,
+        snapshot: PreparedSnapshot,
+        stamp: MutationStamp,
+        reason: CaptureReason,
+    ) -> Result<CapturePlan> {
+        self.prepare_capture_recovering(expected, snapshot, stamp, reason, false)
+    }
+
+    /// `prepare_capture_with_reason`; with `recovery_required` (a capture
+    /// that read every file, as before a deletion), the recovery batch of a
+    /// Store with an unreadable pack must succeed: its failure fails the
+    /// capture (council s18 r2).
+    pub(super) fn prepare_capture_recovering(
+        &self,
+        expected: &CaptureBase,
         mut snapshot: PreparedSnapshot,
         stamp: MutationStamp,
         reason: CaptureReason,
+        recovery_required: bool,
     ) -> Result<CapturePlan> {
         let worktree_id = &expected.worktree_id;
         let store = self.open_store()?;
@@ -404,15 +419,15 @@ impl NativeClient {
                 // its recovery can be refused; the folder is still unchanged.
                 // `step --full` reads every file and carries them.
                 if let Some(recovery) = recovery {
-                    if self
-                        .accept(&PreparedMutation {
-                            batch: recovery.0,
-                            step_id: base.id().clone(),
-                            chunks: recovery.1,
-                        })
-                        .is_err()
-                    {
-                        layrs_store_local::perf::count("capture.recovery_refused", 1);
+                    let accepted = self.accept(&PreparedMutation {
+                        batch: recovery.0,
+                        step_id: base.id().clone(),
+                        chunks: recovery.1,
+                    });
+                    match accepted {
+                        Ok(_) => {}
+                        Err(error) if recovery_required => return Err(error),
+                        Err(_) => layrs_store_local::perf::count("capture.recovery_refused", 1),
                     }
                 }
             }

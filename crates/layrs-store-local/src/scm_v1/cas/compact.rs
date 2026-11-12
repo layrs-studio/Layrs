@@ -3519,6 +3519,13 @@ impl RegisteredCatalog {
         Ok(problems)
     }
 
+    /// Whether an unreadable registered pack may hold a manifest of `file`
+    /// (its keys row does not exclude it): `false` on a sound catalog.
+    pub(crate) fn file_may_be_unreadable(&self, file: &FileId) -> bool {
+        self.unknown_to(|| Ok(file_keys(file)))
+            .map_or(true, |unknown| unknown.is_some())
+    }
+
     /// Whether an unreadable registered pack may hold `id` (its keys row
     /// does not exclude it): `false` on a sound catalog.
     pub(crate) fn may_hold_unreadably(&self, id: &StoreObjectId) -> CasResult<bool> {

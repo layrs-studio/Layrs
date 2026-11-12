@@ -1675,7 +1675,7 @@ fn keys_rows_answer_exactly_beside_a_lost_pack() {
             vec![kept[0].manifest.file_id().clone()]
         );
     }
-    // A keys row that does not check excludes nothing.
+    // A keys row that does not check excludes nothing, and fsck says so.
     sql(&root.0)
         .execute("UPDATE cas_pack_keys SET checksum = zeroblob(16)", [])
         .unwrap();
@@ -1683,6 +1683,16 @@ fn keys_rows_answer_exactly_beside_a_lost_pack() {
     let repository = NativeScmRepository::new(&root.0);
     let error = repository.chunk_present_metadata(absent.id()).unwrap_err();
     assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
+    drop(repository);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == FsckFindingCode::CasPackKeysMismatch
+                && finding.message.contains("no usable keys row")
+        }),
+        "{:#?}",
+        report.findings
+    );
 }
 
 /// Beside a lost pack, a writer's evidence must be readable (council s18
@@ -1755,6 +1765,103 @@ fn beside_a_lost_pack_a_writer_needs_readable_evidence() {
         .filter(|finding| finding.code == FsckFindingCode::CasCorruption)
         .count();
     assert_eq!(corruption, 1, "{:#?}", report.findings);
+    // A Tree naming the second File is refused while its shared chunk is
+    // only in the lost pack, and accepted once the batch carries it.
+    let tree = tree_of(std::slice::from_ref(&second));
+    let admit = |objects: Vec<CanonicalObject>, label: &str| {
+        let admissions = objects
+            .iter()
+            .map(|object| SpaceObjectAdmission::new(lane.space.id().clone(), object.object_id()))
+            .collect();
+        WriteBatch::new(
+            TransactionId::new(format!("transaction:evidence-{label}")).unwrap(),
+            objects,
+            vec![],
+            admissions,
+            vec![],
+        )
+        .unwrap()
+    };
+    let mut repository = NativeScmRepository::new(&root.0);
+    let refused = repository
+        .apply_batch(&admit(vec![CanonicalObject::Tree(tree.clone())], "tree"))
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("admission rejected"),
+        "{refused}"
+    );
+    repository
+        .apply_batch(&admit(
+            vec![
+                CanonicalObject::ChunkRaw(second.chunks[0].clone()),
+                CanonicalObject::Tree(tree),
+            ],
+            "tree-again",
+        ))
+        .unwrap();
+}
+
+/// Beside a lost content-only pack, a durably admitted Tree whose File was
+/// only there no longer proves its closure (council s18 r2): admitting a
+/// Tree that contains it is refused, and accepted once the batch carries the
+/// File again.
+#[test]
+fn a_durable_tree_does_not_prove_content_lost_with_its_pack() {
+    let root = TestRoot::new("induction");
+    create(&root.0, "induction", "7");
+    let lost = file("lost.txt", b"content only in the lost pack", Recipe::Whole);
+    let (lane, batch) = Lane::begin("induction", &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let admit = |objects: Vec<CanonicalObject>, label: &str| {
+        let admissions = objects
+            .iter()
+            .map(|object| SpaceObjectAdmission::new(lane.space.id().clone(), object.object_id()))
+            .collect();
+        WriteBatch::new(
+            TransactionId::new(format!("transaction:induction-{label}")).unwrap(),
+            objects,
+            vec![],
+            admissions,
+            vec![],
+        )
+        .unwrap()
+    };
+    // The File alone (a content-only pack), then a Tree naming it.
+    repository
+        .apply_batch(&admit(file_objects(std::slice::from_ref(&lost)), "content"))
+        .unwrap();
+    let inner = tree_of(std::slice::from_ref(&lost));
+    repository
+        .apply_batch(&admit(vec![CanonicalObject::Tree(inner.clone())], "inner"))
+        .unwrap();
+    drop(repository);
+    let content_pack = registered_packs(&root.0)[1].clone();
+    fs::remove_file(root.0.join("objects/packs").join(content_pack)).unwrap();
+    forget_loaded_packs();
+    let outer = Tree::new(vec![TreeEntry::new(
+        RepoPathComponent::parse("dir").unwrap(),
+        TreeEntryTarget::tree(inner.id().clone()),
+        false,
+    )])
+    .unwrap();
+    let mut repository = NativeScmRepository::new(&root.0);
+    let refused = repository
+        .apply_batch(&admit(vec![CanonicalObject::Tree(outer.clone())], "outer"))
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("admission rejected"),
+        "{refused}"
+    );
+    let mut carried = file_objects(std::slice::from_ref(&lost));
+    carried.push(CanonicalObject::Tree(outer));
+    repository
+        .apply_batch(&admit(carried, "outer-again"))
+        .unwrap();
+    assert_eq!(
+        repository.get_chunk(lost.chunks[0].id()).unwrap().as_ref(),
+        Some(&lost.chunks[0])
+    );
 }
 
 /// fsck checks every readable pack's keys row against its index (council

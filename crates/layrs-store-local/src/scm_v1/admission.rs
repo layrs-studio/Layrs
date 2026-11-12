@@ -728,6 +728,10 @@ impl<'a> CompositeAdmissionResolver<'a> {
         // Files closed from the bitmaps, charged one object visit each as
         // their manifest would have been (council s13 Q2).
         let mut visited_files: BTreeSet<FileId> = BTreeSet::new();
+        // Beside an unreadable pack the induction below does not hold: a
+        // durably admitted object's closure may have been in that pack, so
+        // its dependencies are walked (council s18 r2).
+        let durable_proves = self.reader.durable_admission_proves_closure()?;
         while let Some(object_id) = pending.pop() {
             if self
                 .closed_admissions
@@ -751,7 +755,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
             // An object carried by this batch is validated from memory below
             // (strictly more checking than skipping it as durably closed), so
             // only objects outside the batch cost a metadata query.
-            if &object_id != root
+            if durable_proves
+                && &object_id != root
                 && self.overlay_object(&object_id).is_none()
                 && self.reader.object_admitted_metadata(&object_id, space)?
             {

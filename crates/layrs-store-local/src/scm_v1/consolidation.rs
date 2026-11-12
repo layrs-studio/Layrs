@@ -412,10 +412,8 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         )
         .map_err(sql)?;
     // A candidate whose keys row is missing is replaced by a pack that has
-    // one (council s18 r1); never more rows than candidates.
-    if keys_retired > consolidation.packs.len() {
-        return Err("consolidated packs differ from their keys rows".into());
-    }
+    // one (council s18 r1): at most one row each (`pack_seq` is its key).
+    debug_assert!(keys_retired <= consolidation.packs.len());
     // The images of the inline packs retired, before their rows: exactly
     // those of the inline candidates.
     let inline_retired = transaction

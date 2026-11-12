@@ -461,6 +461,19 @@ impl NativeClient {
         stamp: MutationStamp,
         reason: layrs_core::scm::CaptureReason,
     ) -> Result<CapturePlan> {
+        self.prepare_disk_capture_recovering(worktree_id, limits, stamp, reason, false)
+    }
+
+    /// `prepare_disk_capture_with_reason`, `recovery_required` as in
+    /// `prepare_capture_recovering`.
+    pub(super) fn prepare_disk_capture_recovering(
+        &self,
+        worktree_id: &WorktreeId,
+        limits: SnapshotLimits,
+        stamp: MutationStamp,
+        reason: layrs_core::scm::CaptureReason,
+        recovery_required: bool,
+    ) -> Result<CapturePlan> {
         let base = self.capture_base(worktree_id)?;
         let workspace = super::NativeWorkspace {
             client: self.clone(),
@@ -468,7 +481,7 @@ impl NativeClient {
             held: Default::default(),
         };
         let (_, snapshot) = workspace.capture_projection_streaming(&workspace.state()?, limits)?;
-        self.prepare_capture_with_reason(&base, snapshot, stamp, reason)
+        self.prepare_capture_recovering(&base, snapshot, stamp, reason, recovery_required)
     }
 }
 
