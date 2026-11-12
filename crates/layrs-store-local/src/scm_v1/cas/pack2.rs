@@ -97,7 +97,7 @@ pub(super) enum Recipe {
 }
 
 impl Recipe {
-    fn code(self) -> u8 {
+    pub(super) fn code(self) -> u8 {
         match self {
             Self::Fixed => 0,
             Self::Single => 1,

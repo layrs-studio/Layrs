@@ -118,6 +118,23 @@ impl Context<'_> {
                 format!("{}: {error}", error.code()),
             );
         }
+        // Every readable pack's keys row, against its index (council s17,
+        // B1c): a wrong row would turn a lost pack into a false "absent".
+        match catalog.keys_row_problems(self.connection) {
+            Ok(problems) => {
+                for (path, problem) in problems {
+                    self.finding(
+                        FsckFindingCode::CasPackKeysMismatch,
+                        FsckSeverity::Error,
+                        Some(path),
+                        None,
+                        None,
+                        problem,
+                    );
+                }
+            }
+            Err(error) => self.compact_lookup_failed(&error),
+        }
         for (id_text, kind_text, byte_length) in rows {
             self.report.checked_rows = self.report.checked_rows.saturating_add(1);
             self.report.checked_objects = self.report.checked_objects.saturating_add(1);

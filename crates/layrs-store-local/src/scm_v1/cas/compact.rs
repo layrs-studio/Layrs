@@ -692,6 +692,66 @@ fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Ve
 
 impl LoadedPack {
     /// The identity and form of each logical ordinal of this pack.
+    /// The keys row this pack's index gives: what its builder wrote when it
+    /// sealed it (`Pack2Builder::keys`), rebuilt from the index (each file
+    /// record's alias manifest rebuilt and hashed).
+    fn rebuild_keys(&self, rice_bits: u8) -> CasResult<super::keys::PackKeys> {
+        use super::keys::{self, Ordinal, SectionEntry};
+        let index = &self.index;
+        let vanished = || pack2::pack2_corruption(&self.path, "pack record vanished");
+        let explicit: Vec<(u8, [u8; 32])> = (0..index.explicit_count())
+            .map(|ordinal| {
+                index
+                    .explicit(ordinal)
+                    .map(|(code, id, _)| (code, *id))
+                    .ok_or_else(vanished)
+            })
+            .collect::<CasResult<_>>()?;
+        let manifests: Vec<[u8; 32]> = (0..index.files.len())
+            .map(|file| self.alias_manifest_digest(file))
+            .collect::<CasResult<_>>()?;
+        let mut ordinals = Vec::with_capacity(explicit.len() + 2 * index.files.len());
+        let mut tagged = Vec::with_capacity(explicit.len() + 3 * index.files.len());
+        for (code, id) in &explicit {
+            ordinals.push(Ordinal::Explicit {
+                kind_code: *code,
+                id,
+            });
+            tagged.push(keys::explicit_key(*code, id));
+        }
+        for (record, manifest_id) in index.files.iter().zip(&manifests) {
+            ordinals.push(Ordinal::ChunkAlias {
+                file_id: &record.file_id,
+                chunk_id: &record.chunk_id,
+                recipe: record.recipe.code(),
+                length: u64::from(record.location.length),
+            });
+            ordinals.push(Ordinal::ManifestAlias {
+                file_id: &record.file_id,
+                manifest_id,
+            });
+            tagged.push(keys::key(keys::FILE_RECORD_TAG, &record.file_id));
+            if record.recipe != pack2::Recipe::Whole {
+                tagged.push(keys::key(keys::CHUNK_ALIAS_TAG, &record.chunk_id));
+            }
+            tagged.push(keys::key(keys::MANIFEST_ALIAS_TAG, manifest_id));
+        }
+        let section: Vec<SectionEntry<'_>> = index
+            .fileid_section
+            .iter()
+            .map(|entry| SectionEntry {
+                file_id: &entry.file_id,
+                manifest_position: entry.manifest,
+                length: entry.byte_length,
+            })
+            .collect();
+        for entry in &index.fileid_section {
+            tagged.push(keys::key(keys::FILEID_SECTION_TAG, &entry.file_id));
+        }
+        keys::PackKeys::build(&ordinals, &section, tagged, rice_bits)
+            .map_err(|error| pack2::pack2_corruption(&self.path, error.to_string()))
+    }
+
     fn logical_keys(&self) -> CasResult<Vec<(LogicalKey, Identity)>> {
         let index = &self.index;
         let chunk = pack2::kind_code(StoreObjectKind::ChunkRaw);
@@ -3305,6 +3365,87 @@ impl RegisteredCatalog {
                 return;
             }
         }
+    }
+
+    /// Each readable registered pack whose keys row is missing, bound to
+    /// another index, fails its checksum, or differs from what its index
+    /// gives (council s17, B1c), with why. The rows of unreadable packs
+    /// cannot be checked against anything.
+    pub(crate) fn keys_row_problems(
+        &self,
+        connection: &Connection,
+    ) -> CasResult<Vec<(PathBuf, String)>> {
+        let mut statement = connection
+            .prepare(
+                "SELECT layout_digest,keys_digest,key_count,rice_bits,group_digests,filter,checksum \
+                 FROM cas_pack_keys WHERE pack_seq=?1",
+            )
+            .map_err(sql_error)?;
+        let mut problems = Vec::new();
+        for registered in &self.packs {
+            let path = registered.pack.path.clone();
+            let Some(row) = self.rows.iter().find(|row| row.seq == registered.seq) else {
+                continue;
+            };
+            let stored = statement
+                .query_row([registered.seq], |stored| {
+                    Ok((
+                        stored.get::<_, Vec<u8>>(0)?,
+                        stored.get::<_, Vec<u8>>(1)?,
+                        stored.get::<_, i64>(2)?,
+                        stored.get::<_, i64>(3)?,
+                        stored.get::<_, Vec<u8>>(4)?,
+                        stored.get::<_, Vec<u8>>(5)?,
+                        stored.get::<_, Vec<u8>>(6)?,
+                    ))
+                })
+                .map(Some)
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    error => Err(error),
+                })
+                .map_err(sql_error)?;
+            let Some((layout, keys_digest, count, bits, groups, filter, checksum)) = stored else {
+                problems.push((path, "registered pack has no keys row".to_owned()));
+                continue;
+            };
+            if layout != row.digest {
+                problems.push((path, "keys row is bound to another index".to_owned()));
+                continue;
+            }
+            let (Ok(keys_digest), Ok(key_count), Ok(rice_bits)) = (
+                <[u8; 32]>::try_from(keys_digest.as_slice()),
+                u64::try_from(count),
+                u8::try_from(bits),
+            ) else {
+                problems.push((path, "keys row is malformed".to_owned()));
+                continue;
+            };
+            let stored = super::keys::PackKeys {
+                key_count,
+                rice_bits,
+                keys_digest,
+                group_digests: groups,
+                filter,
+            };
+            let layout: [u8; 32] = match layout.as_slice().try_into() {
+                Ok(layout) => layout,
+                Err(_) => {
+                    problems.push((path, "keys row is malformed".to_owned()));
+                    continue;
+                }
+            };
+            if stored.checksum(&layout)[..] != checksum[..] {
+                problems.push((path, "keys row checksum differs".to_owned()));
+                continue;
+            }
+            match registered.pack.rebuild_keys(rice_bits) {
+                Ok(rebuilt) if rebuilt == stored => {}
+                Ok(_) => problems.push((path, "keys row differs from the pack's index".to_owned())),
+                Err(error) => problems.push((path, error.to_string())),
+            }
+        }
+        Ok(problems)
     }
 
     /// The registered packs that cannot be read, with their paths.

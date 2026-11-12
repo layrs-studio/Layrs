@@ -41,6 +41,10 @@ pub enum FsckFindingCode {
     ForeignKeyViolation,
     MissingCasObject,
     CasCorruption,
+    /// A registered pack's keys row is missing, unbound, or differs from
+    /// what its index gives (council s17, B1c): a wrong row would turn a
+    /// lost pack into a false "absent".
+    CasPackKeysMismatch,
     ObjectKindMismatch,
     ObjectPathMismatch,
     ObjectLengthMismatch,
@@ -74,6 +78,7 @@ impl FsckFindingCode {
             Self::ForeignKeyViolation => "foreign_key_violation",
             Self::MissingCasObject => "missing_cas_object",
             Self::CasCorruption => "cas_corruption",
+            Self::CasPackKeysMismatch => "cas_pack_keys_mismatch",
             Self::ObjectKindMismatch => "object_kind_mismatch",
             Self::ObjectPathMismatch => "object_path_mismatch",
             Self::ObjectLengthMismatch => "object_length_mismatch",

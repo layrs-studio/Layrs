@@ -1645,8 +1645,9 @@ fn keys_rows_answer_exactly_beside_a_lost_pack() {
         count(&root.0, "SELECT count(*) FROM cas_pack_keys"),
         count(&root.0, "SELECT count(*) FROM cas_packs")
     );
-    let second = packs(&root.0).pop().unwrap();
-    fs::remove_file(&second).unwrap();
+    // The second registered pack (names are random: by registration).
+    let second = registered_packs(&root.0).pop().unwrap();
+    fs::remove_file(root.0.join("objects/packs").join(second)).unwrap();
     forget_loaded_packs();
     let absent = Chunk::new(b"never stored".to_vec()).unwrap();
     let repository = NativeScmRepository::new(&root.0);
@@ -1682,6 +1683,43 @@ fn keys_rows_answer_exactly_beside_a_lost_pack() {
     let repository = NativeScmRepository::new(&root.0);
     let error = repository.chunk_present_metadata(absent.id()).unwrap_err();
     assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
+}
+
+/// fsck checks every readable pack's keys row against its index (council
+/// s17, B1c): a missing row, or one that does not check, is reported.
+#[test]
+fn fsck_reports_a_missing_or_altered_keys_row() {
+    let root = TestRoot::new("keys-fsck");
+    create(&root.0, "keys-fsck", "7");
+    let files = vec![
+        file("a.txt", b"alpha", Recipe::Whole),
+        file("b.txt", b"beta beta", Recipe::Fixed),
+    ];
+    let (_lane, batch) = Lane::begin("keys-fsck", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    assert_fsck_clean(&root.0);
+    let keys_findings = |root: &Path| -> Vec<String> {
+        fsck_existing(root, FsckOptions::default())
+            .unwrap()
+            .findings
+            .into_iter()
+            .filter(|finding| finding.code == FsckFindingCode::CasPackKeysMismatch)
+            .map(|finding| finding.message)
+            .collect()
+    };
+    sql(&root.0)
+        .execute("UPDATE cas_pack_keys SET key_count = key_count + 1", [])
+        .unwrap();
+    assert_eq!(keys_findings(&root.0), vec!["keys row checksum differs"]);
+    sql(&root.0)
+        .execute("DELETE FROM cas_pack_keys", [])
+        .unwrap();
+    assert_eq!(
+        keys_findings(&root.0),
+        vec!["registered pack has no keys row"]
+    );
 }
 
 #[test]
