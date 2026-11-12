@@ -571,16 +571,9 @@ impl NativeWorkspace {
             // As a capture: only new objects, and no second form of a File
             // the Space already holds (a revert rebuilds existing files;
             // council s16 r2).
-            let (redundant, redundant_chunks) =
-                prepare::redundant_file_objects(&reader, source.space.id(), snapshot.objects())?;
             objects.extend(
-                prepare::retain_new_objects(
-                    &reader,
-                    source.space.id(),
-                    snapshot.objects().to_vec(),
-                )?
-                .into_iter()
-                .filter(|object| !prepare::redundant_object(object, &redundant, &redundant_chunks)),
+                prepare::new_objects(&reader, source.space.id(), snapshot.objects().to_vec())?
+                    .in_one_form(),
             );
             objects.push(CanonicalObject::Step(step));
         }

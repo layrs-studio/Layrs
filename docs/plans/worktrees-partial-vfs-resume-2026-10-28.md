@@ -1,5 +1,26 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - conseil s13 (Q1-Q7), s14 à s16, format 7 (Claude + conseil, 2026-11-12)
+
+Décisions du conseil s13 (brief `council-s13-design.md`) : Q1 packs inline jusqu'à 256 Kio ; Q2 fermeture prouvée par les bits d'admission ; Q3 plus de relecture des dossiers dans les captures qui ne font qu'enregistrer ; Q4 `room merge` fusionne la dernière étape capturée (`--capture`) ; Q5 recette `whole` derrière un nouveau format ; Q6 schéma v4 ; Q7 VFS SQLite durci, avant Q1, Q5 et Q6.
+
+Commits :
+- `46ce285` Q2-Q4, `3f06b3e` corrections s14 r1, `0df6c5d` (seuls les manifestes admis *sans* être portés par le lot forcent le chemin exact), `7e30e34` corrections s14 r2. Conseil s14 : r1 Astra 6, Sol 7, Opus 8 ; r2 Astra 9 (ship), Sol 8, Opus 7.
+- `718ddd9` Q7 : `guarded_vfs`, un VFS qui n'ouvre que la base (et son `-wal` pour les écrivains du Store), cache les journaux et `-shm`, ne supprime rien d'autre ; cache dérivé et écrivains du Store passent par lui (`locking_mode=EXCLUSIVE` avant la première lecture).
+- `0054b8c` Q1 : packs de lot inline jusqu'à 256 Kio, fusion des inline à 8 packs ou 1 Mio, sortie de fusion inline seulement jusqu'à 64 Kio.
+- `acd93ed`, `27b798b`, `8e07476` corrections s15 (Astra 7 → 8, Sol 6 → 9 ship, Opus 8 → 8) : `SQLITE_OPEN_NOFOLLOW` sur tous les écrivains, nom refusé *avant* l'ouverture s'il est un lien, identifiant de fichier 128 bits (repli 64 bits), reprise du nom d'une base liée (copie privée, mode et propriétaire de la source).
+- `ed92a45` Q5 : format 7 (`LAYRS_STORE_FORMAT=7`, opt-in) = format 6 + recette `whole` (un fichier de 1 octet à 1 Mio a un seul chunk nommé par son FileId) + packs v2 de version 2. `8b5a419` : valeurs du cache dérivé en trames zstd (cache v2).
+- Q6 (schéma v4) retiré (`3b07408`) : WITHOUT ROWID cassait le `rowid` de l'historique et de fsck, pour ~8 Ko. Reporté aux identifiants binaires (ADR 0028 §7).
+- Corrections s16 : r1 `3b07408`, `0aaa289`, `5df6730` (Astra 5, Sol 5, Opus 5) ; r2 `d279b1f`, `818ebdb`, `fc50f97` (Astra 7, Sol 7, Opus 7). Règle d'une seule forme par fichier (`prepare::redundant_file_objects`, captures, réceptions, réécritures) ; barrière `whole` à chaque `validate_stored_bytes` ; consolidation mixte whole/v1 dans les deux ordres ; le réseau ne porte que du v1 (`refuse_whole`). r3 : voir ci-dessous.
+
+Audit Fable 5.2 (à la demande de l'utilisateur, « tourner en rond ? ») : **NON**, continuer. Signaux qui feraient passer à OUI : deux bancs précis de suite sans écart réduit de plus de ~5 % ; Q5 repoussé une troisième fois ; un conseil au-delà de 3 tours ; une nouvelle réécriture du cache de projection ou de l'index. Choix produit à confirmer par l'utilisateur : Rooms physiques par défaut (s10 Q5) ; `room merge` ignore les modifications non capturées (s13 Q4). Écart non classé : `init` ~10 s contre 0,5 s pour git quand Defender connaît déjà les contenus.
+
+Banc précis (10 000 fichiers, **format 7**, binaire `8b5a419`, deux passes) : Store 1 180 / 1 636–1 640 Kio (git 1 892 / 1 932) ; `step` 82–83 ms (git 71–73) ; `room step` 87–91 ms ; avance rapide 80–103 ms (git 40–43) ; 2e fusion 84–86 ms (git 43–44) ; 3 voies 223–234 ms (git 253–265) ; `status` 24 / 30–33 ms (git 22 / 21) ; création de Room 1,11–1,19 s (git 2,0) ; suppression 89–91 ms (git 1 140).
+
+Profil de l'avance rapide (72 ms dans le processus, binaire 133) : matérialisation 46,5 ms dont journal de session 10,8, métadonnées et clôture 7,1, phases 5,0 (barrière NTFS 3,7), index de changements 4,7, purge 2,5 ; 5 ouvertures partagées du Store 8,8 ms ; deux lectures de projection 7,1 ms. L'essentiel de l'écart est le protocole de reprise durable (décision utilisateur n° 1 ci-dessous). Piste sans compromis : une ouverture du Store par commande (5 → 1 : ~5 ms sur `step`, `room step` et l'avance rapide ; `room step` découvre aussi le client trois fois, ~5 ms).
+
+**Reste** : format par défaut d'`init` = 5 (6 et 7 en opt-in) : à décider (le Store ne bat git qu'en format 7) ; purge des opérations de récupération terminées (clé d'idempotence) ; identifiants binaires dans SQLite ; écarts `status`, `step`, fusions ; test instable `room_merge_carries_untouched_working_changes_and_refuses_touched_ones` (« Accès refusé », Windows, 1/10 avant ce travail).
+
 ## Point courant - caches dérivés en SQLite, conseil s12 (Claude + conseil, 2026-11-12)
 
 Constat de mesure (Windows 11, Defender) : un fichier de données fraîchement écrit coûte ~5–9 ms à sa première ouverture par un nouveau processus, quelles que soient sa taille et son extension ; une base SQLite ~0,7 ms. Chaque commande relisait l'index de changements et les projections écrits par la précédente.

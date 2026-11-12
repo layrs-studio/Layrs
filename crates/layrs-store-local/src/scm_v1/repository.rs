@@ -422,20 +422,22 @@ impl NativeScmRepository {
             None => NativeCasWriter::with_fault_injector(store, Arc::clone(&self.cas_faults)),
         }
         .map_err(cas_backend)?;
-        let compact = store.compact();
-        if compact {
-            plan_file_records(&cas, batch, chunks)?;
-        }
-        let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
-        // External chunks are read and checked here in order, then every
-        // object is installed as by `put`, concurrently; outcomes and fault
-        // boundaries are consumed in the original order. A chunk a `whole`
-        // manifest of the batch names is checked in the file domain.
+        // A chunk a `whole` manifest of the batch names, or whose registered
+        // record is whole, is checked in the file domain and planned as its
+        // File's record.
         let whole = whole_external_chunks(
             batch,
             chunks,
             cas.compact_catalog().filter(|_| store.whole_files()),
         );
+        let compact = store.compact();
+        if compact {
+            plan_file_records(&cas, batch, chunks, &whole)?;
+        }
+        let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
+        // External chunks are read and checked here in order, then every
+        // object is installed as by `put`, concurrently; outcomes and fault
+        // boundaries are consumed in the original order.
         let mut external = chunks.iter();
         let mut objects = batch.canonical_objects().iter();
         let outcomes = cas.put_ordered(|| {
@@ -1220,6 +1222,7 @@ fn plan_file_records(
     cas: &NativeCasWriter<'_>,
     batch: &WriteBatch,
     chunks: &[(ChunkId, u64)],
+    whole_external: &std::collections::HashSet<ChunkId>,
 ) -> Result<()> {
     let catalog = cas
         .compact_catalog()
@@ -1229,11 +1232,11 @@ fn plan_file_records(
         chunks.iter().map(|(id, _)| id.clone()).collect();
     let mut manifests = Vec::new();
     // Files whose whole chunk the batch supplies: their file record is the
-    // whole one, even without its manifest (council s16 r2).
-    let mut whole_files: std::collections::HashSet<[u8; 32]> = whole_chunk_ids(batch)
-        .iter()
-        .map(ChunkId::digest_bytes)
-        .collect();
+    // whole one, even without its manifest (council s16 r2), and also when
+    // the chunk is external and takes its domain from its registered record
+    // (council s16 r3).
+    let mut whole_files: std::collections::HashSet<[u8; 32]> =
+        whole_external.iter().map(ChunkId::digest_bytes).collect();
     for object in batch.canonical_objects() {
         match object {
             CanonicalObject::ChunkRaw(chunk) => {

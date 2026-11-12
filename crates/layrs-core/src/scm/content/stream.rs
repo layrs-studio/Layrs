@@ -121,7 +121,11 @@ impl FileManifestVerifier<'_> {
         if next > self.manifest.byte_length {
             return Err(invalid("file length exceeds manifest"));
         }
-        self.hash.update(bytes);
+        // A whole chunk was just hashed in the file domain: its id is the
+        // FileId's digest, compared in `finish`.
+        if !self.manifest.chunks_are_whole() {
+            self.hash.update(bytes);
+        }
         self.bytes = next;
         self.next += 1;
         self.failed = false;
@@ -134,7 +138,12 @@ impl FileManifestVerifier<'_> {
         if self.next != self.manifest.chunks.len() || self.bytes != self.manifest.byte_length {
             return Err(invalid("file ended before manifest coverage"));
         }
-        let computed = FileId::from_digest(self.hash.finalize());
+        let computed = match self.manifest.chunks.as_slice() {
+            [chunk] if self.manifest.chunks_are_whole() => {
+                FileId::from_digest_bytes(&chunk.chunk_id.digest_bytes())
+            }
+            _ => FileId::from_digest(self.hash.finalize()),
+        };
         if computed != self.manifest.file_id {
             return Err(ScmError::IdentityMismatch {
                 claimed: self.manifest.file_id.to_string(),

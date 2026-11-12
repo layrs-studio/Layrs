@@ -887,6 +887,59 @@ fn a_whole_chunk_alone_and_the_v1_form_of_its_file_share_a_batch() {
     assert_fsck_clean(&root.0);
 }
 
+/// An external whole chunk no manifest of its batch names takes the domain
+/// of its registered record, and its File's record with it: a sound copy
+/// of a damaged whole record shares a batch with the v1 form of the same
+/// bytes (council s16 r3).
+#[test]
+fn an_external_whole_chunk_and_the_v1_form_of_its_file_share_a_batch() {
+    let root = TestRoot::new("whole-external-v1");
+    create(&root.0, "whole-external-v1", "7");
+    let bytes = b"bytes whose whole record is damaged";
+    let whole = file("whole.txt", bytes, Recipe::Whole);
+    let (_lane, batch) = Lane::begin("alpha", std::slice::from_ref(&whole));
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let sound = whole.chunks[0].clone();
+    flip_located(&root.0, &StoreObjectId::ChunkRaw(sound.id().clone()));
+    // Another Space receives the v1 form, and the whole chunk from outside
+    // the batch.
+    let v1 = file("v1.txt", bytes, Recipe::Fixed);
+    let (lane_b, batch) = Lane::begin("beta", std::slice::from_ref(&v1));
+    let mut admissions = batch.admissions().to_vec();
+    admissions.push(SpaceObjectAdmission::new(
+        lane_b.space.id().clone(),
+        StoreObjectId::ChunkRaw(sound.id().clone()),
+    ));
+    let batch = WriteBatch::new(
+        batch.transaction_id().clone(),
+        batch.canonical_objects().to_vec(),
+        batch.entity_records().to_vec(),
+        admissions,
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    let descriptors = vec![(sound.id().clone(), sound.byte_length())];
+    NativeScmRepository::new(&root.0)
+        .apply_batch_with_chunks(&batch, &descriptors, |id: &layrs_core::scm::ChunkId| {
+            assert_eq!(id, sound.id());
+            Ok(sound.bytes().to_vec())
+        })
+        .unwrap();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert_eq!(reader.get_chunk(sound.id()).unwrap().as_ref(), Some(&sound));
+    assert_eq!(
+        reader.get_chunk(v1.chunks[0].id()).unwrap().as_ref(),
+        Some(&v1.chunks[0])
+    );
+    assert_eq!(
+        reader.get_file_manifest(v1.manifest.id()).unwrap().as_ref(),
+        Some(&v1.manifest)
+    );
+}
+
 struct NoCasFault;
 impl CasFaultInjector for NoCasFault {
     fn check(&self, _: CasFaultPoint) -> Result<(), String> {

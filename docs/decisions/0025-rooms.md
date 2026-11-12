@@ -149,7 +149,12 @@ L'index est un cache :
     possible (sous Unix, SQLite ne donne pas son descripteur et le nom est
     revérifié après ; sous Windows, un lien symbolique planté là pour un
     `-wal` absent fait créer sa cible, vide, avant le refus : il faut le
-    privilège des liens symboliques). Ces garanties couvrent
+    privilège des liens symboliques ; la copie d'un `-wal` à trames puis de
+    la base n'est cohérente que si personne n'écrit par l'autre lien
+    pendant ce temps : un tel `-wal` n'existe qu'après un arrêt brutal ou
+    pendant qu'un écrivain le tient, et deux Stores liés en écriture en même
+    temps ne sont pas une configuration prise en charge, conseil s16 r3).
+    Ces garanties couvrent
     `layrs.sqlite3` et `derived.sqlite3`, pas encore les autres bases ni le
     fichier de verrou. Un `-wal` planté *avec des trames valides*
     est replié dans la base par le prochain écrivain, comme le ferait

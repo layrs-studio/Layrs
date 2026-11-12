@@ -227,6 +227,9 @@ impl NativeWorkspace {
         let mut canonical = bundle_objects(bundle)?;
         canonical.push(CanonicalObject::Product(product));
         canonical.push(CanonicalObject::RepositoryView(view.clone()));
+        // Only new objects, and no second form of a File the Space already
+        // holds: a merge whose result is an existing File (council s16 r3).
+        let canonical = prepare::new_objects(&reader, source.space.id(), canonical)?.in_one_form();
         let admissions = prepare::admissions(source.space.id(), &canonical);
         let batch = WriteBatch::new(
             preview.stamp.transaction_id.clone(),

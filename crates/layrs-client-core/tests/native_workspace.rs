@@ -535,11 +535,6 @@ fn native_diff_preserves_newlines_and_distinguishes_empty_from_absence() {
     assert_eq!(workspace.operations(100).unwrap().len(), 1);
 }
 
-/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
-/// than one loose file each: this damages `object`'s stored bytes by
-/// flipping one byte of the block that holds it (every record of that block
-/// then fails verification) and returns that pack. `None` for other formats,
-/// whose tests damage the loose file as before.
 /// The chunk a Store keeps for small `content`: one `whole` chunk named by
 /// its FileId in format 7 (council s13 Q5), else its v1 chunk.
 fn stored_chunk(store_root: &std::path::Path, content: &[u8]) -> layrs_core::scm::Chunk {
@@ -553,6 +548,11 @@ fn stored_chunk(store_root: &std::path::Path, content: &[u8]) -> layrs_core::scm
     }
 }
 
+/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
+/// than one loose file each: this damages `object`'s stored bytes by
+/// flipping one byte of the block that holds it (every record of that block
+/// then fails verification) and returns that pack. `None` for other formats,
+/// whose tests damage the loose file as before.
 fn damage_compact_object(
     store_root: &std::path::Path,
     object: &layrs_store::scm::StoreObjectId,

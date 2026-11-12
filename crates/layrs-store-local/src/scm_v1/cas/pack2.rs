@@ -279,7 +279,10 @@ impl Pack2Index {
             .ok()
             .map(|position| self.chunk_order[position] as usize)
             .or_else(|| {
-                self.find_file(chunk_id)
+                // Only a version 2 pack holds whole records.
+                (self.version == PACK2_VERSION_WHOLE)
+                    .then(|| self.find_file(chunk_id))
+                    .flatten()
                     .filter(|file| self.files[*file].recipe == Recipe::Whole)
             })
     }
@@ -1454,6 +1457,15 @@ mod tests {
     }
 
     fn write(name: &str, build: impl FnOnce(&mut Pack2Builder, &mut fs::File)) -> Written {
+        write_version(name, false, build)
+    }
+
+    /// `write` of a pack version 2 (Store format 7) when `whole_files`.
+    fn write_version(
+        name: &str,
+        whole_files: bool,
+        build: impl FnOnce(&mut Pack2Builder, &mut fs::File),
+    ) -> Written {
         let path = temp_path(name);
         let mut file = fs::OpenOptions::new()
             .create_new(true)
@@ -1461,7 +1473,7 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap();
-        let mut builder = Pack2Builder::start(&mut file, false).unwrap();
+        let mut builder = Pack2Builder::start(&mut file, whole_files).unwrap();
         build(&mut builder, &mut file);
         let sealed = builder.finish(&mut file).unwrap();
         file.sync_all().unwrap();
@@ -1735,6 +1747,143 @@ mod tests {
         assert!(decode_with(vec![0, 0, 0, 0], 0).is_ok());
         // Trailing bytes.
         assert!(decode_with(vec![0, 0, 0, 0, 0], 0).is_err());
+    }
+
+    /// `written`'s metadata decoded under `version`, after `patch`, with a
+    /// checksum that matches: only the structural refusals can catch it.
+    fn resealed(
+        written: &Written,
+        version: u32,
+        patch: impl FnOnce(&mut Vec<u8>),
+    ) -> CasResult<Pack2Index> {
+        let bytes = fs::read(&written.path).unwrap();
+        let end = bytes.len() - FOOTER_LEN as usize;
+        let mut footer = bytes[end..].to_vec();
+        let mut metadata = bytes[le_u64(&footer[0..8]) as usize..end].to_vec();
+        patch(&mut metadata);
+        let header = header_bytes(version);
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&header);
+        hasher.update(&metadata);
+        footer[32..64].copy_from_slice(hasher.finalize().as_bytes());
+        decode(
+            Path::new("resealed"),
+            bytes.len() as u64,
+            &header,
+            &footer,
+            &metadata,
+        )
+    }
+
+    fn replace_id(metadata: &mut [u8], from: [u8; 32], to: [u8; 32]) -> usize {
+        let at = metadata
+            .windows(32)
+            .position(|window| window == from)
+            .expect("the id is in the metadata");
+        metadata[at..at + 32].copy_from_slice(&to);
+        at
+    }
+
+    fn refused(decoded: CasResult<Pack2Index>, reason: &str) {
+        match decoded {
+            Err(CasError::PackCorruption { reason: found, .. }) => {
+                assert!(found.contains(reason), "{found}")
+            }
+            other => panic!("expected {reason:?}, got {other:?}"),
+        }
+    }
+
+    /// Packs version 2 (council s13 Q5): a whole record, a single-chunk
+    /// record and an explicit chunk round-trip; a ChunkId equal to a whole
+    /// record's FileId, as a record's chunk or an explicit chunk, and a whole
+    /// recipe in a version 1 pack are refused (council s16 r3).
+    #[test]
+    fn version_2_records_round_trip_and_ambiguous_ids_are_refused() {
+        let id = |label: &str| *blake3::hash(label.as_bytes()).as_bytes();
+        let (whole, single, single_chunk, explicit) = (
+            id("whole"),
+            id("single"),
+            id("single chunk"),
+            id("explicit"),
+        );
+        let written = write_version("whole", true, |builder, file| {
+            builder
+                .add_file(
+                    file,
+                    FileIdentity {
+                        file_id: whole,
+                        chunk_id: whole,
+                        recipe: Recipe::Whole,
+                        manifest_id: id("whole manifest"),
+                    },
+                    b"whole bytes",
+                    None,
+                )
+                .unwrap();
+            builder
+                .add_file(
+                    file,
+                    FileIdentity {
+                        file_id: single,
+                        chunk_id: single_chunk,
+                        recipe: Recipe::Single,
+                        manifest_id: id("single manifest"),
+                    },
+                    b"single bytes",
+                    None,
+                )
+                .unwrap();
+            builder
+                .add_record(file, StoreObjectKind::ChunkRaw, explicit, b"explicit", None)
+                .unwrap();
+        });
+        let index = verify_written(&written.file, &written.path, &written.sealed).unwrap();
+        assert_eq!(index.version, PACK2_VERSION_WHOLE);
+        let whole_file = index.find_file(&whole).unwrap();
+        assert_eq!(index.files[whole_file].recipe, Recipe::Whole);
+        assert_eq!(index.find_chunk_alias(&whole), Some(whole_file));
+        assert_eq!(
+            index.find_chunk_alias(&single_chunk),
+            index.find_file(&single)
+        );
+        assert!(index.find_chunk_alias(&explicit).is_none());
+        assert!(resealed(&written, PACK2_VERSION_WHOLE, |_| ()).is_ok());
+        refused(
+            resealed(&written, PACK2_VERSION_WHOLE, |metadata| {
+                replace_id(metadata, explicit, whole);
+            }),
+            "also a whole file record",
+        );
+        refused(
+            resealed(&written, PACK2_VERSION_WHOLE, |metadata| {
+                replace_id(metadata, single_chunk, whole);
+            }),
+            "also a whole file record",
+        );
+        // Version 1: the record's chunk id, then its recipe code.
+        let written = write("whole-in-v1", |builder, file| {
+            builder
+                .add_file(
+                    file,
+                    FileIdentity {
+                        file_id: single,
+                        chunk_id: single_chunk,
+                        recipe: Recipe::Single,
+                        manifest_id: id("single manifest"),
+                    },
+                    b"single bytes",
+                    None,
+                )
+                .unwrap();
+        });
+        assert!(resealed(&written, PACK2_VERSION, |_| ()).is_ok());
+        refused(
+            resealed(&written, PACK2_VERSION, |metadata| {
+                let at = replace_id(metadata, single_chunk, single_chunk);
+                metadata[at + 32] = Recipe::Whole.code();
+            }),
+            "unknown recipe",
+        );
     }
 
     #[test]

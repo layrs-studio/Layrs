@@ -38,17 +38,10 @@ pub(super) fn read(
         ) {
             return Ok(None);
         }
-        let Some((chunk, manifest)) =
-            super::super::graph::v1_equivalent(&reader, file_id, &cap.space_id)?
+        let Some(object) =
+            super::super::graph::v1_equivalent(&reader, file_id, &cap.space_id, &key)?
         else {
             return Ok(None);
-        };
-        let object = match key {
-            StoreObjectId::ChunkRaw(id) if &id == chunk.id() => CanonicalObject::ChunkRaw(chunk),
-            StoreObjectId::FileManifest(id) if &id == manifest.id() => {
-                CanonicalObject::FileManifest(manifest)
-            }
-            _ => return Ok(None),
         };
         return described(object, descriptor, id);
     }

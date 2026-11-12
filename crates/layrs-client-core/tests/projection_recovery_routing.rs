@@ -111,6 +111,35 @@ impl InstallFaults for StopAfterJournal {
     }
 }
 
+/// Every complete Store format the native reader reads routes as a
+/// complete checkout, the newest included (council s16 r3: format 7 was
+/// refused as unsupported).
+#[test]
+fn every_readable_complete_store_format_routes_as_complete() {
+    let fixture = Fixture::new();
+    for version in [
+        layrs_store_local::scm_v1::FORMAT_VERSION,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+        layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION,
+        layrs_store_local::scm_v1::WHOLE_FILES_FORMAT_VERSION,
+    ] {
+        let root = fixture.directory(&format!("format-{version}"));
+        let opened = layrs_store_local::scm_v1::init_with_format(
+            root.join(".layrs"),
+            StoreId::parse(format!("store:routing-{version}")).unwrap(),
+            version,
+        )
+        .unwrap();
+        assert_eq!(opened.format_version(), version);
+        drop(opened);
+        assert_eq!(
+            checkout_kind(&root).unwrap(),
+            "complete",
+            "format {version}"
+        );
+    }
+}
+
 #[test]
 fn interrupted_shared_checkout_is_classified_without_replay_then_explicitly_resumed() {
     let f = Fixture::new();

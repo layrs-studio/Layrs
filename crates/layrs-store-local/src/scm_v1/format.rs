@@ -77,8 +77,9 @@ pub fn creation_format_version() -> u32 {
 }
 
 /// Whether this reader reads complete Stores of `version` (3 and 4 belong
-/// to projection Stores of the same magic).
-fn supported_format(version: u64) -> bool {
+/// to projection Stores of the same magic). Routing a checkout by its
+/// marker asks the same question (council s16 r3).
+pub fn supported_format(version: u64) -> bool {
     version == u64::from(FORMAT_VERSION)
         || version == u64::from(PACKED_FORMAT_VERSION)
         || version == u64::from(COMPACT_FORMAT_VERSION)
@@ -351,7 +352,7 @@ pub fn init(
     init_with_format(root, store_id, creation_format_version())
 }
 
-/// `init` creating a Store of an explicit supported format (2, 5 or 6)
+/// `init` creating a Store of an explicit supported format (2, 5, 6 or 7)
 /// instead of the one `LAYRS_STORE_FORMAT` selects. Resuming an interrupted
 /// initialization still keeps the version of its marker.
 pub fn init_with_format(

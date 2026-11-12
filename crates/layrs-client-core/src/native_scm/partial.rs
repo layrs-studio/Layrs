@@ -109,9 +109,10 @@ pub fn checkout_kind(root: impl AsRef<Path>) -> Result<&'static str, String> {
         return Err("invalid_store_format: wrong magic".into());
     }
     match marker["formatVersion"].as_u64() {
-        // 5: complete Store whose CAS may hold packs (ADR 0026); 6: the
-        // compact complete Store (ADR 0028).
-        Some(2 | 5 | 6) => Ok("complete"),
+        // Every complete Store format the native reader reads (2, 5 with
+        // packs, ADR 0026; 6 and 7 compact, ADR 0028): one list, so a new
+        // format is never refused here (council s16 r3).
+        Some(version) if layrs_store_local::scm_v1::supported_format(version) => Ok("complete"),
         Some(3) => Ok("projection"),
         Some(4) => {
             // A family marker alone is not a checkout. Validate the locator,

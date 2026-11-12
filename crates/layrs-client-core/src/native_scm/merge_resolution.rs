@@ -200,6 +200,10 @@ impl NativeWorkspace {
         )?;
         let mut canonical = preview.canonical_objects()?;
         canonical.push(CanonicalObject::RepositoryView(view.clone()));
+        // Only new objects, and no second form of a File the Space already
+        // holds: a resolution taking one side rebuilds that side's File
+        // (council s16 r3).
+        let canonical = prepare::new_objects(&reader, source.space.id(), canonical)?.in_one_form();
         let admissions = prepare::admissions(source.space.id(), &canonical);
         let batch = WriteBatch::new(
             preview.stamp.transaction_id.clone(),

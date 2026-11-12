@@ -145,6 +145,15 @@ fn canonical_blocks_survive_store_reopen_and_final_resolution_is_exact_and_idemp
     );
     let store = open(w.store_root()).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
+    // The resolution rebuilt the first File: the Store keeps one form of it
+    // (council s16 r3).
+    assert_eq!(
+        reader
+            .file_manifest_ids_metadata(&FileId::from_bytes(b"zero\r\nsame\r\nzero\r\n"))
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         reader
             .get_step(&resolved.step_id)

@@ -556,45 +556,67 @@ pub(super) fn v1_file(
     Ok((chunk, manifest))
 }
 
-/// The v1 file of `file_id` when this Store keeps it `whole` and admitted
-/// to `space`; `None` otherwise.
+/// The object `key` names when it is the v1 chunk or manifest of a File
+/// this Store keeps `whole` and admitted to `space`; `None` otherwise.
 pub(super) fn v1_equivalent(
     reader: &NativeScmReader<'_>,
     file_id: &FileId,
     space: &SpaceId,
-) -> RemoteResult<Option<(layrs_core::scm::Chunk, FileManifest)>> {
+    key: &StoreObjectId,
+) -> RemoteResult<Option<CanonicalObject>> {
     let chunk_id = ChunkId::of_whole_file(file_id);
     if !reader.object_admitted_to_space(&StoreObjectId::ChunkRaw(chunk_id.clone()), space)? {
         return Ok(None);
     }
-    // The v1 form depends only on the File's bytes: a receive asks for it
-    // once per descriptor (chunk, manifest), so the last few are kept.
-    thread_local! {
-        static REBUILT: std::cell::RefCell<
-            std::collections::VecDeque<(FileId, layrs_core::scm::Chunk, FileManifest)>,
-        > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
-    }
-    if let Some(found) = REBUILT.with(|rebuilt| {
-        rebuilt
-            .borrow()
-            .iter()
-            .find(|(id, _, _)| id == file_id)
-            .map(|(_, chunk, manifest)| (chunk.clone(), manifest.clone()))
-    }) {
-        return Ok(Some(found));
-    }
-    let pair = match reader.get_chunk(&chunk_id)? {
-        Some(whole) if whole.is_whole() => v1_file(&whole, file_id)?,
+    // Every call reads and verifies this Store's whole chunk: a corrupt one
+    // fails here, as on the admitted path (council s16 r3).
+    let whole = match reader.get_chunk(&chunk_id)? {
+        Some(whole) if whole.is_whole() => whole,
         _ => return Ok(None),
     };
-    REBUILT.with(|rebuilt| {
-        let mut rebuilt = rebuilt.borrow_mut();
-        if rebuilt.len() >= 8 {
-            rebuilt.pop_front();
-        }
-        rebuilt.push_back((file_id.clone(), pair.0.clone(), pair.1.clone()));
+    // The v1 manifest depends on the File's bytes alone, and a receive asks
+    // for it next to the chunk: the last few manifests (never their bytes)
+    // are kept, so the chunk is hashed in its domain once per File.
+    thread_local! {
+        static MANIFESTS: std::cell::RefCell<std::collections::VecDeque<FileManifest>> =
+            const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    }
+    let cached = MANIFESTS.with(|kept| {
+        kept.borrow()
+            .iter()
+            .find(|manifest| manifest.file_id() == file_id)
+            .cloned()
     });
-    Ok(Some(pair))
+    let remember = |manifest: &FileManifest| {
+        MANIFESTS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.len() >= 64 {
+                kept.pop_front();
+            }
+            kept.push_back(manifest.clone());
+        })
+    };
+    match key {
+        StoreObjectId::FileManifest(id) => {
+            let manifest = match cached {
+                Some(manifest) => manifest,
+                None => {
+                    let (_, manifest) = v1_file(&whole, file_id)?;
+                    remember(&manifest);
+                    manifest
+                }
+            };
+            Ok((manifest.id() == id).then_some(CanonicalObject::FileManifest(manifest)))
+        }
+        StoreObjectId::ChunkRaw(id) => {
+            let (chunk, manifest) = v1_file(&whole, file_id)?;
+            if cached.is_none() {
+                remember(&manifest);
+            }
+            Ok((chunk.id() == id).then_some(CanonicalObject::ChunkRaw(chunk)))
+        }
+        _ => Ok(None),
+    }
 }
 
 #[cfg(test)]
