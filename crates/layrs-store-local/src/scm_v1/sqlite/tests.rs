@@ -505,12 +505,85 @@ fn a_writer_never_replays_a_planted_journal_nor_writes_through_a_link() {
         assert_eq!(stores, 1);
     }
     assert_eq!(header(&control), (1, 1));
-    // A database with another link is never opened by a writer.
-    fs::remove_file(&journal).unwrap();
-    let elsewhere = directory.join("elsewhere.sqlite3");
-    fs::hard_link(&path, &elsewhere).unwrap();
-    let before = fs::read(&elsewhere).unwrap();
-    #[cfg(windows)]
+}
+
+/// A database or empty WAL name with another link (a hard-link backup) is
+/// given a file of its own before a writer opens it: the other link keeps
+/// its bytes, as with git. A linked WAL holding frames is refused (council
+/// s15 r1).
+#[test]
+fn a_writer_takes_back_a_linked_database_and_never_writes_through_it() {
+    let temporary = TempDirectory::new("linked-writer");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    let directory = path.parent().unwrap().to_path_buf();
+    let backup = directory.join("backup.sqlite3");
+    let backup_wal = directory.join("backup.sqlite3-wal");
+    fs::hard_link(&path, &backup).unwrap();
+    let wal = sidecar_path(&path, "-wal");
+    if !wal.exists() {
+        fs::write(&wal, b"").unwrap();
+    }
+    fs::hard_link(&wal, &backup_wal).unwrap();
+    let before = fs::read(&backup).unwrap();
+    let writer = open_writer_existing_no_mutation(
+        &path,
+        Duration::from_millis(100),
+        &test_store_id(),
+        WriterDurability::CheckedFinish,
+    )
+    .unwrap();
+    writer
+        .execute(
+            "INSERT INTO applied_transactions VALUES ('transaction:linked', ?1, '{}', 0)",
+            [format!("blake3:{}", "0".repeat(64))],
+        )
+        .unwrap();
+    finish_writer(writer, &path).unwrap();
+    assert_eq!(fs::read(&backup).unwrap(), before);
+    assert_eq!(fs::read(&backup_wal).unwrap(), b"");
+    assert_eq!(
+        super::super::guarded_vfs::link_count(&path).unwrap(),
+        Some(1)
+    );
+    let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
+    let count: u32 = reader
+        .query_row("SELECT count(*) FROM applied_transactions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(reader);
+    // A linked WAL that holds frames is refused: they are the other
+    // link's too.
+    fs::remove_file(&backup_wal).unwrap();
+    if wal.exists() {
+        fs::remove_file(&wal).unwrap();
+    }
+    fs::write(&backup_wal, vec![1_u8; 64]).unwrap();
+    fs::hard_link(&backup_wal, &wal).unwrap();
+    assert!(checkpoint_orphaned_wal(&path, Duration::from_millis(100)).is_err());
+    assert_eq!(fs::read(&backup_wal).unwrap(), vec![1_u8; 64]);
+}
+
+/// Unix: a name whose resolution follows a link is refused (SQLite's
+/// NOFOLLOW), and an empty `-wal` linked to a file outside never has its
+/// mode changed by SQLite's Unix VFS (council s15 r1).
+#[cfg(unix)]
+#[test]
+fn unix_links_are_refused_before_sqlite_touches_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TempDirectory::new("unix-links");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    let directory = path.parent().unwrap().to_path_buf();
+    // The database name swapped for a symlink to a copy outside.
+    let outside = directory.join("outside.sqlite3");
+    fs::copy(&path, &outside).unwrap();
+    let real = directory.join("real.sqlite3");
+    fs::rename(&path, &real).unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    let before = fs::read(&outside).unwrap();
     assert!(
         open_writer_existing_no_mutation(
             &path,
@@ -520,7 +593,33 @@ fn a_writer_never_replays_a_planted_journal_nor_writes_through_a_link() {
         )
         .is_err()
     );
-    #[cfg(windows)]
-    assert!(checkpoint_orphaned_wal(&path, Duration::from_millis(100)).is_err());
-    assert_eq!(fs::read(&elsewhere).unwrap(), before);
+    assert_eq!(fs::read(&outside).unwrap(), before);
+    fs::remove_file(&path).unwrap();
+    fs::rename(&real, &path).unwrap();
+    // An empty WAL hard-linked to an outside file of another mode.
+    let wal = sidecar_path(&path, "-wal");
+    if wal.exists() {
+        fs::remove_file(&wal).unwrap();
+    }
+    let secret = directory.join("secret");
+    fs::write(&secret, b"").unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&secret, &wal).unwrap();
+    let writer = open_writer_existing_no_mutation(
+        &path,
+        Duration::from_millis(100),
+        &test_store_id(),
+        WriterDurability::EachCommit,
+    )
+    .unwrap();
+    writer
+        .execute(
+            "INSERT INTO applied_transactions VALUES ('transaction:unix', ?1, '{}', 0)",
+            [format!("blake3:{}", "0".repeat(64))],
+        )
+        .unwrap();
+    drop(writer);
+    let mode = fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(fs::read(&secret).unwrap(), b"");
 }

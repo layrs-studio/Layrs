@@ -753,18 +753,82 @@ pub(crate) fn checkpoint_orphaned_wal(path: &Path, busy_timeout: Duration) -> Re
 /// one through the file's methods, which the VFS does not see). Every writer
 /// holds the Store's exclusive lock; readers open the database `immutable=1`
 /// and take no SQLite lock.
+///
+/// Always `SQLITE_OPEN_NOFOLLOW`: SQLite refuses a path whose resolution
+/// follows a link (council s15 r1). A database or `-wal` name with another
+/// link (a hard-link backup) is first given a file of its own
+/// (`take_back_linked_names`).
 fn open_guarded_writer(path: &Path, flags: OpenFlags) -> Result<Connection> {
     if !super::guarded_vfs::register() {
         return Err(ScmSchemaError::InvalidMetadata(
             "the guarded SQLite VFS is unavailable".into(),
         ));
     }
-    let connection =
-        Connection::open_with_flags_and_vfs(path, flags, super::guarded_vfs::MAIN_AND_WAL)?;
+    take_back_linked_names(path)?;
+    let connection = Connection::open_with_flags_and_vfs(
+        path,
+        flags | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        super::guarded_vfs::MAIN_AND_WAL,
+    )?;
     let mode: String =
         connection.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |row| row.get(0))?;
     require_pragma("locking_mode", "exclusive", mode.to_ascii_lowercase())?;
     Ok(connection)
+}
+
+/// Gives the database at `path` and its `-wal` names of their own when
+/// another link shares their file (a hard-link backup, `cp -al`), as git,
+/// which never writes into an existing file, keeps such a backup intact
+/// (council s15 r1). The caller holds the Store's exclusive lock.
+/// - The database: its bytes are copied to a staged file in the same
+///   folder, synced, and renamed over its name; the other link keeps its
+///   bytes.
+/// - An empty `-wal`: its name is removed (SQLite makes a new one).
+/// - A `-wal` holding frames is refused: they belong to the database the
+///   other link also names.
+fn take_back_linked_names(path: &Path) -> Result<()> {
+    let _span = crate::perf::span("sqlite.take_back");
+    let linked = |path: &Path| -> Result<bool> {
+        Ok(super::guarded_vfs::link_count(path)?.is_some_and(|links| links > 1))
+    };
+    let wal = sidecar_path(path, "-wal");
+    if linked(&wal)? {
+        if fs::symlink_metadata(&wal)?.len() != 0 {
+            return Err(ScmSchemaError::InvalidMetadata(format!(
+                "{} holds frames and has another hard link (a hard-link backup?): \
+                 copy the folder instead of linking it",
+                wal.display()
+            )));
+        }
+        fs::remove_file(&wal)?;
+    }
+    if !linked(path)? {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or_else(|| {
+        ScmSchemaError::InvalidMetadata("database path has no parent directory".into())
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| ScmSchemaError::InvalidMetadata("database name is not UTF-8".into()))?;
+    let staged = parent.join(format!(".{name}.unlinking"));
+    remove_regular_staged_file(&staged)?;
+    {
+        let mut source = crate::layout::open_read_no_follow(path)?;
+        let mut copy = create_new_file_no_follow(&staged)?;
+        std::io::copy(&mut source, &mut copy)?;
+        copy.sync_all()?;
+    }
+    super::format::atomic_replace(&staged, path)?;
+    sync_directory(parent)?;
+    if linked(path)? {
+        return Err(ScmSchemaError::InvalidMetadata(format!(
+            "{} still has another hard link",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {

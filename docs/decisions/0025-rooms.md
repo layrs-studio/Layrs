@@ -132,9 +132,22 @@ L'index est un cache :
     un seul lien), ne voit jamais de journal de retour arrière, et prennent
     `locking_mode=EXCLUSIVE` avant leur première lecture (index du WAL en
     mémoire, aucun `-shm`) ; ses lecteurs l'ouvrent `immutable=1` et ne
-    regardent aucun fichier annexe. Risque résiduel : sous Unix, SQLite ne
-    donne pas son descripteur, le nom est revérifié après l'ouverture ; un
-    nom remplacé par un lien physique entre les deux est écrit. La base
+    regardent aucun fichier annexe. Ils ouvrent toujours avec
+    `SQLITE_OPEN_NOFOLLOW` (SQLite refuse un chemin dont la résolution suit
+    un lien), et le VFS refuse un nom qui est un lien *avant* que SQLite ne
+    l'ouvre (sous Unix, SQLite change le mode d'un `-wal` vide qu'il ouvre ;
+    sous Windows, il crée la cible absente d'un `-wal` lié) (conseil s15
+    r1). Une base ou un `-wal` vide qui partage son fichier avec un autre
+    lien (sauvegarde par liens physiques, `cp -al`) reçoit d'abord un
+    fichier à lui : la base est copiée, synchronisée et renommée sur son nom,
+    le nom du `-wal` vide est retiré ; l'autre lien garde ses octets, comme
+    avec git. Un `-wal` lié qui contient des trames est refusé. Risques
+    acceptés : sous Unix, SQLite ne donne pas son descripteur, le nom est
+    revérifié après l'ouverture ; un nom remplacé entre les contrôles et
+    l'ouverture reste possible. Un `-wal` planté *avec des trames valides*
+    est replié dans la base par le prochain écrivain, comme le ferait
+    SQLite : un processus qui peut écrire dans `metadata/` peut aussi
+    remplacer la base elle-même, ce n'est donc pas une élévation. La base
     candidate d'un compactage (`VACUUM INTO`, maintenance) reste hors de ce
     VFS ;
 - s'il est illisible, tout est relu ;

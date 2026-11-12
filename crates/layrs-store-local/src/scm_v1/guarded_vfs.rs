@@ -14,13 +14,19 @@
 //!   `MAIN_ONLY`) absent, so no hot journal is ever seen, let alone
 //!   replayed;
 //! - `xDelete` deletes nothing but a `-wal` of `MAIN_AND_WAL`;
-//! - a writable open must name a file of its own: on Windows, the file SQLite
-//!   opened must be a regular file with a single link, and its name, opened
-//!   without following links, must name that same file and not be a reparse
-//!   point (a name swapped for a link, or a hard link to a file outside the
-//!   Store, is refused). Elsewhere, the name is checked without following
-//!   links after the open (a swap racing that check stays possible;
-//!   protected links on Linux mitigate it). A read-only open never writes.
+//! - a writable open must name a file of its own. Before the default VFS
+//!   opens it, the name, not followed, must be absent or a regular file that
+//!   is not a link (on Unix, with one link): SQLite's Unix VFS changes the
+//!   mode of an empty `-wal` it opens, and Windows creates the missing target
+//!   of a linked `-wal` (council s15 r1). After, on Windows, the file SQLite
+//!   opened must be a regular file with a single link and no reparse point,
+//!   and its name, opened without following links, must be that same file
+//!   (its 128-bit file id): a name swapped for a link, or a hard link to a
+//!   file outside the Store, is refused. On Unix the name is checked again
+//!   after the open (a swap racing these checks stays possible; protected
+//!   links on Linux mitigate it); callers open with `SQLITE_OPEN_NOFOLLOW`,
+//!   so SQLite refuses a path whose resolution follows a link. A read-only
+//!   open never writes.
 //!
 //! Every other method is the default VFS's, called with its own `sqlite3_vfs`
 //! (the platform VFSes read their `pAppData`).
@@ -164,13 +170,19 @@ unsafe extern "C" fn x_open(
         if flags & allowed == 0 {
             return ffi::SQLITE_CANTOPEN;
         }
+        let writable = flags & ffi::SQLITE_OPEN_READWRITE != 0;
+        // Before the default VFS touches it (Unix sets an empty WAL's mode,
+        // Windows creates a linked WAL's missing target).
+        if writable && !plain_name(name) {
+            return ffi::SQLITE_CANTOPEN;
+        }
         let rc = open(inner, name, file, flags, out_flags);
         if rc != ffi::SQLITE_OK {
             return rc;
         }
         // A read-only open never writes: only a writable one must name a
         // file of its own.
-        if flags & ffi::SQLITE_OPEN_READWRITE != 0 && !opened_as_named(file, name) {
+        if writable && !opened_as_named(file, name) {
             if let Some(methods) = (*file).pMethods.as_ref() {
                 if let Some(close) = methods.xClose {
                     close(file);
@@ -183,21 +195,116 @@ unsafe extern "C" fn x_open(
     }
 }
 
+/// The name SQLite passed, as UTF-8.
+fn name_text<'n>(name: *const c_char) -> Option<&'n str> {
+    // SAFETY: SQLite passes a NUL-terminated path that outlives the call.
+    (unsafe { CStr::from_ptr(name) }).to_str().ok()
+}
+
+/// Whether the name, not followed, is absent (a creation) or a regular file
+/// that is not a link (on Unix, with one link).
+fn plain_name(name: *const c_char) -> bool {
+    let Some(path) = name_text(name) else {
+        return false;
+    };
+    match std::fs::symlink_metadata(path) {
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        Ok(metadata) => {
+            #[cfg(windows)]
+            let own = {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes()
+                    & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                    == 0
+            };
+            #[cfg(unix)]
+            let own = {
+                use std::os::unix::fs::MetadataExt;
+                metadata.nlink() == 1
+            };
+            #[cfg(not(any(windows, unix)))]
+            let own = false;
+            metadata.is_file() && own
+        }
+    }
+}
+
+/// The links of the file `path` names, not followed; `None` when it is
+/// absent. (A Store writer takes back a name with another link, `sqlite`.)
+pub(crate) fn link_count(path: &std::path::Path) -> std::io::Result<Option<u64>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            GetFileInformationByHandle,
+        };
+        let file = match std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is open for the call; `info` is writable.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Some(u64::from(info.nNumberOfLinks)))
+    }
+    #[cfg(not(windows))]
+    {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    Ok(Some(metadata.nlink()))
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = metadata;
+                    Ok(Some(u64::MAX))
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// Windows: the handle SQLite opened names a regular file with one link and
 /// no reparse point, and the name, opened without following links, is that
-/// same file.
+/// same file: same volume and 128-bit file id (ReFS ids do not fit the
+/// 64-bit index).
 #[cfg(windows)]
 unsafe fn opened_as_named(file: *mut ffi::sqlite3_file, name: *const c_char) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx,
     };
-    let info = |handle: *mut c_void| -> Option<BY_HANDLE_FILE_INFORMATION> {
+    let info = |handle: *mut c_void| -> Option<(BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO)> {
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: `handle` is open for the call; `info` is writable.
-        (unsafe { GetFileInformationByHandle(handle, &mut info) } != 0).then_some(info)
+        let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: `handle` is open for the calls; both outputs are writable
+        // and `id` is exactly `size_of::<FILE_ID_INFO>()` bytes.
+        let read = unsafe {
+            GetFileInformationByHandle(handle, &mut info) != 0
+                && GetFileInformationByHandleEx(
+                    handle,
+                    FileIdInfo,
+                    (&mut id as *mut FILE_ID_INFO).cast(),
+                    std::mem::size_of::<FILE_ID_INFO>() as u32,
+                ) != 0
+        };
+        read.then_some((info, id))
     };
     // SAFETY: the file was just opened by the default VFS, whose methods
     // answer SQLITE_FCNTL_WIN32_GET_HANDLE with its HANDLE.
@@ -217,11 +324,10 @@ unsafe fn opened_as_named(file: *mut ffi::sqlite3_file, name: *const c_char) -> 
         }
         info(handle)
     };
-    let Some(opened) = opened else {
+    let Some((opened, opened_id)) = opened else {
         return false;
     };
-    // SAFETY: SQLite passes a NUL-terminated UTF-8 path.
-    let Ok(path) = (unsafe { CStr::from_ptr(name) }).to_str() else {
+    let Some(path) = name_text(name) else {
         return false;
     };
     let Ok(named) = std::fs::OpenOptions::new()
@@ -231,33 +337,20 @@ unsafe fn opened_as_named(file: *mut ffi::sqlite3_file, name: *const c_char) -> 
     else {
         return false;
     };
-    let Some(named_info) = info(named.as_raw_handle()) else {
+    let Some((named_info, named_id)) = info(named.as_raw_handle()) else {
         return false;
     };
     opened.nNumberOfLinks == 1
         && opened.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
         && named_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && named_info.dwVolumeSerialNumber == opened.dwVolumeSerialNumber
-        && named_info.nFileIndexHigh == opened.nFileIndexHigh
-        && named_info.nFileIndexLow == opened.nFileIndexLow
+        && named_id.VolumeSerialNumber == opened_id.VolumeSerialNumber
+        && named_id.FileId.Identifier == opened_id.FileId.Identifier
 }
 
-/// Elsewhere: the name, not followed, is a regular file with one link.
+/// Elsewhere: the name, not followed, is still a regular file with one link.
 #[cfg(not(windows))]
 unsafe fn opened_as_named(_file: *mut ffi::sqlite3_file, name: *const c_char) -> bool {
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt;
-    // SAFETY: SQLite passes a NUL-terminated path.
-    let Ok(path) = (unsafe { CStr::from_ptr(name) }).to_str() else {
-        return false;
-    };
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| {
-        #[cfg(unix)]
-        let single = metadata.nlink() == 1;
-        #[cfg(not(unix))]
-        let single = false;
-        metadata.is_file() && single
-    })
+    plain_name(name) && name_text(name).is_some_and(|path| std::path::Path::new(path).exists())
 }
 
 unsafe extern "C" fn x_delete(
@@ -537,7 +630,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     #[test]
     fn a_database_with_another_link_is_refused() {
         let root = temp();

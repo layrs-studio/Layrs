@@ -366,13 +366,6 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
     }
 
-    /// Whether this batch carries the manifest `manifest`.
-    fn carried_manifest(&self, manifest: &FileManifestId) -> bool {
-        self.manifests_by_file
-            .values()
-            .any(|manifests| manifests.contains(manifest))
-    }
-
     /// Answers, in bulk, the per-File metadata questions that validating the
     /// batch's Trees asks one File at a time: presence (Tree validation) and
     /// the admission closure. Only Files without a manifest in this batch
@@ -417,8 +410,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
         // step admitting the manifests of its new content keeps the proof
         // by existence.
         let admits_manifests = self.batch.admissions().iter().any(|admission| {
-            matches!(admission.object_id(), StoreObjectId::FileManifest(manifest)
-                if !self.carried_manifest(manifest))
+            matches!(admission.object_id(), StoreObjectId::FileManifest(_))
+                && self.overlay_object(admission.object_id()).is_none()
         });
         for space in spaces {
             // Files a durably admitted manifest closes need no manifest id
