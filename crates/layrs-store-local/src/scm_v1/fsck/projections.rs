@@ -94,17 +94,28 @@ impl Context<'_> {
             }
             // The chunk is also checked in the domain the manifest's recipe
             // declares, not only in the one its stored copy has (council s16
-            // r1): a `single` manifest never names a whole chunk.
-            let mut bytes = Vec::with_capacity(usize::try_from(entry.byte_length()).unwrap_or(0));
+            // r1): a `single` manifest never names a whole chunk. Streamed,
+            // never buffered (council s16 r2).
+            let mut chunk_hasher = blake3::Hasher::new();
+            chunk_hasher.update(if manifest.chunks_are_whole() {
+                b"layrs-file-v1\0".as_slice()
+            } else {
+                b"layrs-chunk-v1\0".as_slice()
+            });
             let chunk_length = cas
                 .stream_verified_chunk(entry.chunk_id(), |part| {
-                    bytes.extend_from_slice(part);
+                    hasher.update(part);
+                    chunk_hasher.update(part);
                 })
                 .map_err(|error| error.to_string())?;
-            manifest
-                .chunk(entry, bytes)
-                .map(|chunk| hasher.update(chunk.bytes()))
-                .map_err(|error| format!("Chunk {}: {error}", entry.chunk_id()))?;
+            if layrs_core::scm::ChunkId::from_digest_bytes(chunk_hasher.finalize().as_bytes())
+                != *entry.chunk_id()
+            {
+                return Err(format!(
+                    "Chunk {} is not named in its manifest's domain",
+                    entry.chunk_id()
+                ));
+            }
             if chunk_length != entry.byte_length() {
                 return Err(format!(
                     "Chunk {} length is {}, expected {}",

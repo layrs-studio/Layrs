@@ -102,10 +102,30 @@ pub(super) fn encode_envelope<T: Serialize>(
     })
 }
 
+/// Decodes and checks stored bytes as `expected`. A `whole` manifest (council
+/// s13 Q5) is content only in a Store that keeps whole files
+/// (`whole_files`, format 7); anywhere else it is corruption (council s16
+/// r2). A raw chunk decoded here is always a v1 chunk.
 pub(super) fn validate_stored_bytes(
     expected: &StoreObjectId,
     bytes: &[u8],
+    whole_files: bool,
 ) -> CasResult<CanonicalObject> {
+    let object = validate_stored_bytes_any(expected, bytes)?;
+    if !whole_files {
+        if let CanonicalObject::FileManifest(manifest) = &object {
+            if manifest.chunks_are_whole() {
+                return Err(corruption(
+                    expected,
+                    "a whole file belongs only in a Store of format 7",
+                ));
+            }
+        }
+    }
+    Ok(object)
+}
+
+fn validate_stored_bytes_any(expected: &StoreObjectId, bytes: &[u8]) -> CasResult<CanonicalObject> {
     if let StoreObjectId::ChunkRaw(expected_id) = expected {
         let chunk = Chunk::new(bytes.to_vec())
             .map_err(|error| corruption(expected, format!("invalid raw Chunk: {error}")))?;
@@ -356,13 +376,47 @@ mod tree_envelope_tests {
             assert_eq!(tree_envelope(&tree).unwrap(), general);
             let id = StoreObjectId::Tree(tree.id().clone());
             assert_eq!(
-                validate_stored_bytes(&id, &general).unwrap(),
+                validate_stored_bytes(&id, &general, false).unwrap(),
                 CanonicalObject::Tree(tree.clone())
             );
             // One altered byte (a space) is not canonical.
             let mut spaced = general.clone();
             spaced.insert(1, b' ');
-            assert!(validate_stored_bytes(&id, &spaced).is_err());
+            assert!(validate_stored_bytes(&id, &spaced, false).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod whole_gate_tests {
+    use super::*;
+
+    /// A whole manifest decodes as content only for a Store of format 7
+    /// (council s16 r2); any other read refuses it as corruption.
+    #[test]
+    fn a_whole_manifest_is_content_only_in_format_7() {
+        let chunk = Chunk::whole(b"alpha".to_vec()).unwrap();
+        let manifest = layrs_core::scm::FileManifest::from_chunks(
+            layrs_core::scm::ChunkingDescriptor::whole(),
+            std::slice::from_ref(&chunk),
+        )
+        .unwrap();
+        let object = CanonicalObject::FileManifest(manifest.clone());
+        let bytes = encode_object(&object).unwrap();
+        let id = object.object_id();
+        assert_eq!(validate_stored_bytes(&id, &bytes, true).unwrap(), object);
+        assert!(matches!(
+            validate_stored_bytes(&id, &bytes, false),
+            Err(CasError::Corruption { .. })
+        ));
+        // A v1 manifest is content everywhere.
+        let v1 = layrs_core::scm::FileManifest::from_chunks(
+            layrs_core::scm::fixed_chunking(5),
+            &[Chunk::new(b"alpha".to_vec()).unwrap()],
+        )
+        .unwrap();
+        let object = CanonicalObject::FileManifest(v1);
+        let bytes = encode_object(&object).unwrap();
+        assert!(validate_stored_bytes(&object.object_id(), &bytes, false).is_ok());
     }
 }

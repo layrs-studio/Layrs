@@ -738,7 +738,7 @@ impl NativeCas {
     fn stage_encoded(&self, object_id: StoreObjectId, bytes: Vec<u8>) -> CasResult<PreparedObject> {
         let _span = crate::perf::span("cas.stage");
         let lease = StagingLease::shared(&self.staging_lease_path)?;
-        validate_stored_bytes(&object_id, &bytes)?;
+        validate_stored_bytes(&object_id, &bytes, self.whole_files)?;
         let staging = self.pinned_staging()?;
         let mut last_error = None;
         for _ in 0..64 {
@@ -774,7 +774,7 @@ impl NativeCas {
                             reason: "staging reread differs from encoded bytes".into(),
                         });
                     }
-                    validate_stored_bytes(&object_id, &reread)?;
+                    validate_stored_bytes(&object_id, &reread, self.whole_files)?;
                     self.hit(CasFaultPoint::AfterStagingValidation)?;
                     return Ok(PreparedObject {
                         object_id,
@@ -820,7 +820,7 @@ impl NativeCas {
                 reason: "staging object changed before publication".into(),
             });
         }
-        validate_stored_bytes(&prepared.object_id, &staged)?;
+        validate_stored_bytes(&prepared.object_id, &staged, self.whole_files)?;
 
         let relative = object_relative_path(&prepared.object_id)?;
         let objects = self.pinned_objects()?;
@@ -928,7 +928,7 @@ impl NativeCas {
             let prepared = self.stage_encoded(object_id, bytes)?;
             return self.install(prepared).map(Slot::Done);
         }
-        validate_stored_bytes(&object_id, &bytes)?;
+        validate_stored_bytes(&object_id, &bytes, self.whole_files)?;
         let mut packer = self
             .packer
             .lock()
@@ -993,7 +993,7 @@ impl NativeCas {
             });
         }
         // Equal bytes: one validation covers both the encoding and the file.
-        validate_stored_bytes(&object_id, &stored)?;
+        validate_stored_bytes(&object_id, &stored, self.whole_files)?;
         let shard = target
             .parent()
             .map(Path::to_path_buf)
@@ -1077,7 +1077,7 @@ impl NativeCas {
             Err(error) => return Err(io_error("open CAS object", &path, error)),
         };
         let bytes = read_pinned(&mut file, &path)?;
-        validate_stored_bytes(object_id, &bytes)
+        validate_stored_bytes(object_id, &bytes, self.whole_files)
     }
 
     /// Verifies one object. Chunk hashing is streamed; JSON envelopes are
@@ -1130,7 +1130,7 @@ impl NativeCas {
             verify_chunk_stream(file.file_mut(), object_id, &path)
         } else {
             let bytes = read_pinned(&mut file, &path)?;
-            validate_stored_bytes(object_id, &bytes).map(|_| ())
+            validate_stored_bytes(object_id, &bytes, self.whole_files).map(|_| ())
         }
     }
 
@@ -1669,7 +1669,7 @@ impl NativeCas {
                 id: prepared.object_id.to_string(),
             });
         }
-        validate_stored_bytes(&prepared.object_id, &bytes).map(|_| ())
+        validate_stored_bytes(&prepared.object_id, &bytes, self.whole_files).map(|_| ())
     }
 
     fn cleanup_staging(&self, source: &PinnedFile, path: &Path) -> CasResult<()> {

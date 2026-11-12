@@ -685,6 +685,9 @@ fn a_whole_and_a_v1_record_of_one_file_consolidate_in_either_order() {
         repository
             .apply_batch(&lane.capture(&files, carried))
             .unwrap();
+        // The pack holding the whole record and the one holding the v1 record.
+        let mixed = registered_packs(&root.0);
+        assert_eq!(mixed.len(), 2, "{label}");
         for step in 0..6 {
             let added = file(&format!("f{step}.bin"), &noise(300, step), Recipe::Fixed);
             let carried = file_objects(std::slice::from_ref(&added));
@@ -694,7 +697,16 @@ fn a_whole_and_a_v1_record_of_one_file_consolidate_in_either_order() {
                 .unwrap();
         }
         drop(repository);
-        assert!(registered_packs(&root.0).len() < 8, "{label}");
+        // Both were consolidated, neither left out (council s16 r2).
+        let registered = registered_packs(&root.0);
+        assert!(
+            mixed.iter().all(|pack| !registered.contains(pack)),
+            "{label}: {registered:?}"
+        );
+        assert!(
+            !root.0.join("metadata/consolidation-skipped").exists(),
+            "{label}"
+        );
         let store = open(&root.0).unwrap();
         let reader = NativeScmReader::new(&store).unwrap();
         let mut both = vec![whole.manifest.id().clone(), v1.manifest.id().clone()];

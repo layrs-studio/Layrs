@@ -1024,7 +1024,7 @@ impl NativeCas {
     ) -> CasResult<Option<(Vec<u8>, CanonicalObject)>> {
         for (index, entry) in self.pack_candidates(object_id, fresh)? {
             let checked = self.read_pack_member(&index, &entry).and_then(|bytes| {
-                validate_stored_bytes(object_id, &bytes).map(|object| (bytes, object))
+                validate_stored_bytes(object_id, &bytes, false).map(|object| (bytes, object))
             });
             match checked {
                 Ok(found) => return Ok(Some(found)),
@@ -1276,8 +1276,10 @@ impl NativeCas {
                         report.checked_objects += 1;
                         let (id, checked) = match entry.key.object_id() {
                             Ok(object_id) => {
-                                let checked = read_member(file.file_mut(), &path, entry)
-                                    .and_then(|bytes| validate_stored_bytes(&object_id, &bytes));
+                                let checked =
+                                    read_member(file.file_mut(), &path, entry).and_then(|bytes| {
+                                        validate_stored_bytes(&object_id, &bytes, false)
+                                    });
                                 (object_id.to_string(), checked.map(|_| ()))
                             }
                             Err(error) => (String::from("pack entry"), Err(error)),
@@ -1301,7 +1303,7 @@ impl NativeCas {
                     let mut damaged = Vec::new();
                     let scanned = scan_records(file.file_mut(), &path, |key, read| {
                         let checked = key.object_id().and_then(|object_id| {
-                            read.and_then(|bytes| validate_stored_bytes(&object_id, &bytes))
+                            read.and_then(|bytes| validate_stored_bytes(&object_id, &bytes, false))
                                 .map(|_| ())
                                 .map_err(|error| CasError::Corruption {
                                     kind: object_id.kind(),

@@ -818,7 +818,7 @@ impl NativeCas {
                     .ok_or_else(|| pack2::pack2_corruption(&loaded.path, "unknown record kind"))?;
                 let object_id = pack2::object_id_of(kind, &id)?;
                 let body = pack2::record_body(raw, location, code, &loaded.path)?;
-                let object = validate_stored_bytes(&object_id, body)?;
+                let object = validate_stored_bytes(&object_id, body, self.whole_files)?;
                 open.builder
                     .add_record(sink, kind, id, body, None)
                     .map_err(write)?;
@@ -844,20 +844,27 @@ impl NativeCas {
                     recipe: record.recipe,
                     manifest_id: loaded.alias_manifest_digest(file)?,
                 };
-                match files_written.get(&record.file_id) {
-                    Some(written) if *written == identity => return Ok(()),
-                    Some(_) => {
-                        return Err(CopyFailure::Source(pack2::pack2_corruption(
-                            &loaded.path,
-                            "one FileId has two different file records",
-                        )));
+                // A v1 record of a File also kept whole is copied as explicit
+                // records whichever comes first (council s16 r2): only the
+                // whole record is a file record.
+                let explicit =
+                    record.recipe != Recipe::Whole && whole_files.contains(&record.file_id);
+                if !explicit {
+                    match files_written.get(&record.file_id) {
+                        Some(written) if *written == identity => return Ok(()),
+                        Some(_) => {
+                            return Err(CopyFailure::Source(pack2::pack2_corruption(
+                                &loaded.path,
+                                "one FileId has two different file records",
+                            )));
+                        }
+                        None => {}
                     }
-                    None => {}
                 }
                 let (_, chunk_id) = loaded.alias_ids(file)?;
                 let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
                 validate_file_record_chunk(chunk_id, body, record.recipe)?;
-                if record.recipe != Recipe::Whole && whole_files.contains(&record.file_id) {
+                if explicit {
                     // Its File is kept whole too: this v1 chunk and manifest
                     // become explicit records.
                     let chunk_code = pack2::kind_code(StoreObjectKind::ChunkRaw);
@@ -1488,7 +1495,7 @@ impl RegisteredCatalog {
             let (kind, _, location) = loaded.index.explicit(ordinal)?;
             let block = loaded.read_block(cas, location.block).ok()?;
             let body = pack2::record_body(&block, location, kind, &loaded.path).ok()?;
-            let object = validate_stored_bytes(id, body).ok()?;
+            let object = validate_stored_bytes(id, body, cas.whole_files).ok()?;
             crate::perf::count("cas.read_recent_hit", 1);
             return Some((u64::from(location.length), object));
         }
@@ -1619,7 +1626,7 @@ impl RegisteredCatalog {
                     .index
                     .explicit(ordinal)
                     .ok_or_else(|| corruption(id, "pack record vanished"))?;
-                validate_stored_bytes(id, &self.body(cas, pack, kind, location)?)
+                validate_stored_bytes(id, &self.body(cas, pack, kind, location)?, cas.whole_files)
             }
             Placement::Chunk { pack, file } => {
                 let loaded = &self.packs[pack].pack;
@@ -2552,7 +2559,7 @@ impl NativeCas {
                 validate_file_record_chunk(chunk_id.clone(), &bytes, Recipe::Whole)?;
             }
             None => {
-                validate_stored_bytes(&object_id, &bytes)?;
+                validate_stored_bytes(&object_id, &bytes, self.whole_files)?;
             }
         }
         let raw = pack2::raw_digest(&object_id)?;
@@ -3012,7 +3019,8 @@ impl RegisteredCatalog {
                     (None, None) => Err(pack2::pack2_corruption(&loaded.path, "pack not opened")),
                 };
                 for record in records {
-                    let (object, name, result) = scrub_record(&loaded, record, raw.as_ref());
+                    let (object, name, result) =
+                        scrub_record(&loaded, record, raw.as_ref(), cas.whole_files);
                     let copy = AuditedCopy {
                         path: loaded.path.clone(),
                         object,
@@ -3136,6 +3144,7 @@ fn scrub_record(
     loaded: &LoadedPack,
     record: pack2::RecordRef,
     raw: Result<&Vec<u8>, &CasError>,
+    whole_files: bool,
 ) -> (String, String, CasResult<()>) {
     match record {
         pack2::RecordRef::Explicit(ordinal) => {
@@ -3159,7 +3168,7 @@ fn scrub_record(
             };
             let checked = raw.map_err(Clone::clone).and_then(|block| {
                 let body = pack2::record_body(block, location, kind, &loaded.path)?;
-                validate_stored_bytes(&id, body).map(|_| ())
+                validate_stored_bytes(&id, body, whole_files).map(|_| ())
             });
             (id.to_string(), id.to_string(), checked)
         }
@@ -3202,7 +3211,7 @@ fn validate_file_record_chunk(
 ) -> CasResult<CanonicalObject> {
     let id = StoreObjectId::ChunkRaw(chunk_id);
     if recipe != Recipe::Whole {
-        return validate_stored_bytes(&id, body);
+        return validate_stored_bytes(&id, body, false);
     }
     match Chunk::whole(body.to_vec()) {
         Ok(chunk) if StoreObjectId::ChunkRaw(chunk.id().clone()) == id => {
