@@ -53,7 +53,8 @@ use std::{
 const FILE: &str = "derived.sqlite3";
 /// "LYRD": marks a database as this cache.
 const APPLICATION_ID: i64 = 0x4C59_5244;
-const SCHEMA_VERSION: i64 = 1;
+/// 2: values are zstd frames (one per value, with its content size).
+const SCHEMA_VERSION: i64 = 2;
 const BUSY: Duration = Duration::from_secs(1);
 const CHANGE_INDEX_TABLE: &str =
     "CREATE TABLE change_index (worktree TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL)";
@@ -454,8 +455,31 @@ fn get(
         Err(error) if invalid(&error) => Err(Unread::Malformed),
         Err(_) => Err(Unread::Unavailable),
         Ok(None) => Ok(None),
-        Ok(Some(Some(bytes))) => Ok(Some(bytes)),
+        Ok(Some(Some(stored))) => decompress(&stored, max_bytes).map(Some),
         Ok(Some(None)) => Err(Unread::Malformed),
+    }
+}
+
+/// A value as stored: one zstd frame declaring its content size. Each value
+/// keeps its own encoding and checksum inside; this only shrinks the
+/// database (a change index or a projection compresses to about a third).
+fn compress(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let _span = crate::perf::span("derived.compress");
+    zstd::bulk::compress(bytes, 1)
+}
+
+/// The value of a stored frame of at most `max_bytes` declared bytes,
+/// allocated to that size; anything else is a malformed value.
+fn decompress(stored: &[u8], max_bytes: u64) -> Result<Vec<u8>, Unread> {
+    let _span = crate::perf::span("derived.decompress");
+    let size = match zstd::zstd_safe::get_frame_content_size(stored) {
+        Ok(Some(size)) if size <= max_bytes => size,
+        _ => return Err(Unread::Malformed),
+    };
+    let capacity = usize::try_from(size).map_err(|_| Unread::Malformed)?;
+    match zstd::bulk::decompress(stored, capacity) {
+        Ok(bytes) if bytes.len() == capacity => Ok(bytes),
+        _ => Err(Unread::Malformed),
     }
 }
 
@@ -528,6 +552,7 @@ fn change_index_exists(store_root: &Path, worktree: &str) -> bool {
 }
 
 pub(crate) fn change_index_put(store_root: &Path, worktree: &str, bytes: &[u8]) -> io::Result<()> {
+    let bytes = compress(bytes)?;
     let put = || -> Result<(), Option<rusqlite::Error>> {
         let connection = open(store_root, Access::Create).map_err(|_| None)?;
         connection
@@ -663,6 +688,7 @@ impl Projections {
         positions: bool,
         bytes: &[u8],
     ) -> io::Result<()> {
+        let bytes = compress(bytes)?;
         self.noted(self.connection().execute(
             "INSERT INTO projection (root, base, positions, seq, bytes) \
                  VALUES (?1, ?2, ?3, (SELECT coalesce(max(seq), 0) + 1 FROM projection), ?4) \
@@ -726,6 +752,45 @@ mod tests {
         ));
         fs::create_dir_all(root.join("metadata")).unwrap();
         root
+    }
+
+    /// Values are zstd frames: a frame declaring more than the reader's
+    /// bound is never inflated, and bytes that are not a frame are a
+    /// malformed value.
+    #[test]
+    fn values_are_compressed_and_bounded_before_they_are_inflated() {
+        let store = temp();
+        let value = vec![7_u8; 100_000];
+        change_index_put(&store, "w", &value).unwrap();
+        let stored: Vec<u8> = Connection::open(path(&store))
+            .unwrap()
+            .query_row(
+                "SELECT bytes FROM change_index WHERE worktree = 'w'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.len() < 1_000, "{}", stored.len());
+        assert!(matches!(
+            change_index_get(&store, "w", 100_000),
+            Stored::Present(bytes) if bytes == value
+        ));
+        assert!(matches!(
+            change_index_get(&store, "w", 99_999),
+            Stored::Malformed
+        ));
+        Connection::open(path(&store))
+            .unwrap()
+            .execute(
+                "UPDATE change_index SET bytes = x'00010203' WHERE worktree = 'w'",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            change_index_get(&store, "w", 1 << 20),
+            Stored::Malformed
+        ));
+        let _ = fs::remove_dir_all(store);
     }
 
     #[test]

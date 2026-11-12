@@ -103,7 +103,10 @@ L'index est un cache :
   plus qu'une page de cette base (mesuré en novembre 2026). Contrat de cette
   base (conseil s12) :
   - chaque valeur garde son encodage, sa liaison et sa somme de contrôle ; la
-    base n'est qu'un conteneur ;
+    base n'est qu'un conteneur. Elle y est rangée compressée (une trame zstd
+    qui déclare sa taille, bornée avant d'être décompressée ; version 2 de la
+    base) : un index de changements ou une projection tient en environ un
+    tiers ;
   - écritures sans synchronisation, journal en mémoire : ce cache ne crée
     jamais d'autre fichier que la base. Toute connexion passe par un VFS qui
     n'ouvre que le fichier de base (conseil s13 Q7) : un journal, un `-wal`
