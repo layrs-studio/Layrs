@@ -361,6 +361,16 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// the durably admitted manifest (admission closure). Only Files without a
     /// manifest in this batch are prefetched, and only sound answers are
     /// cached, so every decision is the one the per-File path would make.
+    /// Whether `file_id` was proven closed in `space` from the bitmaps
+    /// (council s13 Q2) and has no manifest in this batch.
+    pub(super) fn durably_closed(&self, file_id: &FileId, space: &SpaceId) -> bool {
+        !self.manifests_by_file.contains_key(file_id)
+            && self
+                .durably_closed_files
+                .lock()
+                .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
+    }
+
     fn prefetch_tree_files(&self) -> Result<()> {
         let _span = crate::perf::span("validate.prefetch_tree_files");
         let mut files = BTreeSet::new();
@@ -391,9 +401,21 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .iter()
             .map(|a| a.space_id())
             .collect();
+        // A batch that admits manifests it does not carry charges their
+        // closures as manifests: its Files take the exact path, so each
+        // manifest is charged once (council s14 r1).
+        let admits_manifests = self
+            .batch
+            .admissions()
+            .iter()
+            .any(|admission| matches!(admission.object_id(), StoreObjectId::FileManifest(_)));
         for space in spaces {
             // Files a durably admitted manifest closes need no manifest id
             // (council s13 Q2); the others take the exact path.
+            if admits_manifests {
+                self.prefetch_admitted_manifests(&files, space)?;
+                continue;
+            }
             let closed = self.reader.files_durably_closed_metadata(&files, space)?;
             let remaining: Vec<&FileId> = files
                 .iter()
@@ -770,12 +792,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
                     MAX_ADMISSION_EDGE_VISITS,
                 )?;
                 for file_id in file_ids {
-                    if !self.manifests_by_file.contains_key(file_id)
-                        && self
-                            .durably_closed_files
-                            .lock()
-                            .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
-                    {
+                    if self.durably_closed(file_id, space) {
                         let charged = self.charged_files.lock().is_ok_and(|charged| {
                             charged.contains(&(space.clone(), file_id.clone()))
                         });

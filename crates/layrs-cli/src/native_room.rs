@@ -622,7 +622,7 @@ fn merge(
                 "Room {}: no new captured Step to merge into {target}",
                 room.name
             )),
-            data: json!({ "room": room, "target": target, "merged": false, "conflicts": [], "captured": capture }),
+            data: json!({ "room": room, "target": target, "merged": false, "conflicts": [], "stepId": head, "captured": capture }),
         });
     }
     // Fast path: the target has not moved since the Room forked (or since its
@@ -712,7 +712,7 @@ fn merge(
     let span = layrs_store_local::perf::span("room.merge.weave_accept");
     let accepted = project.accept_merge(&plan).map_err(error)?;
     drop(span);
-    room.merged_step_id = Some(head);
+    room.merged_step_id = Some(head.clone());
     project.update_room(room).map_err(error)?;
     let human = with_note(format!(
         "Room {} merged into {target} (Step {}){}",
@@ -726,7 +726,7 @@ fn merge(
     ));
     Ok(Rendered {
         human,
-        data: json!({ "room": room, "target": target, "merged": true, "weave": accepted, "captured": capture }),
+        data: json!({ "room": room, "target": target, "merged": true, "weave": accepted, "stepId": head, "captured": capture }),
     })
 }
 

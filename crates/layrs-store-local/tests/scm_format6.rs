@@ -1000,6 +1000,15 @@ fn damaged_metadata_or_a_digest_mismatch_is_corruption_never_absence() {
         let error = result.unwrap_err();
         assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
     }
+    // A damaged catalog proves no File closed from its bitmaps (council s14
+    // r1): the exact path, which reports the damage, decides instead.
+    {
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let closed =
+            reader.files_durably_closed_metadata([files[0].manifest.file_id()], lane.space.id());
+        assert!(closed.map_or(true, |closed| closed.is_empty()));
+    }
     let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
     assert!(
         report

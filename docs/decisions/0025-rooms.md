@@ -37,7 +37,8 @@ particulier une par agent :
   Le registre des Rooms vit dans `.layrs/rooms/`. Les outils qui parcourent le
   projet principal ne voient donc jamais les Rooms.
 - **Commandes** : `layrs room new NOM [--virtual]` (affiche le chemin), `room list`,
-  `room path NOM`, `room merge NOM [--into LAYER]`, `room drop NOM [--force] [--full]`.
+  `room path NOM`, `room merge NOM [--into LAYER] [--preview] [--capture]`,
+  `room drop NOM [--force] [--full]`.
   Une Room ne change jamais de Layer : on en ouvre une autre.
 
 ## Invariants

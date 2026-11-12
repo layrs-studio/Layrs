@@ -218,10 +218,14 @@ impl CheckoutReader {
     /// retried, and every Tree is built and checked; but directories are not
     /// listed a second time (council s13 Q3, git's trade-off): an entry
     /// created or removed in a directory while it is read may be recorded or
-    /// not, and the next capture sees it. Nothing is deleted or replaced on
-    /// the strength of such a capture: never use it for the verification
-    /// preceding a deletion or replacement, which relists and asks for two
-    /// equal passes.
+    /// not, and the next capture sees it. Every capture that records content
+    /// uses it (`step`, `room step`, `init`, and the captures before a Layer
+    /// switch, an Operation, publication or reception). Nothing is deleted or
+    /// replaced on the strength of such a capture: a later materialization
+    /// checks every path it touches against its expected content and refuses
+    /// untracked entries in its way (council s14 r1). Never use it for the
+    /// verification preceding a deletion or replacement, which relists and
+    /// asks for two equal passes.
     pub fn capture_streaming_trusting_single_pass(
         &self,
         limits: CheckoutLimits,

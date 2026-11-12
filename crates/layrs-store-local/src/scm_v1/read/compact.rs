@@ -284,6 +284,11 @@ impl NativeScmReader<'_> {
         space: &SpaceId,
     ) -> Result<BTreeSet<FileId>> {
         let catalog = self.catalog()?;
+        // A damaged catalog proves nothing here: the exact path reports its
+        // damage (council s14 r1).
+        if catalog.damage().is_some() {
+            return Ok(BTreeSet::new());
+        }
         let admissions = self.admissions(&catalog, space)?;
         let mut closed = BTreeSet::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {

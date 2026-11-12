@@ -151,6 +151,7 @@ impl CompositeAdmissionResolver<'_> {
                             .entries()
                             .iter()
                             .filter_map(|entry| entry.target().file_id())
+                            .filter(|file| !self.durably_closed(file, space))
                             .collect();
                         self.prefetch_admitted_manifests(&files, space)?;
                     }
@@ -163,7 +164,9 @@ impl CompositeAdmissionResolver<'_> {
                                 pending.push(StoreObjectId::Conflict(conflict_id.clone()))
                             }
                             TreeEntryTarget::File { file_id } => {
-                                if !durable {
+                                // Proven closed from the bitmaps (council
+                                // s13 Q2): existence is all this asks.
+                                if !durable && !self.durably_closed(file_id, space) {
                                     self.admissible_manifest_for_file(file_id, space)?
                                         .ok_or_else(|| rejected("Weave File closure missing"))?;
                                 }

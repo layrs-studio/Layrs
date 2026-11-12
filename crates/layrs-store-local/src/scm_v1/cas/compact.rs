@@ -1913,8 +1913,16 @@ impl RegisteredCatalog {
     /// alone: no manifest id is built (council s13 Q2). Every copy of a
     /// manifest is reachable from its FileId (FileId sections, file records,
     /// loose manifests). Positive answers only: `false` also when the File
-    /// has more manifests than `max_manifests` (the exact path then reports
-    /// it), and a damaged catalog never turns into `true`.
+    /// has more placements than `max_manifests` (the exact path then
+    /// reports it); callers never ask a damaged catalog (the exact path then
+    /// reports it, council s14 r1).
+    ///
+    /// A file record's manifest bit is never set unless its alias rebuilt
+    /// to that manifest's id: admission sets it only through `placements`
+    /// (rebuilt digest compared), consolidation remaps it by identity and
+    /// reads it back, and the pack is immutable under its registered digest.
+    /// So the bit alone proves what the rebuilt alias would (council s14
+    /// r1: the rebuild, the cost removed here, is what fsck still checks).
     pub(crate) fn file_manifest_admitted(
         &self,
         admissions: &SpaceAdmissions,

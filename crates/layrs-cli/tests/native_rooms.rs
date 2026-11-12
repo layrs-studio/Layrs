@@ -175,8 +175,30 @@ fn second_room_merges_through_a_weave_after_the_first() {
     let merged_b = run(&project, &["room", "merge", "agent-b", "--capture"], true);
     assert_eq!(merged_b["fastForward"], true, "{merged_b}");
     assert_eq!(merged_b["captured"], true);
+    // A captured Step, then an uncaptured edit: the Step is merged (main
+    // moved: a real Weave), the edit stays in the Room, and the Room is not
+    // droppable without --force.
+    fs::write(c.join("src/b.txt"), b"b by c, captured\n").unwrap();
     run(&c, &["room", "step"], true);
-    // main moved: agent-c needs a real Weave, still conflict-free here.
+    fs::write(c.join("src/b.txt"), b"b by c, not captured\n").unwrap();
+    let partial = run(&project, &["room", "merge", "agent-c"], true);
+    assert_eq!(partial["merged"], true, "{partial}");
+    assert_eq!(
+        fs::read(project.join("src/b.txt")).unwrap(),
+        b"b by c, captured\n"
+    );
+    assert_eq!(
+        fs::read(c.join("src/b.txt")).unwrap(),
+        b"b by c, not captured\n"
+    );
+    let refused = run(&project, &["room", "drop", "agent-c"], false);
+    assert!(
+        refused["message"].as_str().unwrap().contains("not merged"),
+        "{refused}"
+    );
+    fs::write(c.join("src/b.txt"), b"b by c\n").unwrap();
+    run(&c, &["room", "step"], true);
+    // A later Step of the same Room: another conflict-free Weave.
     let merged = run(&project, &["room", "merge", "agent-c"], true);
     assert_eq!(merged["merged"], true);
     assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a by b\n");

@@ -214,10 +214,6 @@ impl NativeScmReader<'_> {
         Ok(lengths)
     }
 
-    /// Batched `ScmReader::admitted_manifests_metadata`: only Files whose
-    /// metadata is entirely sound (present, every manifest with its objects
-    /// row, at most 1,024 manifests) are answered; any other is left to the
-    /// per-File path, which reports its corruption exactly as before.
     /// The Files of `files` closed in `space` by a durably admitted
     /// manifest, without naming it (council s13 Q2): the admission closure of
     /// a Tree needs that one exists, never which. Positive answers only; a
@@ -235,6 +231,10 @@ impl NativeScmReader<'_> {
         Ok(std::collections::BTreeSet::new())
     }
 
+    /// Batched `ScmReader::admitted_manifests_metadata`: only Files whose
+    /// metadata is entirely sound (present, every manifest with its objects
+    /// row, at most 1,024 manifests) are answered; any other is left to the
+    /// per-File path, which reports its corruption exactly as before.
     pub fn admitted_manifests_metadata<'f>(
         &self,
         files: impl IntoIterator<Item = &'f FileId>,
