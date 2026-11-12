@@ -203,8 +203,12 @@ fn read(
         let _span = crate::perf::span("projection_cache.read_file");
         cache.fetch(root_tree.as_str(), MAX_BYTES)
     };
-    // A value there but unreadable is removed like a damaged one.
-    *stored = !matches!(fetched, Ok(None));
+    // A value there, or a damaged one, is removed if it fails; one the
+    // database could not answer (busy) is kept (council s12 r3).
+    *stored = matches!(
+        fetched,
+        Ok(Some(_)) | Err(super::derived_cache::Unread::Malformed)
+    );
     verified(fetched.ok()??, root_tree, generation, decoding)
 }
 
@@ -266,6 +270,12 @@ fn verified_complete() -> &'static std::sync::Mutex<Option<Verified>> {
 /// checksum was verified, only one projection per process, and only up to
 /// `REMEMBERED_MAX_BYTES` (a larger one is read again).
 fn remember_complete(root_tree: &TreeId, checksum: [u8; 32], bytes: Vec<u8>, generation: u64) {
+    // A quarantined root is never remembered (council s12 r3); one
+    // quarantined after this check was forgotten after it, which the
+    // generation below catches.
+    if quarantined(root_tree) {
+        return;
+    }
     if let Ok(mut last) = verified_complete().lock() {
         // Under the lock `forget_complete` takes: a projection forgotten
         // since these bytes were read is not remembered again.
@@ -298,6 +308,9 @@ fn forget_complete(root_tree: &TreeId) {
 /// The remembered bytes of `root_tree`'s complete projection, if they are
 /// exactly those of `checksum` and were read within `REMEMBERED_FOR`.
 fn last_complete(root_tree: &TreeId, checksum: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
+    if quarantined(root_tree) {
+        return None;
+    }
     let mut last = verified_complete().lock().ok()?;
     let (tree, sum, bytes, read_at) = last.as_ref()?;
     if read_at.elapsed() >= REMEMBERED_FOR {
@@ -514,12 +527,9 @@ pub fn replace(
     // Forgotten after the quarantine (council s9 r3): no read of the wrong
     // bytes can be remembered again.
     forget_complete(root_tree);
+    // `record` lifts the quarantine once the replacement is written.
     for _ in 0..3 {
         if record(store_root, root_tree, projection_tree, entries, refs, true) {
-            if let Ok(mut quarantined) = quarantine().lock() {
-                quarantined.remove(root_tree);
-            }
-            forget_complete(root_tree);
             return;
         }
     }
@@ -559,6 +569,10 @@ fn record(
     let Some(cache) = Projections::open(store_root, Access::Create) else {
         return false;
     };
+    // A root this process found wrong is written again, never kept by a
+    // touch (council s12 r3).
+    let quarantined_root = quarantined(root_tree);
+    let replacing = replacing || quarantined_root;
     if !replacing && cache.touch(root_tree.as_str()) {
         // Recorded already: only marked recent, so pruning keeps it.
         return true;
@@ -577,6 +591,10 @@ fn record(
         .flatten()
         .and_then(|(base_root, bytes)| {
             let base_root = TreeId::parse(base_root).ok()?;
+            // Never a base this process found wrong (council s12 r3).
+            if quarantined(&base_root) {
+                return None;
+            }
             let base = verified(bytes, &base_root, generation, &decoding)?;
             let Form::Complete(base_entries) = &base.form else {
                 return None;
@@ -649,6 +667,12 @@ fn record(
     let legacy = legacy_directory(store_root);
     if fs::symlink_metadata(&legacy).is_ok() {
         let _ = fs::remove_dir_all(&legacy);
+    }
+    if quarantined_root {
+        if let Ok(mut quarantined) = quarantine().lock() {
+            quarantined.remove(root_tree);
+        }
+        forget_complete(root_tree);
     }
     true
 }
@@ -1144,6 +1168,56 @@ mod tests {
         assert_eq!(load(&root, &tree(1), None), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
         drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A replacement that cannot be written (the database held by another
+    /// connection) leaves its root quarantined in this process: neither it
+    /// nor a delta through it answers, an unrelated save does not take it as
+    /// a base, and the next save of that root writes it again (council s12
+    /// r3).
+    #[test]
+    fn a_failed_replacement_keeps_its_root_out_of_reach() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-quarantine-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 44]))).unwrap();
+        let wrong = many(200, 9);
+        save(&root, &tree(0), &tree(0), &wrong, None);
+        let mut next = wrong.clone();
+        next.remove(5);
+        save(&root, &tree(1), &tree(1), &next, None);
+        assert_eq!(load(&root, &tree(1), None), Some(next.clone()));
+        let mut right = wrong.clone();
+        right.remove(9);
+        {
+            let blocker =
+                rusqlite::Connection::open(super::super::derived_cache::path(&root)).unwrap();
+            blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            replace(&root, &tree(0), &tree(0), &right, None);
+            blocker.execute_batch("ROLLBACK").unwrap();
+        }
+        assert!(quarantined(&tree(0)));
+        assert_eq!(load(&root, &tree(0), None), None);
+        assert_eq!(load(&root, &tree(1), None), None);
+        // An unrelated save does not take the quarantined root as its base.
+        let mut other = wrong.clone();
+        other.remove(20);
+        save(&root, &tree(2), &tree(2), &other, None);
+        let cache = Projections::open(&root, Access::Write).unwrap();
+        assert!(
+            cache
+                .rows()
+                .iter()
+                .any(|row| row.root == tree(2).as_str() && row.base.is_none())
+        );
+        drop(cache);
+        // The next save of that root writes it, and lifts the quarantine.
+        save(&root, &tree(0), &tree(0), &right, None);
+        assert!(!quarantined(&tree(0)));
+        assert_eq!(load(&root, &tree(0), None), Some(right));
         let _ = fs::remove_dir_all(&root);
     }
 

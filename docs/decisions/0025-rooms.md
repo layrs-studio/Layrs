@@ -96,29 +96,37 @@ L'index est un cache :
   base (conseil s12) :
   - chaque valeur garde son encodage, sa liaison et sa somme de contrôle ; la
     base n'est qu'un conteneur ;
-  - écritures sans synchronisation, journal en mémoire : aucun autre fichier
-    que la base n'est jamais écrit, et jamais un fichier de base à plusieurs
-    liens. Les lecteurs ouvrent la base en lecture seule : SQLite ne rejoue
-    alors aucun journal et n'écrit aucun fichier annexe. Une base qui n'est
-    pas en mode retour arrière, ou à côté de laquelle traîne un `-wal`, un
-    `-shm` ou un `-journal` non vide, n'est jamais ouverte par un lecteur ; un
-    écrivain retire d'abord ces noms (retirer un nom n'écrit jamais dans le
-    fichier qu'il désigne) ;
-  - risque résiduel, commun avec la base du Store : SQLite fait ses propres
-    contrôles en verrouillant, après les nôtres ; un processus qui plante un
-    journal « chaud » dans cet intervalle peut le faire rejouer par un
-    écrivain (et supprimer le super-journal qu'il nomme), et le VFS Windows
-    de SQLite ne respecte pas `NOFOLLOW`. Le fermer demande un VFS qui
-    n'ouvre que la base principale, pour les deux bases (à faire) ;
-  - tout accès vérifie le schéma exact (marqueur, version, deux tables, rien
-    d'autre) puis n'exécute que des requêtes fixes (`trusted_schema=OFF`,
-    mode défensif) ; une valeur est lue par la requête qui vérifie son type
-    et sa taille ;
-  - un écrivain ne remplace qu'une base prouvée étrangère ou abîmée ; une
-    base vide est initialisée sur place ; une base occupée, ou d'une version
-    plus récente de ce cache, est un défaut de cache et reste en place ;
-  - un index illisible (base occupée ou inutilisable) est lu vide et n'est
-    jamais réécrit par-dessus ;
+  - écritures sans synchronisation, journal en mémoire : ce cache ne crée
+    jamais d'autre fichier que la base. Les lecteurs l'ouvrent en lecture
+    seule (SQLite ne rejoue alors aucun journal) et vérifient le schéma puis
+    lisent dans une même transaction. Une base qui n'est pas en mode retour
+    arrière, ou à côté de laquelle traîne un `-wal`, un `-shm` ou un
+    `-journal` non vide, n'est jamais ouverte par un lecteur ; un écrivain
+    retire d'abord ces noms (retirer un nom n'écrit jamais dans le fichier
+    qu'il désigne) ;
+  - un écrivain n'écrit jamais dans un fichier de base à plusieurs liens : il
+    vérifie le handle que SQLite a ouvert (Windows) et reprend le nom (le
+    retire puis crée une base neuve) à un fichier lié ailleurs (sauvegarde
+    par liens physiques, ou lien planté), étranger ou abîmé ; une base vide
+    est initialisée sur place ; une base occupée, ou d'une version plus
+    récente de ce cache, est un défaut de cache et reste en place ;
+  - tout accès vérifie le schéma exact (marqueur et version d'abord, puis au
+    plus les quatre objets attendus, de longueur bornée) puis n'exécute que
+    des requêtes fixes (`trusted_schema=OFF`, mode défensif) ; une valeur est
+    lue par la requête qui vérifie son type et sa taille ;
+  - une base ou une valeur abîmée (lue par un lecteur ou un écrivain) est lue
+    vide et remplacée à la prochaine écriture ; un index illisible parce que
+    la base est occupée ou plus récente est lu vide et n'est jamais réécrit
+    par-dessus ;
+  - risque résiduel, commun avec la base du Store (dont SQLite écrit les
+    fichiers annexes à chaque commande) : SQLite fait ses propres contrôles
+    en verrouillant, après les nôtres. Un processus qui plante dans cet
+    intervalle un journal « chaud » peut le faire rejouer par un écrivain (et
+    supprimer le super-journal qu'il nomme) ; un `-wal` et un `-shm` plantés
+    avant le verrou d'un lecteur sont ouverts en écriture ; sous Unix, un nom
+    remplacé par un lien physique après le contrôle est ouvert. Le fermer
+    demande un VFS qui n'ouvre que la base principale, pour les deux bases,
+    lecteurs compris (conseil s12, à faire) ;
 - s'il est illisible, tout est relu ;
 - il n'est écrit qu'après acceptation de la capture ;
 - une entrée ne naît que d'un contenu prouvé : soit haché par la capture, soit
