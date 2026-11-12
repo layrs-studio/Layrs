@@ -526,16 +526,15 @@ impl NativeScmRepository {
                 let added = publication
                     .as_ref()
                     .filter(|publication| publication.pack.is_some())
-                    .map(|publication| publication.inline.as_ref().map(Vec::len));
-                let (files, inline, inline_bytes) = match added {
-                    Some(Some(bytes)) => (0, 1, bytes as u64),
-                    Some(None) => (1, 0, 0),
-                    None => (0, 0, 0),
-                };
-                let due = compact
-                    && cas.compact_catalog().is_some_and(|catalog| {
-                        catalog.consolidation_due(files, inline, inline_bytes)
+                    .and_then(|publication| {
+                        publication
+                            .stats
+                            .map(|stats| (publication.inline.is_some(), stats))
                     });
+                let due = compact
+                    && cas
+                        .compact_catalog()
+                        .is_some_and(|catalog| catalog.consolidation_due(added));
                 drop(cas);
                 if due {
                     let after_commit = || {

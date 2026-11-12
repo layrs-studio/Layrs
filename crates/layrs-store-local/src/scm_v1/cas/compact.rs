@@ -450,33 +450,25 @@ const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 impl RegisteredCatalog {
-    /// Whether a consolidation is due once `added_files` more pack files
-    /// and `added_inline` more inline packs of `added_inline_bytes` are
-    /// registered (decided without reopening anything). Inline packs do not
-    /// count toward the file trigger: they are merged among themselves at
+    /// Whether a consolidation would find a group once `added` (a pack the
+    /// batch registered: inline or not, and its sizes) joins this catalog,
+    /// decided without reopening anything. Inline packs do not count toward
+    /// the file trigger: they are merged among themselves at
     /// `CONSOLIDATE_INLINE_AT` packs (council s8 r1), so small batches do not
     /// consolidate every few, or at `CONSOLIDATE_INLINE_BYTES` (council s13
-    /// Q1).
-    pub(crate) fn consolidation_due(
-        &self,
-        added_files: usize,
-        added_inline: usize,
-        added_inline_bytes: u64,
-    ) -> bool {
-        let (inline, inline_bytes) = self.inline_totals();
-        self.packs.len() - inline + added_files >= CONSOLIDATE_AT_PACKS
-            || inline + added_inline >= CONSOLIDATE_INLINE_AT
-            || inline_bytes.saturating_add(added_inline_bytes) >= CONSOLIDATE_INLINE_BYTES
-    }
-
-    /// The count and total size of the inline packs.
-    fn inline_totals(&self) -> (usize, u64) {
-        self.packs
-            .iter()
-            .filter(|pack| pack.pack.is_inline())
-            .fold((0, 0), |(count, bytes), pack| {
-                (count + 1, bytes.saturating_add(pack.pack.index.file_len))
-            })
+    /// Q1). At `CONSOLIDATE_AT_PACKS` pack files, only when a group fits the
+    /// budgets: larger tiers wait for maintenance, and a batch no longer
+    /// reopens the CAS to find nothing (council s17, B2a).
+    pub(crate) fn consolidation_due(&self, added: Option<(bool, PackStats)>) -> bool {
+        let mut inline = self.by_size(&[], true);
+        let mut files = self.by_size(&[], false);
+        if let Some((is_inline, (size, records, blocks, raw))) = added {
+            let list = if is_inline { &mut inline } else { &mut files };
+            list.push((size, records, blocks, raw, usize::MAX));
+            list.sort_unstable();
+        }
+        let file_count = files.len();
+        candidates_among(&inline, &files, file_count).len() >= 2
     }
 
     /// The packs to consolidate now, positions in increasing order, leaving
@@ -489,31 +481,17 @@ impl RegisteredCatalog {
     /// keeps its row and bitmaps as they are, and does not stop the others
     /// (council s6 r1).
     pub(crate) fn consolidation_candidates(&self, excluded: &[usize]) -> Vec<usize> {
-        // Inline packs merge among themselves first, within the same budgets
-        // as any group (council s8 r2): the result stays inline while it
-        // fits, else it becomes a pack file.
-        let inline = self.by_size(excluded, true);
-        let inline_bytes = inline
-            .iter()
-            .fold(0_u64, |total, pack| total.saturating_add(pack.0));
-        if inline.len() >= CONSOLIDATE_INLINE_AT || inline_bytes >= CONSOLIDATE_INLINE_BYTES {
-            let group = bounded_group(&inline, false);
-            if group.len() >= 2 {
-                return group;
-            }
-        }
-        // Pack files by size tier; inline packs never join them (they wait
-        // for their own merge).
         let files = self.packs.len()
             - self
                 .packs
                 .iter()
                 .filter(|pack| pack.pack.is_inline())
                 .count();
-        if files < CONSOLIDATE_AT_PACKS {
-            return Vec::new();
-        }
-        consolidation_group(&self.by_size(excluded, false))
+        candidates_among(
+            &self.by_size(excluded, true),
+            &self.by_size(excluded, false),
+            files,
+        )
     }
 
     /// (size, records, blocks, decompressed bytes, position) of the inline
@@ -527,23 +505,57 @@ impl RegisteredCatalog {
                 pack.pack.is_inline() == inline && !excluded.contains(position)
             })
             .map(|(position, registered)| {
-                let index = &registered.pack.index;
-                (
-                    index.file_len,
-                    (index.explicit_count() + index.files.len()) as u64,
-                    index.blocks.len() as u64,
-                    index
-                        .blocks
-                        .iter()
-                        .map(|block| u64::from(block.raw_len))
-                        .sum(),
-                    position,
-                )
+                let (size, records, blocks, raw) = pack_stats(&registered.pack.index);
+                (size, records, blocks, raw, position)
             })
             .collect();
         by_size.sort_unstable();
         by_size
     }
+}
+
+/// A pack's size on disk, records, blocks and decompressed bytes: what the
+/// consolidation budgets count.
+pub(crate) type PackStats = (u64, u64, u64, u64);
+
+pub(super) fn pack_stats(index: &pack2::Pack2Index) -> PackStats {
+    (
+        index.file_len,
+        (index.explicit_count() + index.files.len()) as u64,
+        index.blocks.len() as u64,
+        index
+            .blocks
+            .iter()
+            .map(|block| u64::from(block.raw_len))
+            .sum(),
+    )
+}
+
+/// The packs to consolidate among the inline packs and the pack files (each
+/// smallest first, as `by_size` lists them; `file_count` pack files are
+/// registered): at `CONSOLIDATE_INLINE_AT` inline packs or
+/// `CONSOLIDATE_INLINE_BYTES`, as many of them as fit the budgets (council
+/// s8 r2, r3); else, at `CONSOLIDATE_AT_PACKS` pack files, a geometric group
+/// of files. Inline packs never join pack files (they wait for their own
+/// merge). Empty when none is due.
+fn candidates_among(
+    inline: &[(u64, u64, u64, u64, usize)],
+    files: &[(u64, u64, u64, u64, usize)],
+    file_count: usize,
+) -> Vec<usize> {
+    let inline_bytes = inline
+        .iter()
+        .fold(0_u64, |total, pack| total.saturating_add(pack.0));
+    if inline.len() >= CONSOLIDATE_INLINE_AT || inline_bytes >= CONSOLIDATE_INLINE_BYTES {
+        let group = bounded_group(inline, false);
+        if group.len() >= 2 {
+            return group;
+        }
+    }
+    if file_count < CONSOLIDATE_AT_PACKS {
+        return Vec::new();
+    }
+    consolidation_group(files)
 }
 
 /// The packs to consolidate among `by_size` (size, records, blocks,
@@ -714,7 +726,7 @@ impl NativeCas {
                 loaded.is_inline(),
             ));
         }
-        let (pack, inline) = self.publish_pack2(open).map_err(general)?;
+        let (pack, inline, _) = self.publish_pack2(open).map_err(general)?;
         let new = match &inline {
             Some(image) => self
                 .inline_pack(&pack.0, Arc::from(image.as_slice()), true)
@@ -2428,6 +2440,8 @@ pub(crate) struct CompactPublication {
     pub(crate) pack: Option<(OsString, [u8; 32], u64)>,
     /// Its image when it is registered inline (council s7 Q1).
     pub(crate) inline: Option<Vec<u8>>,
+    /// Its sizes, as the consolidation budgets count them.
+    pub(crate) stats: Option<PackStats>,
     pub(crate) loose: Vec<LooseInstall>,
 }
 
@@ -2716,12 +2730,14 @@ impl NativeCas {
         let mut publication = CompactPublication {
             pack: None,
             inline: None,
+            stats: None,
             loose,
         };
         if let Some(open) = open {
-            let (pack, inline) = self.publish_pack2(open)?;
+            let (pack, inline, stats) = self.publish_pack2(open)?;
             publication.pack = Some(pack);
             publication.inline = inline;
+            publication.stats = Some(stats);
         }
         self.compact_state(|batch| {
             batch.publication = Some(publication);
@@ -2809,7 +2825,10 @@ impl NativeCas {
     /// Seals and publishes `open`: inline when it fits (its image validated
     /// as untrusted input, as a reread file is), else as a pack file. Returns
     /// its registration and, inline, its image.
-    fn publish_pack2(&self, mut open: OpenPack) -> CasResult<(PackRegistration, Option<Vec<u8>>)> {
+    fn publish_pack2(
+        &self,
+        mut open: OpenPack,
+    ) -> CasResult<(PackRegistration, Option<Vec<u8>>, PackStats)> {
         let builder = std::mem::replace(&mut open.builder, empty_builder());
         let sealed = builder
             .finish(&mut open.sink)
@@ -2823,24 +2842,29 @@ impl NativeCas {
                 });
                 let name = pack2::new_pack2_name();
                 let path = self.inline_label(&name);
-                pack2::verify_written_from(pack2::PackSource::Image(&image), &path, &sealed)?;
+                let index =
+                    pack2::verify_written_from(pack2::PackSource::Image(&image), &path, &sealed)?;
                 self.hit(CasFaultPoint::BeforePackPublication)?;
                 self.hit(CasFaultPoint::AfterPackPublication)?;
                 crate::perf::count("cas.pack2_objects", sealed.logical);
-                return Ok(((name, sealed.digest, sealed.logical), Some(image)));
+                return Ok((
+                    (name, sealed.digest, sealed.logical),
+                    Some(image),
+                    pack_stats(&index),
+                ));
             }
         }
         // Not inline (decided once): the pack is a file.
         self.spill(&mut open)?;
         self.publish_pack_file(open, &sealed)
-            .map(|registration| (registration, None))
+            .map(|(registration, stats)| (registration, None, stats))
     }
 
     fn publish_pack_file(
         &self,
         mut open: OpenPack,
         sealed: &pack2::SealedPack2,
-    ) -> CasResult<(OsString, [u8; 32], u64)> {
+    ) -> CasResult<(PackRegistration, PackStats)> {
         let _span = crate::perf::span("cas.pack2_publish");
         let path = open.path.clone();
         {
@@ -2852,10 +2876,10 @@ impl NativeCas {
             }
             .map_err(|error| io_error("sync CAS pack", &path, error))?;
         }
-        {
+        let stats = {
             let _span = crate::perf::span("cas.pack_verify");
-            pack2::verify_written(open.file()?.file(), &path, sealed)?;
-        }
+            pack_stats(&pack2::verify_written(open.file()?.file(), &path, sealed)?)
+        };
         self.hit(CasFaultPoint::BeforePackPublication)?;
         let objects = self.pinned_objects()?;
         let packs_path = self.objects_dir.join(PACKS_DIR);
@@ -2895,7 +2919,7 @@ impl NativeCas {
         }
         self.cleanup_published_staging(open.file()?, &path, false)?;
         crate::perf::count("cas.pack2_objects", sealed.logical);
-        Ok((name, sealed.digest, sealed.logical))
+        Ok(((name, sealed.digest, sealed.logical), stats))
     }
 
     /// Scrub of the registered packs (`audit_registered`; loose files are
@@ -3287,7 +3311,7 @@ fn create_staging_pack(
 
 #[cfg(test)]
 mod consolidation_tests {
-    use super::{bounded_group, consolidation_group};
+    use super::{bounded_group, candidates_among, consolidation_group};
 
     fn packs(sizes: &[u64]) -> Vec<(u64, u64, u64, u64, usize)> {
         let mut packs: Vec<_> = sizes
@@ -3365,5 +3389,32 @@ mod consolidation_tests {
         let mixed = vec![(1, 1, 1, 1, 0), (10, 1, 1, 10, 1), (1000, 1, 1, 1000, 2)];
         assert_eq!(bounded_group(&mixed, false), vec![0, 1, 2]);
         assert_eq!(bounded_group(&mixed, true), vec![0]);
+    }
+
+    /// The trigger asks for a group that fits, not a count of packs: six
+    /// pack files above the budgets wait for maintenance instead of making
+    /// every batch reopen the CAS to find nothing (council s17, B2a).
+    #[test]
+    fn a_consolidation_is_due_only_when_a_group_fits() {
+        let mib = 1024 * 1024;
+        let files = |sizes: &[u64]| -> Vec<(u64, u64, u64, u64, usize)> {
+            sizes
+                .iter()
+                .enumerate()
+                .map(|(position, size)| (*size, 1, 1, *size, position))
+                .collect()
+        };
+        let none: Vec<(u64, u64, u64, u64, usize)> = Vec::new();
+        // Six tiers of 40 MiB: no two fit 64 MiB.
+        let large = files(&[40 * mib; 6]);
+        assert!(candidates_among(&none, &large, 6).is_empty());
+        // Six small pack files: a group.
+        let small = files(&[mib; 6]);
+        assert_eq!(candidates_among(&none, &small, 6).len(), 6);
+        // Five are not enough, whatever their sizes.
+        assert!(candidates_among(&none, &files(&[mib; 5]), 5).is_empty());
+        // Eight inline packs merge whatever the pack files.
+        let inline: Vec<_> = (0..8).map(|p| (1024, 1, 1, 1024, p)).collect();
+        assert_eq!(candidates_among(&inline, &large, 6).len(), 8);
     }
 }
