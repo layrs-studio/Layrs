@@ -433,6 +433,14 @@ impl ScmReader for NativeScmReader<'_> {
         NativeScmReader::admitted_manifests_metadata(self, files.iter().copied(), space)
     }
 
+    fn files_durably_closed_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        NativeScmReader::files_durably_closed_metadata(self, files.iter().copied(), space)
+    }
+
     /// Installation verifies a chunk's bytes against its id before writing
     /// its `verified` object row (`repository.rs` insert_object_rows), and
     /// every read verifies them again; presence is answered from that row.

@@ -276,6 +276,27 @@ impl NativeScmReader<'_> {
         Ok(admitted)
     }
 
+    /// The Files of `files` closed in `space` by a durably admitted
+    /// manifest, from the admission bitmaps (council s13 Q2).
+    pub(super) fn files_durably_closed_compact<'f>(
+        &self,
+        files: impl IntoIterator<Item = &'f FileId>,
+        space: &SpaceId,
+    ) -> Result<BTreeSet<FileId>> {
+        let catalog = self.catalog()?;
+        let admissions = self.admissions(&catalog, space)?;
+        let mut closed = BTreeSet::new();
+        for file in files.into_iter().collect::<BTreeSet<_>>() {
+            if catalog
+                .file_manifest_admitted(&admissions, file, MAX_FILE_MANIFESTS)
+                .map_err(cas_read_error)?
+            {
+                closed.insert(file.clone());
+            }
+        }
+        Ok(closed)
+    }
+
     pub(super) fn admitted_chunk_ids_of_files_compact<'f>(
         &self,
         space: &SpaceId,

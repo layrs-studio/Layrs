@@ -245,6 +245,42 @@ impl NativeClient {
         self.capture_base_with(&self.open_store()?, worktree_id)
     }
 
+    /// The base Step of `worktree_id` as its own active Operation records it:
+    /// its last captured (or materialized) Step. `room merge` merges it
+    /// without capturing the Room, as git merges a branch's last commit
+    /// (council s13 Q4). A pending recovery, or a Worktree that is not
+    /// ready, refuses.
+    pub fn worktree_base_step(&self, worktree_id: &WorktreeId) -> Result<StepId> {
+        let store = self.open_store()?;
+        if layrs_store_local::scm_v1::materialize::recovery_pending(&store, worktree_id)? {
+            return Err(NativeClientError::NeedsRepair);
+        }
+        let reader = NativeScmReader::new(&store)?;
+        let worktree = reader
+            .get_worktree(worktree_id)?
+            .ok_or(NativeClientError::Missing("Worktree"))?;
+        let operation = reader
+            .get_operation(worktree.active_operation_id())?
+            .ok_or(NativeClientError::Missing("Operation"))?;
+        let view = reader
+            .get_repository_view(operation.resulting_view_id())?
+            .ok_or(NativeClientError::Missing("RepositoryView"))?;
+        let state = view
+            .worktrees()
+            .iter()
+            .find(|w| w.worktree_id() == worktree_id)
+            .ok_or(NativeClientError::Missing("Worktree View state"))?;
+        if state.status() != WorktreeStatus::Ready {
+            return Err(NativeClientError::InvalidState(
+                "the Room is not ready: finish or resolve it first",
+            ));
+        }
+        state
+            .base_step_id()
+            .cloned()
+            .ok_or(NativeClientError::Missing("base Step"))
+    }
+
     /// `capture_base` on an already open Store.
     pub fn capture_base_with(
         &self,

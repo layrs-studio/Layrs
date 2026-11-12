@@ -64,6 +64,11 @@ pub struct CompositeAdmissionResolver<'a> {
     admitted_cache: Mutex<BTreeMap<(SpaceId, StoreObjectId), bool>>,
     closed_admissions: Mutex<BTreeSet<(SpaceId, StoreObjectId)>>,
     file_manifest_cache: Mutex<BTreeMap<(SpaceId, FileId), Option<FileManifestId>>>,
+    /// Files proven closed in a Space by a durably admitted manifest, from
+    /// the admission bitmaps (council s13 Q2), and those whose closure a
+    /// finished walk already charged.
+    durably_closed_files: Mutex<BTreeSet<(SpaceId, FileId)>>,
+    charged_files: Mutex<BTreeSet<(SpaceId, FileId)>>,
     verified_files: Mutex<BTreeMap<FileId, bool>>,
     ancestor_cache: Mutex<BTreeMap<(StepId, StepId), bool>>,
     ancestor_sets: Mutex<BTreeMap<StepId, BTreeSet<StepId>>>,
@@ -221,6 +226,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
             admitted_cache: Mutex::new(BTreeMap::new()),
             closed_admissions: Mutex::new(BTreeSet::new()),
             file_manifest_cache: Mutex::new(BTreeMap::new()),
+            durably_closed_files: Mutex::new(BTreeSet::new()),
+            charged_files: Mutex::new(BTreeSet::new()),
             verified_files: Mutex::new(BTreeMap::new()),
             ancestor_cache: Mutex::new(BTreeMap::new()),
             ancestor_sets: Mutex::new(BTreeMap::new()),
@@ -385,7 +392,18 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .map(|a| a.space_id())
             .collect();
         for space in spaces {
-            self.prefetch_admitted_manifests(&files, space)?;
+            // Files a durably admitted manifest closes need no manifest id
+            // (council s13 Q2); the others take the exact path.
+            let closed = self.reader.files_durably_closed_metadata(&files, space)?;
+            let remaining: Vec<&FileId> = files
+                .iter()
+                .copied()
+                .filter(|file| !closed.contains(*file))
+                .collect();
+            if let Ok(mut proven) = self.durably_closed_files.lock() {
+                proven.extend(closed.into_iter().map(|file| (space.clone(), file)));
+            }
+            self.prefetch_admitted_manifests(&remaining, space)?;
         }
         Ok(())
     }
@@ -673,6 +691,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
         }
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
+        // Files closed from the bitmaps, charged one object visit each as
+        // their manifest would have been (council s13 Q2).
+        let mut visited_files: BTreeSet<FileId> = BTreeSet::new();
         while let Some(object_id) = pending.pop() {
             if self
                 .closed_admissions
@@ -749,6 +770,26 @@ impl<'a> CompositeAdmissionResolver<'a> {
                     MAX_ADMISSION_EDGE_VISITS,
                 )?;
                 for file_id in file_ids {
+                    if !self.manifests_by_file.contains_key(file_id)
+                        && self
+                            .durably_closed_files
+                            .lock()
+                            .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
+                    {
+                        let charged = self.charged_files.lock().is_ok_and(|charged| {
+                            charged.contains(&(space.clone(), file_id.clone()))
+                        });
+                        if !charged && visited_files.insert(file_id.clone()) {
+                            let visits = self.admission_visits.fetch_add(1, Ordering::Relaxed) + 1;
+                            require_budget(
+                                "admission object visits",
+                                visits,
+                                MAX_ADMISSION_VISITS,
+                            )?;
+                            crate::perf::count("admission.durable_closed", 1);
+                        }
+                        continue;
+                    }
                     let manifest = self
                         .admissible_manifest_for_file(file_id, space)?
                         .ok_or_else(|| admission_rejected(&object_id))?;
@@ -758,6 +799,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
         }
         if let Ok(mut closed) = self.closed_admissions.lock() {
             closed.extend(visited.into_iter().map(|object| (space.clone(), object)));
+        }
+        if let Ok(mut charged) = self.charged_files.lock() {
+            charged.extend(visited_files.into_iter().map(|file| (space.clone(), file)));
         }
         Ok(())
     }

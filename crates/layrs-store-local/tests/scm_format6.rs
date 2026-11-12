@@ -415,6 +415,23 @@ fn reader_answers(root: &Path, files: &[File], space: &SpaceId) -> Vec<String> {
     answers
 }
 
+/// The Files the bitmaps prove closed (council s13 Q2) are exactly those
+/// the exact path gives an admitted manifest.
+fn assert_closure_matches(root: &Path, files: &[File], space: &SpaceId) {
+    let store = open(root).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    let ids: Vec<&FileId> = files.iter().map(|file| file.manifest.file_id()).collect();
+    let closed = reader
+        .files_durably_closed_metadata(ids.iter().copied(), space)
+        .unwrap();
+    let exact: std::collections::BTreeSet<FileId> =
+        NativeScmReader::admitted_manifests_metadata(&reader, ids.iter().copied(), space)
+            .unwrap()
+            .into_keys()
+            .collect();
+    assert_eq!(closed, exact, "{space}");
+}
+
 fn sizes_files() -> Vec<File> {
     let one_mib: Vec<u8> = (0..MIB).map(|i| (i % 251) as u8).collect();
     let mut over: Vec<u8> = one_mib.clone();
@@ -632,6 +649,28 @@ fn spaces_sharing_bytes_keep_exact_admissions_and_bitmaps_only_grow() {
             .object_admitted_metadata(&other_object, lane_b.space.id())
             .unwrap()
     );
+    // A chunk admitted alone closes no File: only A's Files are closed.
+    let both = [shared.clone(), other.clone()];
+    assert_closure_matches(&root.0, &both, lane_b.space.id());
+    assert_closure_matches(&root.0, &both, lane_a.space.id());
+    {
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let ids = [shared.manifest.file_id(), other.manifest.file_id()];
+        assert!(
+            reader
+                .files_durably_closed_metadata(ids, lane_b.space.id())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reader
+                .files_durably_closed_metadata(ids, lane_a.space.id())
+                .unwrap()
+                .len(),
+            2
+        );
+    }
     // B's admission lives in A's pack (bytes shared), A's bits unchanged.
     let first_pack: i64 = sql(&root.0)
         .query_row("SELECT min(pack_seq) FROM cas_packs", [], |row| row.get(0))
@@ -743,6 +782,13 @@ fn alternative_manifests_of_one_file_and_a_shared_chunk_resolve_exactly() {
     assert_eq!(
         repository.get_chunk(small.chunks[0].id()).unwrap().as_ref(),
         Some(&small.chunks[0])
+    );
+    // Several manifests of one File (records and explicit ones): closed
+    // exactly where the exact path finds an admitted one.
+    assert_closure_matches(
+        &root.0,
+        &[fixed.clone(), single.clone(), small.clone(), large.clone()],
+        lane.space.id(),
     );
     drop(lane);
     assert_fsck_clean(&root.0);
@@ -1377,6 +1423,9 @@ fn small_packs_are_consolidated_and_every_admission_is_kept() {
                 ),
                 0
             );
+            // Closure from the remapped bitmaps matches the exact path.
+            assert_closure_matches(&root.0, &files, lane.space.id());
+            assert_closure_matches(&root.0, std::slice::from_ref(&shared), lane_b.space.id());
         }
         let mut answer = reader_answers(&root.0, &files, lane.space.id());
         answer.extend(reader_answers(

@@ -30,10 +30,13 @@ pub enum RoomCommand {
     Step {
         name: Option<String>,
     },
+    /// `capture`: capture the Room's files first (else its last captured
+    /// Step is merged, as git merges a branch's last commit).
     Merge {
         name: Option<String>,
         into: Option<String>,
         preview: bool,
+        capture: bool,
     },
     /// `full`: reread every local byte before deleting (else a physical
     /// Room trusts its change index, as git trusts its index).
@@ -126,11 +129,13 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
         Some("merge") => {
             args.remove(0);
             let preview = take_bool_flag(&mut args, "--preview")?;
+            let capture = take_bool_flag(&mut args, "--capture")?;
             let into = take_string_option(&mut args, "--into")?.filter(|s| !s.is_empty());
             Ok(CliCommand::Room(RoomCommand::Merge {
                 name: optional_name(args, "merge")?,
                 into,
                 preview,
+                capture,
             }))
         }
         Some("drop") => {
@@ -145,7 +150,7 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
         }
         Some("create" | "open" | "resume") => Ok(CliCommand::Worktree(worktree::parse(args)?)),
         _ => Err(CliParseError::new(
-            "usage: layrs room new NAME [--virtual | --physical] [--dir PATH] | list | path NAME | location [set DIR | reset] [--global] | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] | drop [NAME] [--force] [--full]  (alias: loom)",
+            "usage: layrs room new NAME [--virtual | --physical] [--dir PATH] | list | path NAME | location [set DIR | reset] [--global] | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] [--capture] | drop [NAME] [--force] [--full]  (alias: loom)",
         )),
     }
 }
@@ -242,7 +247,8 @@ mod tests {
                 CliCommand::Room(RoomCommand::Merge {
                     name: None,
                     into: Some("main".into()),
-                    preview: false
+                    preview: false,
+                    capture: false
                 })
             );
             assert_eq!(

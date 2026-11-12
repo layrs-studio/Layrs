@@ -53,7 +53,14 @@ particulier une par agent :
   voit n'est effacé sans avoir été conservé dans le Store. Une réécriture qui
   garde exactement taille et dates n'est vue, comme dans git, que par
   `room drop --full` (voir « Garde-fous » et « Limites assumées »).
-- `room merge` capture la Room, jamais le dossier du projet (conseil s10,
+- `room merge` fusionne la dernière Step capturée de la Room, lue dans
+  l'Opération active de son Worktree, sans lire ses fichiers (conseil s13 Q4,
+  2026-11-12, comme git fusionne le dernier commit d'une branche) : une
+  modification de la Room qui n'a pas été capturée reste dans la Room et la
+  sortie le rappelle ; `room merge --capture` capture d'abord la Room (le
+  comportement d'avant). `room drop` continue de protéger ce qui n'est ni
+  capturé ni fusionné.
+- `room merge` ne capture jamais le dossier du projet (conseil s10,
   2026-11-09, comme la fusion de git) : une modification de travail sur un
   chemin que la fusion n'écrit pas est conservée telle quelle, sans être
   enregistrée ; un chemin que la fusion écrit doit encore avoir son contenu de

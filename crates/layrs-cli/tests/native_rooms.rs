@@ -164,10 +164,18 @@ fn second_room_merges_through_a_weave_after_the_first() {
     );
     fs::write(b.join("src/a.txt"), b"a by b\n").unwrap();
     fs::write(c.join("src/b.txt"), b"b by c\n").unwrap();
-    assert_eq!(
-        run(&project, &["room", "merge", "agent-b"], true)["fastForward"],
-        true
-    );
+    // Without --capture, a Room's uncaptured edits are not merged (council
+    // s13 Q4, as git merges a branch's last commit), and the output says so.
+    let skipped = run(&project, &["room", "merge", "agent-c"], true);
+    assert_eq!(skipped["merged"], false, "{skipped}");
+    assert_eq!(skipped["captured"], false);
+    assert_eq!(fs::read(project.join("src/b.txt")).unwrap(), b"b\n");
+    assert_eq!(fs::read(c.join("src/b.txt")).unwrap(), b"b by c\n");
+    // --capture captures them first.
+    let merged_b = run(&project, &["room", "merge", "agent-b", "--capture"], true);
+    assert_eq!(merged_b["fastForward"], true, "{merged_b}");
+    assert_eq!(merged_b["captured"], true);
+    run(&c, &["room", "step"], true);
     // main moved: agent-c needs a real Weave, still conflict-free here.
     let merged = run(&project, &["room", "merge", "agent-c"], true);
     assert_eq!(merged["merged"], true);

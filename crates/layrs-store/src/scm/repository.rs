@@ -147,6 +147,18 @@ pub trait ScmReader: Send + Sync {
         }
         Ok(admitted)
     }
+    /// The Files of `files` closed in `space` by some durably admitted
+    /// manifest, without naming it: the admission closure of a Tree needs
+    /// that one exists, never which (council s13 Q2). Positive answers only;
+    /// a File left out takes the per-File path. The default proves none.
+    fn files_durably_closed_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        let _ = (files, space);
+        Ok(std::collections::BTreeSet::new())
+    }
     /// Whether the Tree is installed, from metadata where the Store verified
     /// it on installation; the default reads it. Never proof of intact bytes.
     fn tree_present_metadata(&self, id: &TreeId) -> Result<bool> {

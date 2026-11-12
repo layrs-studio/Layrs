@@ -218,6 +218,23 @@ impl NativeScmReader<'_> {
     /// metadata is entirely sound (present, every manifest with its objects
     /// row, at most 1,024 manifests) are answered; any other is left to the
     /// per-File path, which reports its corruption exactly as before.
+    /// The Files of `files` closed in `space` by a durably admitted
+    /// manifest, without naming it (council s13 Q2): the admission closure of
+    /// a Tree needs that one exists, never which. Positive answers only; a
+    /// File left out takes the exact path (`admitted_manifests_metadata`).
+    /// Format 5 answers none (its exact path is unchanged).
+    pub fn files_durably_closed_metadata<'f>(
+        &self,
+        files: impl IntoIterator<Item = &'f FileId>,
+        space: &layrs_core::scm::SpaceId,
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        let _span = crate::perf::span("read.files_durably_closed");
+        if self.compact() {
+            return self.files_durably_closed_compact(files, space);
+        }
+        Ok(std::collections::BTreeSet::new())
+    }
+
     pub fn admitted_manifests_metadata<'f>(
         &self,
         files: impl IntoIterator<Item = &'f FileId>,

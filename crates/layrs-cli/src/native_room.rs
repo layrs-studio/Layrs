@@ -230,6 +230,7 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             name,
             into,
             preview,
+            capture,
         } => {
             let span = layrs_store_local::perf::span("room.selected");
             let mut room = selected(&context, name.as_ref())?;
@@ -241,6 +242,7 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
                 &mut room,
                 into.as_deref(),
                 *preview,
+                *capture,
             )
         }
         RoomCommand::Drop { name, force, full } => {
@@ -563,6 +565,7 @@ fn merge(
     room: &mut RoomRecord,
     into: Option<&str>,
     preview: bool,
+    capture: bool,
 ) -> Result<Rendered, CliError> {
     let span = layrs_store_local::perf::span("room.merge.target");
     let target = match into {
@@ -575,17 +578,51 @@ fn merge(
         )?,
     };
     drop(span);
-    let span = layrs_store_local::perf::span("room.merge.capture_room");
-    let captured = step(cli, project, room)?;
-    drop(span);
-    let head = captured["stepId"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| CliError::runtime("the Room has no captured Step"))?;
+    // The Room's last captured Step, as git merges a branch's last commit
+    // (council s13 Q4): its working files are not read, and edits it has not
+    // captured stay in it. `--capture` captures them first.
+    let head = if capture {
+        let span = layrs_store_local::perf::span("room.merge.capture_room");
+        let captured = step(cli, project, room)?;
+        drop(span);
+        captured["stepId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| CliError::runtime("the Room has no captured Step"))?
+    } else {
+        let _span = layrs_store_local::perf::span("room.merge.room_head");
+        let worktree = room
+            .worktree_id
+            .as_deref()
+            .ok_or_else(|| CliError::runtime("the Room has no Worktree yet"))?;
+        let worktree = layrs_core::scm::WorktreeId::parse(worktree.to_owned())
+            .map_err(|e| CliError::runtime(e.to_string()))?;
+        project
+            .client()
+            .worktree_base_step(&worktree)
+            .map_err(error)?
+            .as_str()
+            .to_owned()
+    };
+    // Said whenever the Room's files were not captured: whether they hold
+    // edits is not known without reading them.
+    let uncaptured = (!capture).then(|| {
+        format!(
+            "edits not captured in Room {} are not merged (`layrs room step`, or `room merge --capture`)",
+            room.name
+        )
+    });
+    let with_note = |human: String| match &uncaptured {
+        Some(note) => format!("{human}\n{note}"),
+        None => human,
+    };
     if head == room.base_step_id || room.merged_step_id.as_deref() == Some(&head) {
         return Ok(Rendered {
-            human: format!("Room {}: nothing new to merge into {target}", room.name),
-            data: json!({ "room": room, "target": target, "merged": false, "conflicts": [] }),
+            human: with_note(format!(
+                "Room {}: no new captured Step to merge into {target}",
+                room.name
+            )),
+            data: json!({ "room": room, "target": target, "merged": false, "conflicts": [], "captured": capture }),
         });
     }
     // Fast path: the target has not moved since the Room forked (or since its
@@ -612,7 +649,7 @@ fn merge(
                 let _span = layrs_store_local::perf::span("room.merge.update_room");
                 project.update_room(room).map_err(error)?;
                 return Ok(Rendered {
-                    human: format!(
+                    human: with_note(format!(
                         "Room {} merged into {target} (fast-forward to {head}){}",
                         room.name,
                         if materialized {
@@ -620,8 +657,8 @@ fn merge(
                         } else {
                             ""
                         }
-                    ),
-                    data: json!({ "room": room, "target": target, "merged": true, "fastForward": true, "materialized": materialized, "stepId": head }),
+                    )),
+                    data: json!({ "room": room, "target": target, "merged": true, "fastForward": true, "materialized": materialized, "stepId": head, "captured": capture }),
                 });
             }
             Err(layrs_client_core::native_scm::NativeClientError::NeedsIntegration) => {}
@@ -668,8 +705,8 @@ fn merge(
             )
         };
         return Ok(Rendered {
-            human,
-            data: json!({ "room": room, "target": target, "conflicts": conflicts, "merged": false, "projectDirty": dirty }),
+            human: with_note(human),
+            data: json!({ "room": room, "target": target, "conflicts": conflicts, "merged": false, "projectDirty": dirty, "stepId": head, "captured": capture }),
         });
     }
     let span = layrs_store_local::perf::span("room.merge.weave_accept");
@@ -677,18 +714,19 @@ fn merge(
     drop(span);
     room.merged_step_id = Some(head);
     project.update_room(room).map_err(error)?;
+    let human = with_note(format!(
+        "Room {} merged into {target} (Step {}){}",
+        room.name,
+        accepted.step_id,
+        if accepted.materialized {
+            "; project files updated"
+        } else {
+            ""
+        }
+    ));
     Ok(Rendered {
-        human: format!(
-            "Room {} merged into {target} (Step {}){}",
-            room.name,
-            accepted.step_id,
-            if accepted.materialized {
-                "; project files updated"
-            } else {
-                ""
-            }
-        ),
-        data: json!({ "room": room, "target": target, "merged": true, "weave": accepted }),
+        human,
+        data: json!({ "room": room, "target": target, "merged": true, "weave": accepted, "captured": capture }),
     })
 }
 

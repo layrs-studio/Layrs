@@ -197,16 +197,31 @@ impl CheckoutReader {
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
         self.capture_trusting_passes(
-            limits, tracked, expected, trust, observe, progress, false, true,
+            limits,
+            tracked,
+            expected,
+            trust,
+            observe,
+            progress,
+            Passes {
+                single: false,
+                relist: true,
+                records: true,
+            },
         )
     }
 
     /// As `capture_streaming_trusting`, accepting the first complete pass
     /// (council r5, D4): for a capture that only records content, as git
     /// add does. Every hashed file is still one stable observation, every
-    /// directory is relisted and an unstable pass is retried; only the
-    /// second pass's cross-file consistency is not asked for. Never use it
-    /// for the verification preceding a deletion or replacement.
+    /// pinned directory's identity is checked again, an unstable pass is
+    /// retried, and every Tree is built and checked; but directories are not
+    /// listed a second time (council s13 Q3, git's trade-off): an entry
+    /// created or removed in a directory while it is read may be recorded or
+    /// not, and the next capture sees it. Nothing is deleted or replaced on
+    /// the strength of such a capture: never use it for the verification
+    /// preceding a deletion or replacement, which relists and asks for two
+    /// equal passes.
     pub fn capture_streaming_trusting_single_pass(
         &self,
         limits: CheckoutLimits,
@@ -217,7 +232,17 @@ impl CheckoutReader {
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
         self.capture_trusting_passes(
-            limits, tracked, expected, trust, observe, progress, true, true,
+            limits,
+            tracked,
+            expected,
+            trust,
+            observe,
+            progress,
+            Passes {
+                single: true,
+                relist: false,
+                records: true,
+            },
         )
     }
 
@@ -242,8 +267,11 @@ impl CheckoutReader {
             trust,
             &mut |_| Ok(()),
             &mut || Ok(()),
-            true,
-            false,
+            Passes {
+                single: true,
+                relist: false,
+                records: false,
+            },
         )
     }
 
@@ -256,9 +284,13 @@ impl CheckoutReader {
         trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
-        single_pass: bool,
-        relist: bool,
+        passes: Passes,
     ) -> io::Result<TrustedCapture> {
+        let Passes {
+            single: single_pass,
+            relist,
+            records,
+        } = passes;
         let _span = crate::perf::span("checkout.capture_trusting");
         let mut previous: Option<TrustedCapture> = None;
         for attempt in 0..3 {
@@ -276,6 +308,7 @@ impl CheckoutReader {
                 validated,
                 progress,
                 relist,
+                records,
             ) {
                 Ok(current) => {
                     let same = previous.as_ref().is_some_and(|previous| {
@@ -359,8 +392,9 @@ impl CheckoutReader {
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Vec<CheckoutProjectionEntry>, Vec<FileManifest>)> {
-        let scanned =
-            self.scan_streaming_listed(limits, tracked, observe, trust, expected, progress, true)?;
+        let scanned = self.scan_streaming_listed(
+            limits, tracked, observe, trust, expected, progress, true, true,
+        )?;
         Ok((scanned.entries, scanned.manifests))
     }
 
@@ -374,6 +408,7 @@ impl CheckoutReader {
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
         relist: bool,
+        records: bool,
     ) -> io::Result<TrustedCapture> {
         let _span = crate::perf::span("checkout.scan_pass");
         self.directory.verify_path_identity()?;
@@ -422,7 +457,7 @@ impl CheckoutReader {
         // checked, but no Tree is built (a capture still builds and checks
         // every Tree before recording anything).
         if expected != Some(scan.entries.as_slice()) {
-            if relist {
+            if records {
                 projection_tree_id(&scan.entries)?;
             } else {
                 super::validate_observed_projection(&scan.entries)?;
@@ -436,6 +471,21 @@ impl CheckoutReader {
             trusted: scan.trusted,
         })
     }
+}
+
+/// How a trusting capture reads the folder.
+#[derive(Clone, Copy)]
+struct Passes {
+    /// The first complete pass is accepted (council r5, D4).
+    single: bool,
+    /// Every completed directory is listed again and must be unchanged
+    /// (kept wherever a deletion or replacement depends on the result:
+    /// council s13 Q3).
+    relist: bool,
+    /// The result may be recorded: a pass that differs from the expected
+    /// projection builds and checks every Tree; otherwise (an observation
+    /// such as `status`) only its paths are checked.
+    records: bool,
 }
 
 /// Result of `capture_streaming_trusting`.

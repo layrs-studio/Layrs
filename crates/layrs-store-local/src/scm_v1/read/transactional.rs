@@ -125,6 +125,15 @@ impl ScmReader for NativeTransactionalScmReader<'_> {
             .admitted_manifests_metadata(files.iter().copied(), space)
     }
 
+    fn files_durably_closed_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        self.active_reader()?
+            .files_durably_closed_metadata(files.iter().copied(), space)
+    }
+
     fn object_admitted_to_space(
         &self,
         object_id: &StoreObjectId,

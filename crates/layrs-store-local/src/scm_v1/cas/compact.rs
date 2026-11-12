@@ -1908,6 +1908,57 @@ impl RegisteredCatalog {
         })
     }
 
+    /// Whether some registered manifest of `file_id` is admitted to the
+    /// Space whose admissions these are, decided from its placements' bits
+    /// alone: no manifest id is built (council s13 Q2). Every copy of a
+    /// manifest is reachable from its FileId (FileId sections, file records,
+    /// loose manifests). Positive answers only: `false` also when the File
+    /// has more manifests than `max_manifests` (the exact path then reports
+    /// it), and a damaged catalog never turns into `true`.
+    pub(crate) fn file_manifest_admitted(
+        &self,
+        admissions: &SpaceAdmissions,
+        file_id: &FileId,
+        max_manifests: usize,
+    ) -> CasResult<bool> {
+        let raw = file_id.digest_bytes();
+        let set = |placement: Placement| {
+            self.logical(placement).is_some_and(|(seq, ordinal)| {
+                admissions
+                    .bitmaps
+                    .get(&seq)
+                    .is_some_and(|bitmap| bit(bitmap, ordinal))
+            })
+        };
+        let mut placements = 0_usize;
+        let mut admitted = false;
+        for (pack, registered) in self.packs.iter().enumerate() {
+            let loaded = &registered.pack;
+            for entry in loaded.index.fileid_manifests(&raw) {
+                let ordinal = loaded
+                    .index
+                    .manifest_ordinal(entry.manifest)
+                    .ok_or_else(|| {
+                        pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
+                    })?;
+                loaded.index.explicit(ordinal).ok_or_else(|| {
+                    pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
+                })?;
+                placements += 1;
+                admitted |= set(Placement::Record { pack, ordinal });
+            }
+            if let Some(file) = loaded.index.find_file(&raw) {
+                placements += 1;
+                admitted |= set(Placement::Manifest { pack, file });
+            }
+        }
+        for (digest, _) in self.loose_by_file.get(&raw).into_iter().flatten() {
+            placements += 1;
+            admitted |= admissions.loose.contains(digest);
+        }
+        Ok(admitted && placements <= max_manifests)
+    }
+
     /// Whether some registered copy of `id` is admitted to the Space whose
     /// admissions these are.
     pub(crate) fn admitted(
