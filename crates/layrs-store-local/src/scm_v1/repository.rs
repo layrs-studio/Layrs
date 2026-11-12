@@ -1204,17 +1204,26 @@ fn plan_file_records(
     let mut supplied: std::collections::HashSet<ChunkId> =
         chunks.iter().map(|(id, _)| id.clone()).collect();
     let mut manifests = Vec::new();
+    // Files whose whole chunk the batch supplies: their file record is the
+    // whole one, even without its manifest (council s16 r2).
+    let mut whole_files: std::collections::HashSet<[u8; 32]> = whole_chunk_ids(batch)
+        .iter()
+        .map(ChunkId::digest_bytes)
+        .collect();
     for object in batch.canonical_objects() {
         match object {
             CanonicalObject::ChunkRaw(chunk) => {
                 supplied.insert(chunk.id().clone());
+                if chunk.is_whole() {
+                    whole_files.insert(chunk.id().digest_bytes());
+                }
             }
             CanonicalObject::FileManifest(manifest) => manifests.push(manifest),
             _ => {}
         }
     }
-    let plan =
-        super::cas::FileRecordPlan::new(&catalog, manifests, &supplied).map_err(cas_backend)?;
+    let plan = super::cas::FileRecordPlan::new(&catalog, manifests, &supplied, &whole_files)
+        .map_err(cas_backend)?;
     cas.plan_file_records(plan).map_err(cas_backend)
 }
 

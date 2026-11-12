@@ -2232,6 +2232,7 @@ impl FileRecordPlan {
         catalog: &RegisteredCatalog,
         manifests: impl IntoIterator<Item = &'m FileManifest>,
         supplied_chunks: &HashSet<ChunkId>,
+        whole_files: &HashSet<[u8; 32]>,
     ) -> CasResult<Self> {
         let mut plan = Self::default();
         // Whole manifests first: their chunk can only be a file record, and
@@ -2243,7 +2244,12 @@ impl FileRecordPlan {
             let Some(recipe) = Recipe::of(manifest) else {
                 continue;
             };
-            if planned_files.contains(&manifest.file_id().digest_bytes()) {
+            let file = manifest.file_id().digest_bytes();
+            // A File whose whole chunk the batch supplies keeps its v1 form
+            // explicit: its file record is the whole one.
+            if planned_files.contains(&file)
+                || (!manifest.chunks_are_whole() && whole_files.contains(&file))
+            {
                 continue;
             }
             let chunk = &manifest.chunks()[0];

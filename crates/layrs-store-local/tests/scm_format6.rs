@@ -843,6 +843,50 @@ fn a_v1_manifest_naming_a_whole_chunk_is_refused() {
     assert!(reader.get_file_manifest(wrong.id()).unwrap().is_none());
 }
 
+/// A batch carrying a whole chunk without its manifest and the v1 form of
+/// the same bytes: the whole chunk keeps the file record, the v1 chunk and
+/// manifest stay explicit (council s16 r2).
+#[test]
+fn a_whole_chunk_alone_and_the_v1_form_of_its_file_share_a_batch() {
+    let root = TestRoot::new("whole-alone-v1");
+    create(&root.0, "whole-alone-v1", "7");
+    let v1 = file("v1.txt", b"bytes in two forms at once", Recipe::Fixed);
+    let whole = Chunk::whole(b"bytes in two forms at once".to_vec()).unwrap();
+    let (lane, batch) = Lane::begin("alpha", std::slice::from_ref(&v1));
+    let mut objects = batch.canonical_objects().to_vec();
+    objects.push(CanonicalObject::ChunkRaw(whole.clone()));
+    let mut admissions = batch.admissions().to_vec();
+    admissions.push(SpaceObjectAdmission::new(
+        lane.space.id().clone(),
+        StoreObjectId::ChunkRaw(whole.id().clone()),
+    ));
+    let batch = WriteBatch::new(
+        batch.transaction_id().clone(),
+        objects,
+        batch.entity_records().to_vec(),
+        admissions,
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert_eq!(reader.get_chunk(whole.id()).unwrap().as_ref(), Some(&whole));
+    assert_eq!(
+        reader.get_chunk(v1.chunks[0].id()).unwrap().as_ref(),
+        Some(&v1.chunks[0])
+    );
+    assert_eq!(
+        reader.get_file_manifest(v1.manifest.id()).unwrap().as_ref(),
+        Some(&v1.manifest)
+    );
+    drop(reader);
+    drop(store);
+    assert_fsck_clean(&root.0);
+}
+
 struct NoCasFault;
 impl CasFaultInjector for NoCasFault {
     fn check(&self, _: CasFaultPoint) -> Result<(), String> {
