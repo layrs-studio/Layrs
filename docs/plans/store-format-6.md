@@ -289,6 +289,58 @@ part.
 
 ## Blockers before format 6 becomes the default (phase 6)
 
+**Council s17 (2026-11-12, design round, Astra, Sol, Opus; brief
+`council-s17-design.md`).** Format 7 stays opt-in until both blockers are
+removed and the measurement gate passes; only then does `init` create
+format 7 (new Stores only: existing Stores keep their format; conversion
+and `layrs store repair` come after). Agreed by all three, in this order:
+
+1. B1a, no schema change: writers act on positive evidence only. An
+   uncertain answer (a registered pack unreadable) means "not proven",
+   never "absent": deduplication writes its own copy, `new_objects` and
+   the capture's known-chunk hints keep what they cannot prove, admission
+   closure is satisfied by what the batch carries, and an unprovable
+   closure fails that batch only, naming `step --full`. Public reader
+   answers stay complete (an uncertain negative is still an error).
+   Found while writing its test: a full capture whose folder equals its
+   base still has to carry what the Store can no longer prove (a recovery
+   batch of content and admissions, without a new Step); today it returns
+   "unchanged".
+2. B1b, the last change to schema v3 (existing opt-in Stores are then
+   refused, as for inline packs): one `cas_pack_keys` row per registered
+   pack (inline ones too), written in the registering transaction
+   (`register_compact`, `consolidation::register`), bound to the
+   registered index digest and checksummed, read only for packs found
+   unreadable. Keys are tagged by form (explicit kind and id, FileId
+   section, file record FileId, ChunkId alias, full FileManifestId alias).
+   Filter: a Golomb-Rice coded set written in-house (deterministic, a
+   stable encoding fsck recomputes exactly), its parameter stored per row
+   (Opus: 32-bit fingerprints, a false "uncertain" per key of 2^-32;
+   Astra and Sol preferred a binary-fuse 8 dependency at ~9 bits per key;
+   the chair chose GCS with a per-row parameter, set from measured size).
+   Also a layout-independent `keys_digest` of the ordered logical keys and
+   a digest per 256 ordinals, for exact repair later (they can only be
+   computed at registration). Reserved `cas_packs.lost_at_ms`.
+3. B1c: fsck checks every readable pack's keys row against its index and
+   judges what stays provable around an unreadable pack.
+4. B2a (done, `b915318`): consolidation is due only when a group fits the
+   budgets (a batch no longer reopens the CAS to find nothing).
+5. B2b: one maintenance engine, foreground command and detached pass:
+   choose a group under a short shared lock, build and verify it with no
+   Store lock into a temporary name orphan collection ignores, then under
+   the exclusive lock check every candidate is still registered as chosen,
+   publish, and register with the existing exact remap (reading the
+   current bitmaps). No grace period: the pack is published by the session
+   that registers it.
+6. B2c: the batch path marks maintenance due (from its catalog); the CLI
+   starts it detached after releasing its lock; `LAYRS_AUTO_MAINTENANCE=0`
+   disables it.
+7. Measurement gate: 10,000 and 100,000 files, history, the 1.5 GiB file,
+   a Store past 64 MiB of packs with maintenance, a lost pack end to end,
+   clone size; no command slower than format 5.
+8. The flip: `creation_format_version` defaults to 7 with an explicit
+   `"5"`; CI runs the suites unset and with `LAYRS_STORE_FORMAT=5`.
+
 - **One unreadable registered pack refuses the whole Store** (Deviation 6,
   council r2, P2). Every absence, admission and manifest-list answer then
   errors, so capture, step and every new batch fail, including the batch
