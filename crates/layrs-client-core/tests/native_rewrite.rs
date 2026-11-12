@@ -124,7 +124,9 @@ fn replay_changes_only_selected_delta_records_map_and_keeps_honest_parent() {
 }
 
 /// A revert back to content the Space holds stores no second form of it
-/// (council s16 r2): one manifest per File, in every format.
+/// (council s16 r2): one manifest per File in a compact Store (formats 6
+/// and 7). Format 5 proves no closure by admission bits and may keep the
+/// rebuilt manifest as before.
 #[test]
 fn a_revert_to_existing_content_stores_no_second_form() {
     let fixture = Fixture::new();
@@ -143,13 +145,15 @@ fn a_revert_to_existing_content_stores_no_second_form() {
     );
     let store = scm_v1::open(workspace.store_root()).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
+    let compact = store.format_version() >= scm_v1::COMPACT_FORMAT_VERSION;
     for content in [&b"first content\n"[..], b"second content\n"] {
         let file = FileId::from_bytes(content);
-        assert_eq!(
-            reader.file_manifest_ids_metadata(&file).unwrap().len(),
-            1,
-            "{file}"
-        );
+        let forms = reader.file_manifest_ids_metadata(&file).unwrap().len();
+        if compact {
+            assert_eq!(forms, 1, "{file}");
+        } else {
+            assert!((1..=2).contains(&forms), "{file}: {forms}");
+        }
     }
 }
 
