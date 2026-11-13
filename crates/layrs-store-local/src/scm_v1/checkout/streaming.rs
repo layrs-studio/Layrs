@@ -206,7 +206,6 @@ impl CheckoutReader {
             Passes {
                 single: false,
                 relist: true,
-                records: true,
             },
         )
     }
@@ -245,7 +244,6 @@ impl CheckoutReader {
             Passes {
                 single: true,
                 relist: false,
-                records: true,
             },
         )
     }
@@ -274,7 +272,6 @@ impl CheckoutReader {
             Passes {
                 single: true,
                 relist: false,
-                records: false,
             },
         )
     }
@@ -293,7 +290,6 @@ impl CheckoutReader {
         let Passes {
             single: single_pass,
             relist,
-            records,
         } = passes;
         let _span = crate::perf::span("checkout.capture_trusting");
         let mut previous: Option<TrustedCapture> = None;
@@ -312,7 +308,6 @@ impl CheckoutReader {
                 validated,
                 progress,
                 relist,
-                records,
             ) {
                 Ok(current) => {
                     let same = previous.as_ref().is_some_and(|previous| {
@@ -396,9 +391,8 @@ impl CheckoutReader {
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Vec<CheckoutProjectionEntry>, Vec<FileManifest>)> {
-        let scanned = self.scan_streaming_listed(
-            limits, tracked, observe, trust, expected, progress, true, true,
-        )?;
+        let scanned =
+            self.scan_streaming_listed(limits, tracked, observe, trust, expected, progress, true)?;
         Ok((scanned.entries, scanned.manifests))
     }
 
@@ -412,7 +406,6 @@ impl CheckoutReader {
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
         relist: bool,
-        records: bool,
     ) -> io::Result<TrustedCapture> {
         let _span = crate::perf::span("checkout.scan_pass");
         self.directory.verify_path_identity()?;
@@ -457,16 +450,13 @@ impl CheckoutReader {
         scan.manifests.sort_by(|a, b| a.id().cmp(b.id()));
         scan.manifests.dedup_by(|a, b| a.id() == b.id());
         // A pass equal to the expected projection (read from an admitted Step,
-        // where it was validated) is representable; any other is validated.
-        // A read-only observation (`status`) records nothing: its paths are
-        // checked, but no Tree is built (a capture still builds and checks
-        // every Tree before recording anything).
+        // where it was validated) is representable; any other is validated:
+        // its paths, lengths and symlink targets here. No Tree is built: a
+        // capture that records (`init`, a step) builds and checks every Tree
+        // itself (its snapshot) before recording anything, so building them
+        // here too cost a second whole-checkout pass (council s20).
         if expected != Some(scan.entries.as_slice()) {
-            if records {
-                projection_tree_id(&scan.entries)?;
-            } else {
-                super::validate_observed_projection(&scan.entries)?;
-            }
+            super::validate_observed_projection(&scan.entries)?;
         }
         self.directory.verify_path_identity()?;
         Ok(TrustedCapture {
@@ -487,10 +477,6 @@ struct Passes {
     /// (kept wherever a deletion or replacement depends on the result:
     /// council s13 Q3).
     relist: bool,
-    /// The result may be recorded: a pass that differs from the expected
-    /// projection builds and checks every Tree; otherwise (an observation
-    /// such as `status`) only its paths are checked.
-    records: bool,
 }
 
 /// Result of `capture_streaming_trusting`.

@@ -400,12 +400,45 @@ impl super::NativeWorkspace {
                 return Ok((PreparedSnapshot::unchanged(root), next, None));
             }
         }
-        let snapshot = PreparedSnapshot::from_streaming_referencing(
-            &captured.entries,
-            captured.manifests,
-            chunks,
-            limits,
-        )?;
+        // Only the changed folders are built (council s20) when the base is
+        // exactly its root Tree as a projection (no Tombstone, Conflict or
+        // empty folder), known without computing it; else every folder.
+        let incremental = base_root.filter(|root| {
+            !damaged && scm_v1::checkout::known_projection_tree_id(&base).as_ref() == Some(*root)
+        });
+        let snapshot = match incremental {
+            Some(base_root) => {
+                let store = self.open_store()?;
+                let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
+                let snapshot = PreparedSnapshot::incremental(
+                    &base,
+                    base_root,
+                    &captured.entries,
+                    captured.manifests,
+                    chunks,
+                    &mut |id| {
+                        layrs_store::scm::ScmReader::get_tree(&reader, id)?
+                            .ok_or(super::NativeClientError::Missing("base Tree"))
+                    },
+                )?;
+                if cfg!(debug_assertions) {
+                    assert_eq!(
+                        &scm_v1::checkout::projection_tree_id(&captured.entries)?,
+                        snapshot.root_tree_id(),
+                        "an incremental capture builds the Tree of its projection"
+                    );
+                }
+                snapshot
+            }
+            None => PreparedSnapshot::from_streaming_referencing(
+                &captured.entries,
+                captured.manifests,
+                chunks,
+                limits,
+            )?,
+        };
+        // Built from these very entries: the Tree of their projection.
+        scm_v1::checkout::remember_projection_tree_id(&captured.entries, snapshot.root_tree_id());
         // Recorded against the projection of the Tree this capture builds,
         // the next base (council s3, D1).
         next.bind(snapshot.root_tree_id(), &captured.entries);

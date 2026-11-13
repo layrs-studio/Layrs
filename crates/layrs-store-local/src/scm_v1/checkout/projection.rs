@@ -120,6 +120,16 @@ fn projection_memo() -> &'static std::sync::Mutex<std::collections::HashMap<[u8;
     MEMO.get_or_init(Default::default)
 }
 
+/// The Tree of `entries` when this process already computed or recorded it
+/// (`remember_projection_tree_id`), without computing it.
+pub fn known_projection_tree_id(entries: &[CheckoutProjectionEntry]) -> Option<TreeId> {
+    let key = projection_fingerprint(entries);
+    projection_memo()
+        .lock()
+        .ok()
+        .and_then(|memo| memo.get(&key).cloned())
+}
+
 /// Records that `entries` is a valid projection whose Tree is `tree` (as
 /// `projection_tree_id` would compute), e.g. from a projection cache entry
 /// written with its computed Tree. Bounded; forgotten when the process ends.

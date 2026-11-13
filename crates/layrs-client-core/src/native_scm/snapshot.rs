@@ -1,7 +1,7 @@
 use super::{NativeClientError, Result};
 use layrs_core::scm::{
-    Chunk, ChunkingDescriptor, FileManifest, RepoPath, RepoPathComponent, Symlink, Tree, TreeEntry,
-    TreeEntryTarget, TreeId,
+    Chunk, ChunkId, ChunkingDescriptor, FileId, FileManifest, RepoPath, RepoPathComponent, Symlink,
+    Tree, TreeEntry, TreeEntryTarget, TreeId,
 };
 use layrs_store::scm::CanonicalObject;
 use std::collections::BTreeMap;
@@ -143,6 +143,228 @@ impl PreparedSnapshot {
         snapshot.chunks = Some(std::sync::Arc::new(chunks));
         Ok(snapshot)
     }
+    /// As `from_streaming_referencing`, building only the folders where
+    /// `entries` differs from `base` (and their ancestors): every other
+    /// folder keeps its base Tree, read from the base Tree of its parent
+    /// (`read_tree`), so a capture costs its changed folders, not the whole
+    /// checkout (council s20). `base_root` is the Tree of `base` as a
+    /// projection (no Tombstone, Conflict or empty folder: the caller
+    /// checked it). The same Trees as the full construction.
+    pub(super) fn incremental(
+        base: &[layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry],
+        base_root: &TreeId,
+        entries: &[layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry],
+        manifests: Vec<FileManifest>,
+        mut chunks: SnapshotChunkSpool,
+        read_tree: &mut dyn FnMut(&TreeId) -> Result<Tree>,
+    ) -> Result<Self> {
+        let _span = layrs_store_local::perf::span("snapshot.incremental");
+        fn folder_of(path: &str) -> &str {
+            path.rsplit_once('/').map_or("", |(folder, _)| folder)
+        }
+        // Folders holding a difference, with every ancestor.
+        let mut changed: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // A folder already marked has its ancestors marked.
+        fn mark<'a>(path: &'a str, changed: &mut std::collections::BTreeSet<&'a str>) {
+            let mut folder = folder_of(path);
+            while changed.insert(folder) && !folder.is_empty() {
+                folder = folder_of(folder);
+            }
+        }
+        let (mut left, mut right) = (base.iter().peekable(), entries.iter().peekable());
+        loop {
+            match (left.peek(), right.peek()) {
+                (None, None) => break,
+                (Some(old), None) => {
+                    mark(&old.path, &mut changed);
+                    left.next();
+                }
+                (None, Some(new)) => {
+                    mark(&new.path, &mut changed);
+                    right.next();
+                }
+                (Some(old), Some(new)) => match old.path.cmp(&new.path) {
+                    std::cmp::Ordering::Less => {
+                        mark(&old.path, &mut changed);
+                        left.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        mark(&new.path, &mut changed);
+                        right.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if old.content != new.content {
+                            mark(&new.path, &mut changed);
+                        }
+                        left.next();
+                        right.next();
+                    }
+                },
+            }
+        }
+        let manifests: BTreeMap<_, _> = manifests
+            .into_iter()
+            .map(|m| (m.file_id().clone(), m))
+            .collect();
+        // The direct children of each changed folder, from `entries`: files
+        // and symlinks, and the names of its subfolders.
+        let mut leaves: BTreeMap<
+            &str,
+            Vec<&layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry>,
+        > = BTreeMap::new();
+        let mut folders: BTreeMap<&str, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for entry in entries {
+            let folder = folder_of(&entry.path);
+            if changed.contains(folder) {
+                leaves.entry(folder).or_default().push(entry);
+            }
+            // Subfolders of changed folders: the first component below each.
+            let mut child = folder;
+            while !child.is_empty() {
+                let parent = folder_of(child);
+                if changed.contains(parent) {
+                    let name = child.rsplit_once('/').map_or(child, |(_, name)| name);
+                    if !folders.entry(parent).or_default().insert(name) {
+                        break;
+                    }
+                }
+                child = parent;
+            }
+        }
+        let mut objects: BTreeMap<String, CanonicalObject> = BTreeMap::new();
+        let mut retained = std::collections::BTreeSet::new();
+        // Builds folder `path` (changed) whose base Tree is `base_tree`.
+        #[allow(clippy::too_many_arguments)]
+        fn build(
+            path: &str,
+            base_tree: Option<&TreeId>,
+            changed: &std::collections::BTreeSet<&str>,
+            leaves: &BTreeMap<
+                &str,
+                Vec<&layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry>,
+            >,
+            folders: &BTreeMap<&str, std::collections::BTreeSet<&str>>,
+            manifests: &BTreeMap<FileId, FileManifest>,
+            objects: &mut BTreeMap<String, CanonicalObject>,
+            retained: &mut std::collections::BTreeSet<ChunkId>,
+            read_tree: &mut dyn FnMut(&TreeId) -> Result<Tree>,
+        ) -> Result<TreeId> {
+            use layrs_store_local::scm_v1::checkout::CheckoutProjectionContent;
+            let mut children = Vec::new();
+            for entry in leaves.get(path).into_iter().flatten() {
+                let name = entry
+                    .path
+                    .rsplit_once('/')
+                    .map_or(entry.path.as_str(), |(_, name)| name);
+                let (target, executable) = match &entry.content {
+                    CheckoutProjectionContent::File {
+                        file_id,
+                        byte_length,
+                        executable,
+                    } => {
+                        if let Some(manifest) = manifests.get(file_id) {
+                            if manifest.byte_length() != *byte_length {
+                                return Err(NativeClientError::InvalidState(
+                                    "streamed file length changed",
+                                ));
+                            }
+                            retained.extend(manifest.chunks().iter().map(|c| c.chunk_id().clone()));
+                            let object = CanonicalObject::FileManifest(manifest.clone());
+                            objects
+                                .entry(object.object_id().as_str().to_owned())
+                                .or_insert(object);
+                        }
+                        (TreeEntryTarget::file(file_id.clone()), *executable)
+                    }
+                    CheckoutProjectionContent::Symlink { target } => {
+                        let link = Symlink::new(target)?;
+                        let id = link.id().clone();
+                        let object = CanonicalObject::Symlink(link);
+                        objects
+                            .entry(object.object_id().as_str().to_owned())
+                            .or_insert(object);
+                        (TreeEntryTarget::symlink(id), false)
+                    }
+                };
+                children.push(TreeEntry::new(
+                    RepoPathComponent::parse(name)?,
+                    target,
+                    executable,
+                ));
+            }
+            if let Some(names) = folders.get(path) {
+                // The base Tree of this folder, read once, only when one of
+                // its subfolders is kept.
+                let mut base: Option<Tree> = None;
+                for name in names {
+                    let child = if path.is_empty() {
+                        (*name).to_owned()
+                    } else {
+                        format!("{path}/{name}")
+                    };
+                    let base_child = match base_tree {
+                        Some(id) => {
+                            if base.is_none() {
+                                base = Some(read_tree(id)?);
+                            }
+                            base.as_ref()
+                                .and_then(|tree| tree.entry_named(name))
+                                .and_then(|entry| entry.target().tree_id())
+                                .cloned()
+                        }
+                        None => None,
+                    };
+                    let id = if changed.contains(child.as_str()) {
+                        build(
+                            &child,
+                            base_child.as_ref(),
+                            changed,
+                            leaves,
+                            folders,
+                            manifests,
+                            objects,
+                            retained,
+                            read_tree,
+                        )?
+                    } else {
+                        base_child.ok_or(NativeClientError::InvalidState(
+                            "an unchanged folder is missing from its base Tree",
+                        ))?
+                    };
+                    children.push(TreeEntry::new(
+                        RepoPathComponent::parse(*name)?,
+                        TreeEntryTarget::tree(id),
+                        false,
+                    ));
+                }
+            }
+            let tree = Tree::new(children)?;
+            let id = tree.id().clone();
+            let object = CanonicalObject::Tree(tree);
+            objects
+                .entry(object.object_id().as_str().to_owned())
+                .or_insert(object);
+            Ok(id)
+        }
+        let root = build(
+            "",
+            Some(base_root),
+            &changed,
+            &leaves,
+            &folders,
+            &manifests,
+            &mut objects,
+            &mut retained,
+            read_tree,
+        )?;
+        chunks.retain(&retained);
+        Ok(Self {
+            root_tree_id: root,
+            objects: objects.into_values().collect(),
+            chunks: Some(std::sync::Arc::new(chunks)),
+        })
+    }
+
     /// A capture that found exactly its base projection: no new object, and
     /// the root is that projection's Tree (what building it would give).
     pub(super) fn unchanged(root_tree_id: TreeId) -> Self {
