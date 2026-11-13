@@ -10,18 +10,31 @@ pub const MAINTENANCE_COMMAND: &str = "__layrs-maintenance";
 /// The most passes one maintenance run makes: each consolidates one group.
 const MAX_PASSES: usize = 8;
 
+/// What maintenance passes did: the last outcome, the pack files
+/// consolidated in all, and the failure that ended them after some did.
+struct Passes {
+    last: MaintenanceOutcome,
+    consolidated: usize,
+    failure: Option<String>,
+}
+
 /// Passes over the Store at `store_root` while they consolidate (or a
-/// candidate moved meanwhile), at most `MAX_PASSES`: the last outcome and
-/// the pack files consolidated in all.
-fn passes(store_root: &Path) -> Result<(MaintenanceOutcome, usize), String> {
+/// candidate moved meanwhile), at most `MAX_PASSES`.
+fn passes(store_root: &Path) -> Result<Passes, String> {
     let mut consolidated = 0;
     let mut last = MaintenanceOutcome::NothingToDo;
     for _ in 0..MAX_PASSES {
         last = match maintain_store(store_root) {
             Ok(outcome) => outcome,
             // What earlier passes consolidated stays done; the failure is
-            // recorded by the Store.
-            Err(_) if consolidated > 0 => break,
+            // recorded by the Store and reported.
+            Err(error) if consolidated > 0 => {
+                return Ok(Passes {
+                    last,
+                    consolidated,
+                    failure: Some(error),
+                });
+            }
             Err(error) => return Err(error),
         };
         match last {
@@ -30,7 +43,11 @@ fn passes(store_root: &Path) -> Result<(MaintenanceOutcome, usize), String> {
             MaintenanceOutcome::Busy | MaintenanceOutcome::NothingToDo => break,
         }
     }
-    Ok((last, consolidated))
+    Ok(Passes {
+        last,
+        consolidated,
+        failure: None,
+    })
 }
 
 /// Starts, detached, a maintenance run on each Store a batch of this
@@ -63,11 +80,16 @@ pub fn start_due() {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: outlives this console.
+        #[cfg(windows)]
+        const FLAGS: u32 = 0x0800_0000 | 0x0000_0200;
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: outlives this console.
-            command.creation_flags(0x0800_0000 | 0x0000_0200);
+            // CREATE_BREAKAWAY_FROM_JOB too: a kill-on-close job (a CI runner,
+            // an IDE task) would end the pass with its command. Refused
+            // unless the job allows it, then retried without (council s19 r2).
+            command.creation_flags(FLAGS | 0x0100_0000);
         }
         #[cfg(unix)]
         {
@@ -75,7 +97,14 @@ pub fn start_due() {
             command.process_group(0);
         }
         crate::native_vfs::keep_standard_handles_private();
-        if command.spawn().is_ok() {
+        let started = command.spawn().is_ok();
+        #[cfg(windows)]
+        let started = started || {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(FLAGS);
+            command.spawn().is_ok()
+        };
+        if started {
             layrs_store_local::perf::count("cli.maintenance_started", 1);
         }
     }
@@ -88,8 +117,8 @@ pub fn run_detached(args: &[String]) -> i32 {
         return 2;
     };
     match passes(Path::new(root)) {
-        Ok(_) => 0,
-        Err(_) => 1,
+        Ok(Passes { failure: None, .. }) => 0,
+        Ok(_) | Err(_) => 1,
     }
 }
 
@@ -97,15 +126,32 @@ pub fn run_detached(args: &[String]) -> i32 {
 /// consolidate the pack files batches leave out, building outside the
 /// Store lock.
 pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
-    let (outcome, consolidated) = passes(store_root).map_err(CliError::runtime)?;
+    let Passes {
+        last: outcome,
+        consolidated,
+        failure,
+    } = passes(store_root).map_err(CliError::runtime)?;
     if consolidated > 0 {
+        let mut human = format!("Consolidated {consolidated} pack files.");
+        if let Some(failure) = &failure {
+            human.push_str(&format!("\nA later pass failed: {failure}"));
+        }
         return Ok(Rendered {
-            human: format!("Consolidated {consolidated} pack files."),
-            data: serde_json::json!({ "status": "consolidated", "packs": consolidated }),
+            human,
+            data: serde_json::json!({
+                "status": "consolidated",
+                "packs": consolidated,
+                "warning": failure,
+            }),
         });
     }
     let (human, status, packs) = match outcome {
-        MaintenanceOutcome::Busy => ("Another maintenance pass is running.".to_owned(), "busy", 0),
+        MaintenanceOutcome::Busy => (
+            "Busy: another maintenance pass or a long command holds the Store. Run it again."
+                .to_owned(),
+            "busy",
+            0,
+        ),
         MaintenanceOutcome::NothingToDo => ("Nothing to consolidate.".to_owned(), "nothingToDo", 0),
         MaintenanceOutcome::Abandoned => (
             "Pack files changed during maintenance; nothing published. Run it again.".to_owned(),

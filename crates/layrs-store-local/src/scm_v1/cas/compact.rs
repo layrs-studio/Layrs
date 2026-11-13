@@ -338,6 +338,7 @@ impl NativeCas {
         // (council s19 r1): automatic maintenance may never run again.
         if names.iter().any(|name| maintenance_temporary(name)) {
             if let Some(_idle) = super::super::consolidation::idle_maintenance_lock(&self.root) {
+                // Held (or absent) until the stale packs are removed.
                 let _ = self.remove_stale_maintenance_packs();
             }
         }
@@ -1158,8 +1159,9 @@ impl NativeCas {
         let _span = crate::perf::span("cas.maintenance_build");
         let general = |error| ConsolidationFailure { pack: None, error };
         let mut open = self.open_maintenance_pack().map_err(general)?;
-        // The candidates' files stay open while they are copied (no group
-        // budget bounds a maintenance pass).
+        // A hold keeps the candidates' files open while they are copied, up
+        // to `HELD_PACKS_MAX` of them (no group budget bounds a maintenance
+        // pass); the others are opened for each block, as without a hold.
         let hold = catalog.hold_pack_files();
         let (packs, keys_of) = self.copy_candidates(catalog, candidates, &mut open)?;
         drop(hold);
@@ -1185,6 +1187,14 @@ impl NativeCas {
         let new = self
             .load_pack_from_disk(&std::cell::OnceCell::new(), &temporary)
             .map_err(general)?;
+        // The file read back is the one written and verified (council s19
+        // r2): its index digest is the sealed one.
+        if new.index.digest != sealed.digest {
+            return Err(general(pack2::pack2_corruption(
+                &open.path,
+                "maintenance pack changed after it was verified",
+            )));
+        }
         let consolidation = Self::remap_consolidation(
             &new,
             (pack2::new_pack2_name(), sealed.digest, sealed.logical),

@@ -85,13 +85,24 @@ fn maintain_recorded(
     root: &std::path::Path,
     between: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<MaintenanceOutcome, String> {
-    let result = maintain_pausing(root, between);
+    // The maintenance lock, once the pass holds it, is kept until its
+    // outcome is recorded: passes record in turn (council s19 r2). Only a
+    // pass that held it records (the Store opened, its metadata validated).
+    let mut held = None;
+    let result = maintain_pausing(root, between, &mut held);
+    if held.is_none() {
+        return result;
+    }
     let metadata = root.join(super::layout::METADATA_DIR_NAME);
     match &result {
         Ok(MaintenanceOutcome::Consolidated { .. } | MaintenanceOutcome::NothingToDo) => {
-            match std::fs::symlink_metadata(metadata.join(MAINTENANCE_FAILED_FILE)) {
-                Ok(found) if found.is_file() => {
-                    let _ = std::fs::remove_file(metadata.join(MAINTENANCE_FAILED_FILE));
+            let note = metadata.join(MAINTENANCE_FAILED_FILE);
+            match std::fs::symlink_metadata(&note) {
+                Ok(found)
+                    if found.is_file()
+                        && crate::layout::reject_reparse_components(&note).is_ok() =>
+                {
+                    let _ = std::fs::remove_file(&note);
                 }
                 _ => {}
             }
@@ -107,6 +118,7 @@ fn maintain_recorded(
             );
         }
     }
+    drop(held);
     result
 }
 
@@ -148,22 +160,31 @@ fn open_maintenance_lock(
     }
 }
 
-/// The maintenance lock of the Store at `root`, held, when no pass holds
-/// it (never created here).
-pub(crate) fn idle_maintenance_lock(root: &std::path::Path) -> Option<std::fs::File> {
-    let file =
-        open_maintenance_lock(&root.join(super::layout::METADATA_DIR_NAME), false).ok()??;
-    fs2::FileExt::try_lock_exclusive(&file).ok()?;
-    Some(file)
+/// Under the exclusive Store lock: `Some` when no maintenance pass can be
+/// building, with the maintenance lock held when its file exists (never
+/// created here). An absent lock file means no pass is building: a pass
+/// creates it in its shared session, which the exclusive one excludes, and
+/// keeps it open while it builds (a crash may lose its unsynced entry,
+/// council s19 r2). `None` when a pass holds it or it cannot be opened.
+pub(crate) fn idle_maintenance_lock(root: &std::path::Path) -> Option<Option<std::fs::File>> {
+    let file = open_maintenance_lock(&root.join(super::layout::METADATA_DIR_NAME), false).ok()?;
+    match file {
+        None => Some(None),
+        Some(file) => {
+            fs2::FileExt::try_lock_exclusive(&file).ok()?;
+            Some(Some(file))
+        }
+    }
 }
 
 fn maintain_pausing(
     root: &std::path::Path,
     between: &mut dyn FnMut() -> Result<(), String>,
+    held: &mut Option<std::fs::File>,
 ) -> Result<MaintenanceOutcome, String> {
     let _span = crate::perf::span("store.maintenance");
     // The group, from a short shared session.
-    let (cas, catalog, candidates, mut damaged, lock) = {
+    let (cas, catalog, candidates, mut damaged) = {
         let store = match super::acquisition::acquire(
             "maintenance read",
             super::acquisition::SHORT_WAIT,
@@ -183,6 +204,7 @@ fn maintain_pausing(
         if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
             return Ok(MaintenanceOutcome::Busy);
         }
+        *held = Some(lock);
         let cas = NativeCas::open_lazy(&store).map_err(|error| error.to_string())?;
         cas.remove_stale_maintenance_packs()
             .map_err(|error| error.to_string())?;
@@ -193,20 +215,27 @@ fn maintain_pausing(
         // As a batch's consolidation: a candidate with a malformed
         // admission bitmap is left out (registration would refuse it).
         let mut damaged = Vec::new();
-        let candidates = loop {
-            let candidates = catalog.maintenance_candidates(&excluded);
-            if candidates.len() < 2 {
-                break candidates;
+        // At most `MAX_ATTEMPTS` scans per pass under the shared lock, as a
+        // batch's consolidation (council s19 r2): the damaged ones found are
+        // recorded, and the next pass goes on.
+        let mut candidates = Vec::new();
+        for _ in 0..MAX_ATTEMPTS {
+            let group = catalog.maintenance_candidates(&excluded);
+            if group.len() < 2 {
+                break;
             }
-            match malformed_bitmap(store.layout().sqlite_path(), &catalog, &candidates)? {
+            match malformed_bitmap(store.layout().sqlite_path(), &catalog, &group)? {
                 Some(position) => {
                     damaged.push(position);
                     excluded.push(position);
                 }
-                None => break candidates,
+                None => {
+                    candidates = group;
+                    break;
+                }
             }
-        };
-        (cas, catalog, candidates, damaged, lock)
+        }
+        (cas, catalog, candidates, damaged)
     };
     if candidates.len() < 2 {
         remember_damaged(root, &catalog, &damaged)?;
@@ -298,7 +327,6 @@ fn maintain_pausing(
     // Opening the CAS again removes the retired files. Best effort: the
     // pass is committed, and the next exclusive session collects them.
     drop(NativeCas::open_exclusive(&store));
-    drop(lock);
     crate::perf::count("store.maintenance_packs", candidates.len() as u64);
     Ok(MaintenanceOutcome::Consolidated {
         packs: candidates.len(),
@@ -315,12 +343,17 @@ fn remember_damaged(
     if damaged.is_empty() {
         return Ok(());
     }
-    let store = super::acquisition::acquire(
+    let store = match super::acquisition::acquire(
         "maintenance skip record",
         super::acquisition::SHORT_WAIT,
         || super::open_exclusive(root),
-    )
-    .map_err(|error| error.to_string())?;
+    ) {
+        Ok(store) => store,
+        // Best effort, as the record itself: a busy Store is no failure of
+        // the pass, and the next pass finds them again (council s19 r2).
+        Err(error) if timed_out(&error) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
     for &position in damaged {
         if let Some(name) = catalog
             .packs()
@@ -511,13 +544,17 @@ fn write_note(store: &NativeStoreExclusive, name: &str, text: &str) {
 /// `write_note` under the metadata directory `directory`.
 fn write_note_at(directory: &std::path::Path, name: &str, text: &str) {
     let staged = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    let mut created = false;
     let result = (|| -> std::io::Result<()> {
         let mut file = crate::layout::create_new_file_no_follow(&staged)?;
+        created = true;
         file.write_all(text.as_bytes())?;
         drop(file);
         super::format::atomic_replace(&staged, &directory.join(name))
     })();
-    if result.is_err() {
+    // Only the file this call created (council s19 r2): never one found
+    // there, nor through a directory the no-follow creation refused.
+    if result.is_err() && created {
         let _ = std::fs::remove_file(&staged);
     }
 }

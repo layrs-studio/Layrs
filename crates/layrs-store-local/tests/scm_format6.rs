@@ -2123,15 +2123,24 @@ fn a_batch_notes_maintenance_due_until_it_runs() {
 #[test]
 fn a_batch_removes_a_crashed_maintenance_pack_when_no_pass_runs() {
     let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-stale", 3);
-    // A first pass creates the maintenance lock file.
-    maintain(&root.0).unwrap();
     let crashed = root.0.join("objects/packs/.maint-crashed.tmp");
+    let mut step = |name: &str| {
+        let next = file(name, name.as_bytes(), Recipe::Whole);
+        files.push(next.clone());
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&lane.capture(&files, file_objects(&[next])))
+            .unwrap();
+    };
+    // No lock file (a crash lost its unsynced entry): no pass is building.
+    assert!(!root.0.join("metadata/maintenance.lock").exists());
     fs::write(&crashed, b"a pack a crashed pass left").unwrap();
-    let next = file("next.txt", b"next", Recipe::Whole);
-    files.push(next.clone());
-    NativeScmRepository::new(&root.0)
-        .apply_batch(&lane.capture(&files, file_objects(&[next])))
-        .unwrap();
+    step("first.txt");
+    assert!(!crashed.exists());
+    // A lock file no pass holds.
+    maintain(&root.0).unwrap();
+    assert!(root.0.join("metadata/maintenance.lock").exists());
+    fs::write(&crashed, b"a pack a crashed pass left").unwrap();
+    step("second.txt");
     assert!(!crashed.exists());
     assert_fsck_clean(&root.0);
 }

@@ -372,6 +372,16 @@ and `layrs store repair` come after). Agreed by all three, in this order:
    session when no pass holds the maintenance lock; the lock file is
    opened without following links; cleanup after the commit is best
    effort.
+   Council s19 r2 (Astra 6, Sol 8, Opus 8 ship): a pass keeps the
+   maintenance lock until its outcome is recorded, and records only once
+   it held it; a failure note's temporary file is removed only when this
+   call created it; an absent lock file counts as idle for the cleanup of
+   temporary packs (a crash may lose its unsynced entry); malformed-bitmap
+   scans are bounded per pass; a busy Store while recording damaged packs
+   is no failure; the temporary pack read back for the remap must carry
+   the sealed digest; the CLI reports a later pass's failure as a warning
+   and words `Busy` for both causes; on Windows the detached pass breaks
+   away from a kill-on-close job when allowed.
 7. Measurement gate: 10,000 and 100,000 files, history, the 1.5 GiB file,
    a Store past 64 MiB of packs with maintenance, a lost pack end to end,
    clone size; no command slower than format 5.
