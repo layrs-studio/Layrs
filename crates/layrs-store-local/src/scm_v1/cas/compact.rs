@@ -3226,7 +3226,7 @@ impl NativeCas {
         if let Some(error @ CasError::ExistingObjectMismatch { .. }) = first_error {
             return Err(error);
         }
-        if bytes.len() > pack2::MAX_RECORD_BYTES {
+        if bytes.len() > pack2::max_packed_bytes(object_id.kind(), self.whole_files) {
             let outcome = match self.verified_existing(object_id.clone(), &bytes)? {
                 Some(outcome) => outcome,
                 None => {

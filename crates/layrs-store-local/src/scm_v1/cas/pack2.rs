@@ -25,6 +25,11 @@
 //! object `i`; file record `f` carries two logical objects, its chunk
 //! (`explicit + 2f`) and its recipe manifest (`explicit + 2f + 1`).
 //!
+//! Version 3 (Store format 7, council s20) holds a Tree record of up to
+//! `MAX_TREE_RECORD_BYTES` in a block of its own: a folder of more than
+//! about 7,000 entries no longer becomes a loose uncompressed file. Every
+//! other record keeps the 1 MiB bound. It holds `whole` records as version 2.
+//!
 //! Version 2 (Store format 7, council s13 Q5) adds the `whole` recipe: a
 //! file record whose chunk is named by its FileId stores no ChunkId and is
 //! left out of the ChunkId order (its FileId order is that order). Version 1
@@ -37,6 +42,9 @@ const FOOTER_MAGIC: &[u8; 8] = b"LYRSP2EN";
 const PACK2_VERSION: u32 = 1;
 /// Packs of Store format 7: `whole` file records (council s13 Q5).
 const PACK2_VERSION_WHOLE: u32 = 2;
+/// Packs Store format 7 writes now: version 2 with large Tree records
+/// (council s20).
+const PACK2_VERSION_LARGE_TREES: u32 = 3;
 pub(super) const HEADER_LEN: u64 = 16;
 /// index offset, index length, explicit count, file count, digest, magic.
 const FOOTER_LEN: u64 = 8 + 8 + 8 + 8 + 32 + 8;
@@ -44,9 +52,42 @@ const FOOTER_LEN: u64 = 8 + 8 + 8 + 8 + 32 + 8;
 pub(super) const BLOCK_TARGET: usize = 16 * 1024;
 /// Largest record body a pack holds; larger records stay loose files.
 pub(super) const MAX_RECORD_BYTES: usize = 1024 * 1024;
+/// Largest Tree record body a version 3 pack holds (a folder of about
+/// 400,000 entries); larger Trees stay loose files.
+pub(super) const MAX_TREE_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// A record header is at most 1 + 1 + a 3-byte varint for 1 MiB.
 const MAX_RECORD_HEADER: usize = 1 + 1 + 10;
 const MAX_RAW_BLOCK: usize = MAX_RECORD_BYTES + MAX_RECORD_HEADER;
+const MAX_LARGE_RAW_BLOCK: usize = MAX_TREE_RECORD_BYTES + MAX_RECORD_HEADER;
+
+/// Whether a pack of `version` holds `whole` records (2 and 3).
+fn holds_whole(version: u32) -> bool {
+    version >= PACK2_VERSION_WHOLE
+}
+
+/// The largest decompressed block a pack of `version` holds.
+fn max_raw_block(version: u32) -> usize {
+    if version >= PACK2_VERSION_LARGE_TREES {
+        MAX_LARGE_RAW_BLOCK
+    } else {
+        MAX_RAW_BLOCK
+    }
+}
+
+/// The largest body of a record of kind `code` in a pack of `version`.
+fn max_record_body(version: u32, code: u8) -> usize {
+    if version >= PACK2_VERSION_LARGE_TREES && code == kind_code(StoreObjectKind::Tree) {
+        MAX_TREE_RECORD_BYTES
+    } else {
+        MAX_RECORD_BYTES
+    }
+}
+
+/// The largest body of an object of `kind` the packs of a Store keeping
+/// `whole` records (format 7) or not hold; a larger one stays loose.
+pub(super) fn max_packed_bytes(kind: StoreObjectKind, whole_files: bool) -> usize {
+    max_record_body(version_for(whole_files), kind_code(kind))
+}
 const BLOCK_HEADER_LEN: u64 = 1 + 4;
 const BLOCK_CHECKSUM_LEN: usize = 8;
 /// Explicit records plus file records of one pack (a batch holds at most
@@ -279,8 +320,8 @@ impl Pack2Index {
             .ok()
             .map(|position| self.chunk_order[position] as usize)
             .or_else(|| {
-                // Only a version 2 pack holds whole records.
-                (self.version == PACK2_VERSION_WHOLE)
+                // Only a version 2 or 3 pack holds whole records.
+                holds_whole(self.version)
                     .then(|| self.find_file(chunk_id))
                     .flatten()
                     .filter(|file| self.files[*file].recipe == Recipe::Whole)
@@ -502,10 +543,14 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn read_location(reader: &mut Reader<'_>, blocks: &[BlockInfo]) -> CasResult<Location> {
+fn read_location(
+    reader: &mut Reader<'_>,
+    blocks: &[BlockInfo],
+    max_length: usize,
+) -> CasResult<Location> {
     let block = reader.varint(u64::from(u32::MAX))? as u32;
     let offset = reader.varint(u64::from(u32::MAX))? as u32;
-    let length = reader.varint(MAX_RECORD_BYTES as u64)? as u32;
+    let length = reader.varint(max_length as u64)? as u32;
     let info = blocks
         .get(block as usize)
         .ok_or_else(|| pack2_corruption(reader.path, "pack index entry names no block"))?;
@@ -541,10 +586,10 @@ fn header_bytes(version: u32) -> [u8; HEADER_LEN as usize] {
     header
 }
 
-/// The pack version a Store writes: 2 when it keeps `whole` records.
+/// The pack version a Store writes: 3 when it keeps `whole` records.
 fn version_for(whole_files: bool) -> u32 {
     if whole_files {
-        PACK2_VERSION_WHOLE
+        PACK2_VERSION_LARGE_TREES
     } else {
         PACK2_VERSION
     }
@@ -565,10 +610,14 @@ fn decode(
     footer: &[u8],
     metadata: &[u8],
 ) -> CasResult<Pack2Index> {
-    let version = [PACK2_VERSION, PACK2_VERSION_WHOLE]
-        .into_iter()
-        .find(|version| header == header_bytes(*version))
-        .ok_or_else(|| pack2_corruption(path, "unknown pack header or version"))?;
+    let version = [
+        PACK2_VERSION,
+        PACK2_VERSION_WHOLE,
+        PACK2_VERSION_LARGE_TREES,
+    ]
+    .into_iter()
+    .find(|version| header == header_bytes(*version))
+    .ok_or_else(|| pack2_corruption(path, "unknown pack header or version"))?;
     if &footer[64..72] != FOOTER_MAGIC {
         return Err(pack2_corruption(path, "pack footer magic is missing"));
     }
@@ -592,8 +641,8 @@ fn decode(
     let mut offset = HEADER_LEN;
     for _ in 0..block_count {
         let flags = reader.u8()?;
-        let raw_len = reader.varint(MAX_RAW_BLOCK as u64)? as u32;
-        let stored_len = reader.varint(zstd_bound(MAX_RAW_BLOCK) as u64)? as u32;
+        let raw_len = reader.varint(max_raw_block(version) as u64)? as u32;
+        let stored_len = reader.varint(zstd_bound(max_raw_block(version)) as u64)? as u32;
         let valid = match flags {
             0 => raw_len > 0 && stored_len as usize <= zstd_bound(raw_len as usize),
             FLAG_RAW => raw_len > 0 && stored_len == raw_len,
@@ -638,7 +687,11 @@ fn decode(
             ids.push(id);
         }
         for _ in 0..count {
-            locations.push(read_location(&mut reader, &blocks)?);
+            locations.push(read_location(
+                &mut reader,
+                &blocks,
+                max_record_body(version, kind),
+            )?);
         }
         let fanout = fanout_of(ids[start..].iter());
         runs.push(KindRun {
@@ -667,7 +720,7 @@ fn decode(
                 "pack file records are not strictly sorted",
             ));
         }
-        let location = read_location(&mut reader, &blocks)?;
+        let location = read_location(&mut reader, &blocks, MAX_RECORD_BYTES)?;
         if location.length == 0 {
             return Err(pack2_corruption(path, "pack file record is empty"));
         }
@@ -723,7 +776,7 @@ fn decode(
         .iter()
         .find(|run| run.kind == kind_code(StoreObjectKind::ChunkRaw))
         .map_or(&ids[0..0], |run| &ids[run.start..run.end]);
-    if version == PACK2_VERSION_WHOLE
+    if holds_whole(version)
         && (chunk_order
             .iter()
             .any(|file| whole_named(&files[*file as usize].chunk_id))
@@ -1060,7 +1113,7 @@ pub(super) struct FileIdentity {
 
 /// Streams a pack v2: records into blocks, then metadata and footer.
 pub(super) struct Pack2Builder {
-    /// `PACK2_VERSION`, or `PACK2_VERSION_WHOLE` in Store format 7.
+    /// `PACK2_VERSION`, or `PACK2_VERSION_LARGE_TREES` in Store format 7.
     version: u32,
     block: Vec<u8>,
     /// Records of the open block: (explicit index or file index, offset).
@@ -1138,7 +1191,7 @@ impl Pack2Builder {
         body: &[u8],
         encoded: Option<EncodedBlock>,
     ) -> io::Result<Location> {
-        if body.len() > MAX_RECORD_BYTES {
+        if body.len() > max_record_body(self.version, kind) {
             return Err(io::Error::other("record exceeds the pack record limit"));
         }
         let length = body.len() as u32;
@@ -1199,7 +1252,7 @@ impl Pack2Builder {
             return Err(io::Error::other("a file record holds at least one byte"));
         }
         if identity.recipe == Recipe::Whole
-            && (self.version != PACK2_VERSION_WHOLE || identity.chunk_id != identity.file_id)
+            && (!holds_whole(self.version) || identity.chunk_id != identity.file_id)
         {
             return Err(io::Error::other(
                 "a whole file record is named by its FileId, in a format 7 pack",
@@ -1891,7 +1944,7 @@ mod tests {
                 .unwrap();
         });
         let index = verify_written(&written.file, &written.path, &written.sealed).unwrap();
-        assert_eq!(index.version, PACK2_VERSION_WHOLE);
+        assert_eq!(index.version, PACK2_VERSION_LARGE_TREES);
         let whole_file = index.find_file(&whole).unwrap();
         assert_eq!(index.files[whole_file].recipe, Recipe::Whole);
         assert_eq!(index.find_chunk_alias(&whole), Some(whole_file));

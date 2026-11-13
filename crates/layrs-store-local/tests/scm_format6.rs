@@ -468,7 +468,7 @@ fn format_7_keeps_small_files_whole_in_smaller_packs() {
             .apply_batch(&batch)
             .unwrap();
         let [pack] = packs(&root.0).try_into().unwrap();
-        assert_eq!(pack_version(&pack), if format == "7" { 2 } else { 1 });
+        assert_eq!(pack_version(&pack), if format == "7" { 3 } else { 1 });
         sizes.push(fs::metadata(&pack).unwrap().len());
         let store = open(&root.0).unwrap();
         let reader = NativeScmReader::new(&store).unwrap();
@@ -531,7 +531,7 @@ fn whole_records_survive_consolidation() {
     drop(repository);
     assert!(registered_packs(&root.0).len() < 8);
     for pack in packs(&root.0) {
-        assert_eq!(pack_version(&pack), 2);
+        assert_eq!(pack_version(&pack), 3);
     }
     let answers = reader_answers(&root.0, &files, lane.space.id());
     assert!(
@@ -1964,6 +1964,55 @@ fn maintenance_leftovers(root: &Path) -> usize {
                 .starts_with(".maint-")
         })
         .count()
+}
+
+/// A Tree larger than a record of 1 MiB (a folder of about 8,000 entries)
+/// stays in its pack, compressed, in format 7 (packs version 3, council
+/// s20); format 6 still keeps it as a loose file.
+#[test]
+fn a_large_tree_stays_in_the_pack_in_format_7() {
+    for format in ["7", "6"] {
+        let label = format!("large-tree-{format}");
+        let root = TestRoot::new(&label);
+        create(&root.0, &label, format);
+        let files: Vec<File> = (0..8_000)
+            .map(|n| {
+                file(
+                    &format!("f{n:05}.txt"),
+                    format!("small file {n}").as_bytes(),
+                    if format == "7" {
+                        Recipe::Whole
+                    } else {
+                        Recipe::Fixed
+                    },
+                )
+            })
+            .collect();
+        let tree = tree_of(&files);
+        assert!(tree.canonical_payload().unwrap().len() > MIB);
+        let (_lane, batch) = Lane::begin(&label, &files);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+        let loose_trees = fs::read_dir(root.0.join("objects/tree"))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        if format == "7" {
+            assert_eq!(loose_trees, 0, "a loose Tree in format 7");
+            for pack in packs(&root.0) {
+                assert_eq!(pack_version(&pack), 3);
+            }
+        } else {
+            assert!(loose_trees > 0, "format 6 keeps a large Tree loose");
+        }
+        forget_loaded_packs();
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        assert_eq!(reader.get_tree(tree.id()).unwrap().as_ref(), Some(&tree));
+        drop(reader);
+        drop(store);
+        assert_fsck_clean(&root.0);
+    }
 }
 
 /// A maintenance pass writes the pack files batches leave out into one,
