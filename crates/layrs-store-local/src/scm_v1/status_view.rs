@@ -84,17 +84,20 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 pub(crate) fn encode_sections(
     projection: &[CheckoutProjectionEntry],
     margin_nanos: i64,
-    proof: &mut dyn FnMut(&str, u64) -> Proof,
+    proof: &mut dyn FnMut(usize, u64) -> Proof,
 ) -> Vec<u8> {
     let _span = crate::perf::span("status_view.encode");
     // Folder path -> entries (name, kind and data), names in byte order.
-    let mut folders: BTreeMap<&str, Vec<(&str, Option<&CheckoutProjectionEntry>)>> =
-        BTreeMap::new();
+    type Child<'a> = (&'a str, Option<(usize, &'a CheckoutProjectionEntry)>);
+    let mut folders: BTreeMap<&str, Vec<Child<'_>>> = BTreeMap::new();
     folders.insert("", Vec::new());
     let mut known = std::collections::HashSet::new();
-    for entry in projection {
+    for (position, entry) in projection.iter().enumerate() {
         let (folder, name) = entry.path.rsplit_once('/').unwrap_or(("", &entry.path));
-        folders.entry(folder).or_default().push((name, Some(entry)));
+        folders
+            .entry(folder)
+            .or_default()
+            .push((name, Some((position, entry))));
         // Every ancestor folder is an entry of its parent (once).
         let mut child = folder;
         while !child.is_empty() && known.insert(child) {
@@ -107,7 +110,11 @@ pub(crate) fn encode_sections(
     let mut out = Vec::with_capacity(projection.len() * 24 + 64);
     put_varint(&mut out, folders.len() as u64);
     for (folder, mut entries) in folders {
-        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        // Already in name order unless a subfolder sorts after a file whose
+        // name extends it (`a/b-c` before `a/b/...`).
+        if !entries.is_sorted_by(|a, b| a.0.as_bytes() <= b.0.as_bytes()) {
+            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        }
         put_bytes(&mut out, folder.as_bytes());
         put_varint(&mut out, entries.len() as u64);
         let mut previous: &str = "";
@@ -121,14 +128,14 @@ pub(crate) fn encode_sections(
             put_varint(&mut out, shared as u64);
             put_bytes(&mut out, &name.as_bytes()[shared..]);
             previous = name;
-            match entry.map(|entry| (&entry.path, &entry.content)) {
+            match entry.map(|(position, entry)| (position, &entry.content)) {
                 None => out.push(TAG_FOLDER),
                 Some((_, CheckoutProjectionContent::Symlink { target })) => {
                     out.push(TAG_SYMLINK);
                     put_bytes(&mut out, target.as_bytes());
                 }
                 Some((
-                    path,
+                    position,
                     CheckoutProjectionContent::File {
                         file_id,
                         byte_length,
@@ -137,7 +144,7 @@ pub(crate) fn encode_sections(
                 )) => {
                     // A proof taken too soon after the file's last write
                     // never becomes trusted: the file is unproven.
-                    let proof = match proof(path, *byte_length) {
+                    let proof = match proof(position, *byte_length) {
                         Proof::Base(stat, verified_at) | Proof::Other(stat, verified_at)
                             if stat
                                 .modified
@@ -824,7 +831,11 @@ mod tests {
             },
             file("z.txt", 7),
         ];
-        let sections = encode_sections(&projection, 100, &mut |path, _| match path {
+        let sections = encode_sections(&projection, 100, &mut |position, _| match projection
+            [position]
+            .path
+            .as_str()
+        {
             "a/b/c.txt" => Proof::Base(stat(4, 1_000), 9_000),
             "a/x.txt" => Proof::Other(stat(6, 2_000), 9_500),
             _ => Proof::None,

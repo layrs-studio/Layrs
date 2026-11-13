@@ -550,40 +550,62 @@ impl ChangeIndex {
             self.entries
                 .retain(|_, slot| !matches!(slot, Slot::Unresolved(_)));
         }
-        let mut cursor = ProjectionCursor::new(projection);
+        use super::status_view::Proof;
+        // Each projection entry's proof (council s20), found in the same
+        // walk of both sorted sequences that decides which entries are bound.
+        let mut proofs = vec![Proof::None; projection.len()];
+        let mut at = 0;
         for (path, slot) in &mut self.entries {
-            if let Slot::Known { entry, bound } = slot {
-                *bound =
-                    cursor.file(path) == Some((&entry.file_id, entry.length, entry.executable));
+            while projection
+                .get(at)
+                .is_some_and(|entry| entry.path.as_str() < path.as_str())
+            {
+                at += 1;
+            }
+            let found = projection
+                .get(at)
+                .filter(|entry| entry.path == *path)
+                .and_then(|entry| match &entry.content {
+                    CheckoutProjectionContent::File {
+                        file_id,
+                        byte_length,
+                        executable,
+                    } => Some((file_id, *byte_length, *executable)),
+                    CheckoutProjectionContent::Symlink { .. } => None,
+                });
+            match slot {
+                Slot::Known { entry, bound } => {
+                    *bound = found == Some((&entry.file_id, entry.length, entry.executable));
+                    if found.is_some() {
+                        proofs[at] = if *bound {
+                            Proof::Base(entry.stat, entry.verified_at)
+                        } else {
+                            Proof::Other(entry.stat, entry.verified_at)
+                        };
+                    }
+                }
+                Slot::Unresolved(omitted) => {
+                    if let Some((_, length, _)) = found {
+                        proofs[at] = Proof::Base(
+                            StatKey {
+                                length: omitted.stat_length.unwrap_or(length),
+                                ..omitted.stat
+                            },
+                            omitted.verified_at,
+                        );
+                    }
+                }
             }
         }
         self.binding = Some(Binding {
             tree: tree.clone(),
             digest: *digest,
         });
-        // What `layrs status` reads instead (council s20): every entry now
-        // says whether its proof is of the base content or of another.
-        let entries = &self.entries;
+        // What `layrs status` reads instead (council s20).
         self.status_sections = Some(std::sync::Arc::new(super::status_view::encode_sections(
             projection,
             self.margin_nanos,
-            &mut |path, length| match entries.get(path) {
-                Some(Slot::Known { entry, bound: true }) => {
-                    super::status_view::Proof::Base(entry.stat, entry.verified_at)
-                }
-                Some(Slot::Known {
-                    entry,
-                    bound: false,
-                }) => super::status_view::Proof::Other(entry.stat, entry.verified_at),
-                Some(Slot::Unresolved(omitted)) => super::status_view::Proof::Base(
-                    StatKey {
-                        length: omitted.stat_length.unwrap_or(length),
-                        ..omitted.stat
-                    },
-                    omitted.verified_at,
-                ),
-                None => super::status_view::Proof::None,
-            },
+            &mut |position, _| proofs[position],
         )));
         self.base_step = None;
     }
