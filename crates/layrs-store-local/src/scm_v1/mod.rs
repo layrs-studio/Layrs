@@ -28,6 +28,7 @@ pub mod recovery;
 mod repository;
 pub mod schema;
 mod sqlite;
+pub mod status_view;
 pub mod vfs_recovery;
 pub mod worktree_audit;
 pub mod worktrees;

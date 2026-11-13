@@ -558,17 +558,29 @@ fn change_index_exists(store_root: &Path, worktree: &str) -> bool {
 }
 
 pub(crate) fn change_index_put(store_root: &Path, worktree: &str, bytes: &[u8]) -> io::Result<()> {
-    let bytes = compress(bytes)?;
+    change_index_put_all(store_root, &[(worktree, bytes)])
+}
+
+/// `change_index_put` of several values in one transaction (one opening,
+/// one commit).
+pub(crate) fn change_index_put_all(store_root: &Path, values: &[(&str, &[u8])]) -> io::Result<()> {
+    let values = values
+        .iter()
+        .map(|(key, bytes)| Ok((*key, compress(bytes)?)))
+        .collect::<io::Result<Vec<_>>>()?;
     let put = || -> Result<(), Option<rusqlite::Error>> {
-        let connection = open(store_root, Access::Create).map_err(|_| None)?;
-        connection
-            .execute(
-                "INSERT INTO change_index (worktree, bytes) VALUES (?1, ?2) \
-                 ON CONFLICT (worktree) DO UPDATE SET bytes = excluded.bytes",
-                params![worktree, bytes],
-            )
-            .map(drop)
-            .map_err(Some)
+        let mut connection = open(store_root, Access::Create).map_err(|_| None)?;
+        let transaction = connection.transaction().map_err(Some)?;
+        for (key, bytes) in &values {
+            transaction
+                .execute(
+                    "INSERT INTO change_index (worktree, bytes) VALUES (?1, ?2) \
+                     ON CONFLICT (worktree) DO UPDATE SET bytes = excluded.bytes",
+                    params![key, bytes],
+                )
+                .map_err(Some)?;
+        }
+        transaction.commit().map_err(Some)
     };
     match put() {
         // A database damaged by a process killed mid-write: replaced, once.

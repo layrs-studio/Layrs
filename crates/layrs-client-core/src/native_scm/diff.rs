@@ -66,6 +66,71 @@ impl NativeWorkspace {
         state: super::WorkspaceState,
         trust_index: bool,
     ) -> Result<StatusReport> {
+        if trust_index {
+            if let Some(view) = layrs_store_local::scm_v1::status_view::StatusView::load(
+                self.store_root(),
+                self.worktree_id().as_str(),
+            ) {
+                if layrs_store_local::scm_v1::materialize::recovery_pending(
+                    &store,
+                    self.worktree_id(),
+                )? {
+                    return Ok(StatusReport {
+                        needs_repair: true,
+                        dirty: None,
+                        state,
+                    });
+                }
+                // The status view (council s20): bound to the base Step, or
+                // to its root Tree when the Step was not recorded.
+                let step = base_step(&state)?;
+                let bound = match view.step() {
+                    Some(bound) => bound == step.as_str(),
+                    None => NativeScmReader::new(&store)?
+                        .get_step(&step)?
+                        .is_some_and(|read| read.root_tree_id().as_str() == view.tree()),
+                };
+                if bound {
+                    // Released before the folder is read, as below.
+                    drop(store);
+                    let checkout = CheckoutReader::open(
+                        state.worktree.checkout_root(),
+                        Some(state.worktree.filesystem_identity()),
+                    )?;
+                    use layrs_store_local::scm_v1::status_view::Verdict;
+                    let dirty = match view.verdict(&checkout)? {
+                        Verdict::Clean => Some(false),
+                        Verdict::Changed => Some(true),
+                        Verdict::Unknown => None,
+                    };
+                    if let Some(dirty) = dirty {
+                        layrs_store_local::perf::count("status_view.decided", 1);
+                        return Ok(StatusReport {
+                            needs_repair: false,
+                            dirty: Some(dirty),
+                            state,
+                        });
+                    }
+                    // Not a clear case: the full comparison, in a session of
+                    // its own.
+                    layrs_store_local::perf::count("status_view.unknown", 1);
+                    let store = self.open_store()?;
+                    let state = self.state_with(&store)?;
+                    return self.status_report_full(store, state, trust_index);
+                }
+                return self.status_report_full(store, state, trust_index);
+            }
+        }
+        self.status_report_full(store, state, trust_index)
+    }
+
+    /// `status_report_in` without the status view.
+    fn status_report_full(
+        &self,
+        store: layrs_store_local::scm_v1::NativeStoreOpen,
+        state: super::WorkspaceState,
+        trust_index: bool,
+    ) -> Result<StatusReport> {
         let span = layrs_store_local::perf::span("status.session");
         if layrs_store_local::scm_v1::materialize::recovery_pending(&store, self.worktree_id())? {
             return Ok(StatusReport {
@@ -273,7 +338,9 @@ impl NativeWorkspace {
                     index,
                     &captured,
                     verified_at,
-                    (!*bound).then_some((root, before.as_slice())),
+                    (root, before.as_slice()),
+                    *bound,
+                    base_step(state).ok().as_ref(),
                 );
                 captured.entries
             }
@@ -547,10 +614,12 @@ fn refresh_racy_entries(
     index: &layrs_store_local::scm_v1::change_index::ChangeIndex,
     captured: &layrs_store_local::scm_v1::checkout::TrustedCapture,
     verified_at: i64,
-    rebind: Option<(&layrs_core::scm::TreeId, &[CheckoutProjectionEntry])>,
+    (root, base): (&layrs_core::scm::TreeId, &[CheckoutProjectionEntry]),
+    bound: bool,
+    base_step: Option<&StepId>,
 ) {
     use layrs_store_local::scm_v1::change_index::StatKey;
-    if captured.hashed.is_empty() && rebind.is_none() {
+    if captured.hashed.is_empty() && bound {
         return;
     }
     let contents: std::collections::BTreeMap<&str, &CheckoutProjectionContent> = captured
@@ -576,8 +645,14 @@ fn refresh_racy_entries(
             changed = true;
         }
     }
-    if let Some((root, projection)) = rebind {
-        refreshed.bind(root, projection);
+    // Bound again (and so its status view rebuilt, council s20) when it was
+    // bound to another projection or a proof was refreshed: otherwise the
+    // next `status` would read the refreshed files again.
+    if !bound || changed {
+        refreshed.bind(root, base);
+        if let Some(step) = base_step {
+            refreshed.set_base_step(step);
+        }
         changed = true;
     }
     if changed && refreshed.save(store_root).is_err() {

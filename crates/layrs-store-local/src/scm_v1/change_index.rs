@@ -146,6 +146,11 @@ pub struct ChangeIndex {
     /// Loaded empty because the stored index could not be read (a busy or
     /// unusable cache database): never saved over it (council s12 r1).
     unreadable: bool,
+    /// The status view sections of the bound projection (`status_view`),
+    /// built by `bind` and saved with the index while no entry changed.
+    status_sections: Option<std::sync::Arc<Vec<u8>>>,
+    /// The base Step whose root the bound projection is, when known.
+    base_step: Option<String>,
 }
 
 /// The projection an index is bound to: its `projection_digest`, which
@@ -295,6 +300,8 @@ impl ChangeIndex {
             entries: BTreeMap::new(),
             binding: None,
             unreadable: false,
+            status_sections: None,
+            base_step: None,
         }
         .save(store_root)
     }
@@ -322,6 +329,8 @@ impl ChangeIndex {
             entries: BTreeMap::new(),
             binding: None,
             unreadable: false,
+            status_sections: None,
+            base_step: None,
         };
         let read = crate::perf::span("change_index.read");
         let bytes = match super::derived_cache::change_index_get(
@@ -377,6 +386,8 @@ impl ChangeIndex {
                 entries: document.entries,
                 binding: document.binding,
                 unreadable: false,
+                status_sections: None,
+                base_step: None,
             },
             None => empty(),
         })
@@ -392,7 +403,31 @@ impl ChangeIndex {
             return Ok(());
         }
         let bytes = encode_bound(self);
-        super::derived_cache::change_index_put(store_root, self.worktree_id.as_str(), &bytes)?;
+        // With its status view, when the entries are still those it was
+        // built from, in the same transaction (a cache too).
+        let view = match (&self.status_sections, &self.binding) {
+            (Some(sections), Some(binding)) => Some(super::status_view::encode(
+                binding.tree.as_str(),
+                self.base_step.as_deref(),
+                self.margin_nanos,
+                sections,
+            )),
+            _ => None,
+        };
+        match view {
+            Some(view) => {
+                let key = super::status_view::key(self.worktree_id.as_str());
+                super::derived_cache::change_index_put_all(
+                    store_root,
+                    &[(self.worktree_id.as_str(), &bytes), (&key, &view)],
+                )?;
+            }
+            None => super::derived_cache::change_index_put(
+                store_root,
+                self.worktree_id.as_str(),
+                &bytes,
+            )?,
+        }
         let legacy = Self::file(store_root, &self.worktree_id);
         if fs::symlink_metadata(&legacy).is_ok() {
             let _ = fs::remove_file(&legacy);
@@ -402,6 +437,7 @@ impl ChangeIndex {
 
     pub fn remove(store_root: &Path, worktree_id: &WorktreeId) -> io::Result<()> {
         super::derived_cache::change_index_delete(store_root, worktree_id.as_str());
+        super::status_view::remove(store_root, worktree_id.as_str());
         match fs::remove_file(Self::file(store_root, worktree_id)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -451,6 +487,7 @@ impl ChangeIndex {
         self.entries.keys().map(String::as_str)
     }
     pub fn insert(&mut self, path: String, entry: IndexEntry) {
+        self.status_sections = None;
         self.entries.insert(
             path,
             Slot::Known {
@@ -460,10 +497,12 @@ impl ChangeIndex {
         );
     }
     pub fn remove_path(&mut self, path: &str) {
+        self.status_sections = None;
         self.entries.remove(path);
     }
     /// Keeps the proven entries `keep` accepts, and every unresolved one.
     pub fn retain(&mut self, mut keep: impl FnMut(&str, &IndexEntry) -> bool) {
+        self.status_sections = None;
         self.entries.retain(|path, slot| match slot {
             Slot::Known { entry, .. } => keep(path, entry),
             Slot::Unresolved(_) => true,
@@ -522,6 +561,37 @@ impl ChangeIndex {
             tree: tree.clone(),
             digest: *digest,
         });
+        // What `layrs status` reads instead (council s20): every entry now
+        // says whether its proof is of the base content or of another.
+        let entries = &self.entries;
+        self.status_sections = Some(std::sync::Arc::new(super::status_view::encode_sections(
+            projection,
+            self.margin_nanos,
+            &mut |path, length| match entries.get(path) {
+                Some(Slot::Known { entry, bound: true }) => {
+                    super::status_view::Proof::Base(entry.stat, entry.verified_at)
+                }
+                Some(Slot::Known {
+                    entry,
+                    bound: false,
+                }) => super::status_view::Proof::Other(entry.stat, entry.verified_at),
+                Some(Slot::Unresolved(omitted)) => super::status_view::Proof::Base(
+                    StatKey {
+                        length: omitted.stat_length.unwrap_or(length),
+                        ..omitted.stat
+                    },
+                    omitted.verified_at,
+                ),
+                None => super::status_view::Proof::None,
+            },
+        )));
+        self.base_step = None;
+    }
+
+    /// The base Step whose root this index is bound to (`bind`), recorded
+    /// with its status view.
+    pub fn set_base_step(&mut self, step: &layrs_core::scm::StepId) {
+        self.base_step = Some(step.as_str().to_owned());
     }
 
     /// Supplies a checkout projection. If it is exactly the projection the
@@ -586,6 +656,7 @@ impl ChangeIndex {
         true
     }
     pub fn clear(&mut self) {
+        self.status_sections = None;
         self.entries.clear();
     }
     /// This index without its entries (same Worktree, margin and binding),
@@ -597,6 +668,8 @@ impl ChangeIndex {
             entries: BTreeMap::new(),
             binding: self.binding.clone(),
             unreadable: self.unreadable,
+            status_sections: None,
+            base_step: None,
         }
     }
     pub fn len(&self) -> usize {

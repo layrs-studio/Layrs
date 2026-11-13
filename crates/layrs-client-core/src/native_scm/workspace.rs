@@ -157,6 +157,7 @@ impl NativeWorkspace {
                     index.insert(path, entry);
                 }
                 index.bind(&root_tree, &entries);
+                index.set_base_step(change.step_id());
                 let _ = index.save(&store_root);
             }
         }
@@ -732,7 +733,12 @@ impl NativeWorkspace {
                         (Some(next), Some(index)) => next.same_entries(index),
                         _ => false,
                     };
-                    if let Some(next) = next.filter(|_| !unchanged) {
+                    if let Some(mut next) = next.filter(|_| !unchanged) {
+                        // The Step the index is now bound to the root of.
+                        match &plan {
+                            CapturePlan::Change(change) => next.set_base_step(change.step_id()),
+                            CapturePlan::Unchanged { step_id } => next.set_base_step(step_id),
+                        }
                         if next.save(self.store_root()).is_err() {
                             layrs_store_local::perf::count("capture.index_unsaved", 1);
                         }

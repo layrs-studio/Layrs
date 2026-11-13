@@ -50,6 +50,12 @@ fn status_refreshes_only_racy_entries_of_unchanged_files() {
     let before = index.entry("b.txt").unwrap().clone();
     // Wait past the margin, so a refreshed proof makes the entry trusted.
     std::thread::sleep(std::time::Duration::from_millis(2_100));
+    // The full comparison refreshes; the status view (council s20) hashes
+    // such a file instead, read-only.
+    layrs_store_local::scm_v1::status_view::StatusView::discard(
+        workspace.store_root(),
+        workspace.worktree_id().as_str(),
+    );
     let report = workspace.status_report(true).unwrap();
     assert_eq!(report.dirty, Some(false));
     let after = resolved_index(&workspace);
