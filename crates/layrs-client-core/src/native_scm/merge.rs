@@ -65,6 +65,9 @@ impl NativeResolutionPreview {
     }
 }
 
+/// The most entries of input Trees a merge loads: four whole checkouts.
+const MERGE_INPUT_PATHS: usize = 4 * layrs_core::scm::MAX_CHECKOUT_ENTRIES;
+
 fn merge_error(error: impl std::fmt::Display) -> NativeClientError {
     NativeClientError::InvalidSnapshot(format!("native reconciliation: {error}"))
 }
@@ -630,7 +633,10 @@ impl Loader<'_> {
         self.objects.trees.insert(id.clone(), tree.clone());
         for entry in tree.entries() {
             self.paths += 1;
-            if self.paths > self.limits.max_paths {
+            // Entries of every distinct input Tree: a base and each head may
+            // hold a whole checkout. Not the receipt's `max_paths` (the paths
+            // the planner visits, bounded by the server).
+            if self.paths > MERGE_INPUT_PATHS {
                 return Err(merge_error("tree path limit"));
             }
             self.target(entry.target(), depth + 1)?;

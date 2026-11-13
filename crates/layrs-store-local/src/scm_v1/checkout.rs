@@ -488,7 +488,7 @@ pub fn entries_tree_id(entries: &[CheckoutEntry]) -> io::Result<layrs_core::scm:
     use layrs_core::scm::{FileId, RepoPath, Symlink, TreeEntryTarget};
     let mut root = std::collections::BTreeMap::new();
     let mut total = 0usize;
-    if entries.len() > 100_000 {
+    if entries.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
         return Err(invalid("checkout entry limit exceeded"));
     }
     for entry in entries {

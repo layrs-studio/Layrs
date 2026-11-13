@@ -71,7 +71,12 @@ pub struct MergeObjects {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphMergeLimits {
     pub max_steps: usize,
+    /// Paths the planner visits and outputs (equal subtrees are skipped).
+    /// Recorded in merge receipts, which the server bounds to 100,000.
     pub max_paths: usize,
+    /// Entries of the input Trees validated and inventoried (whole
+    /// checkouts): not recorded in receipts.
+    pub max_input_paths: usize,
     pub max_depth: usize,
     /// Resident input bytes: Steps, metadata objects, in-memory File content
     /// and content actually loaded from a [`MergeFileSource`]. Unread
@@ -84,9 +89,9 @@ impl Default for GraphMergeLimits {
     fn default() -> Self {
         Self {
             max_steps: 10_000,
-            // Paths across every input Tree (a base and its heads may each
-            // hold a whole checkout).
-            max_paths: 4 * layrs_core::scm::MAX_CHECKOUT_ENTRIES,
+            max_paths: 100_000,
+            // A base and each head may hold a whole checkout.
+            max_input_paths: 4 * layrs_core::scm::MAX_CHECKOUT_ENTRIES,
             max_depth: 64,
             max_input_bytes: 64 * 1024 * 1024,
             max_output_bytes: 64 * 1024 * 1024,
@@ -579,7 +584,7 @@ impl<'a> InputValidator<'a> {
         if tree.id() != id {
             return Err(invalid("Tree map key mismatch"));
         }
-        if tree.entries().len() > self.limits.max_paths {
+        if tree.entries().len() > self.limits.max_input_paths {
             return Err(GraphMergeError::Limit("paths"));
         }
         self.metadata(id.as_str(), tree.identity_bytes().map_err(invalid)?.len())?;
@@ -588,7 +593,7 @@ impl<'a> InputValidator<'a> {
                 .paths
                 .checked_add(1)
                 .ok_or(GraphMergeError::Limit("paths"))?;
-            if self.paths > self.limits.max_paths {
+            if self.paths > self.limits.max_input_paths {
                 return Err(GraphMergeError::Limit("paths"));
             }
             let path = joined(prefix, entry.name().as_str());
@@ -683,7 +688,7 @@ impl<'a> InputValidator<'a> {
 
     fn retained_entry(&mut self, entry: &TreeEntry, path: &str, depth: usize) -> MergeResult<()> {
         self.paths += 1;
-        if self.paths > self.limits.max_paths {
+        if self.paths > self.limits.max_input_paths {
             return Err(GraphMergeError::Limit("paths"));
         }
         if depth > self.limits.max_depth {
@@ -764,10 +769,10 @@ impl Planner<'_> {
                         (
                             step.clone(),
                             tree.as_ref().and_then(|id| {
+                                // A binary search: a linear one per name was
+                                // quadratic in the folder's width.
                                 self.objects.trees[id]
-                                    .entries()
-                                    .iter()
-                                    .find(|entry| entry.name() == &name)
+                                    .entry_named(name.as_str())
                                     .filter(|entry| {
                                         !matches!(entry.target(), TreeEntryTarget::Tombstone { .. })
                                     })

@@ -599,7 +599,12 @@ impl StreamScan<'_> {
         }
         directory.verify_path_identity()?;
         let list_span = crate::perf::span("scan.list");
-        let listed = list_with_metadata(&disk, self.limits.max_entries.min(100_000))?;
+        let listed = list_with_metadata(
+            &disk,
+            self.limits
+                .max_entries
+                .min(layrs_core::scm::MAX_CHECKOUT_ENTRIES),
+        )?;
         drop(list_span);
         let _entries_span = crate::perf::span("scan.entries");
         let index = self.directories.len();
@@ -623,7 +628,12 @@ impl StreamScan<'_> {
                 continue;
             }
             let visited = self.visited.fetch_add(1, Ordering::Relaxed) + 1;
-            if visited > self.limits.max_entries.min(100_000) {
+            if visited
+                > self
+                    .limits
+                    .max_entries
+                    .min(layrs_core::scm::MAX_CHECKOUT_ENTRIES)
+            {
                 return Err(invalid("checkout entry limit exceeded"));
             }
             let path = if relative.is_empty() {
@@ -927,7 +937,10 @@ impl StreamScan<'_> {
     /// whose subtree is complete (children before parents).
     fn flush(&mut self) -> io::Result<()> {
         self.hash_files()?;
-        let limit = self.limits.max_entries.min(100_000);
+        let limit = self
+            .limits
+            .max_entries
+            .min(layrs_core::scm::MAX_CHECKOUT_ENTRIES);
         for slot in self.directories.iter_mut().rev() {
             let Some(directory) = slot.as_ref().filter(|d| d.complete) else {
                 continue;

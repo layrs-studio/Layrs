@@ -351,7 +351,7 @@ fn inventory_tree(
         if matches!(entry.target(), TreeEntryTarget::Tombstone { .. }) {
             continue;
         }
-        if output.len() >= limits.max_paths {
+        if output.len() >= limits.max_input_paths {
             return Err(GraphMergeError::Limit("rename paths"));
         }
         let path = RepoPath::parse(joined(prefix, entry.name().as_str())).map_err(invalid)?;

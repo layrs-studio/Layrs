@@ -257,6 +257,15 @@ impl Tree {
         &self.entries
     }
 
+    /// The entry named `name`: a binary search, the entries being sorted by
+    /// name bytes (`Tree::new`).
+    pub fn entry_named(&self, name: &str) -> Option<&TreeEntry> {
+        self.entries
+            .binary_search_by(|entry| entry.name.as_str().as_bytes().cmp(name.as_bytes()))
+            .ok()
+            .map(|position| &self.entries[position])
+    }
+
     pub fn canonical_payload(&self) -> Result<Vec<u8>> {
         tree_payload(&self.entries)
     }

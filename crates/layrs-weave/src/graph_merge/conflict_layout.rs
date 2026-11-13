@@ -143,7 +143,7 @@ fn validate_root(
             .ok_or_else(|| GraphMergeError::Missing(id.to_string()))?;
         for entry in tree.entries() {
             *paths += 1;
-            if *paths > limits.max_paths {
+            if *paths > limits.max_input_paths {
                 return Err(GraphMergeError::Limit("conflict occurrences"));
             }
             let path = joined(&prefix, entry.name().as_str());

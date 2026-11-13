@@ -52,7 +52,7 @@ pub fn validate_streaming_projection(entries: &[CheckoutProjectionEntry]) -> io:
 /// (paths, entry count, depth, symlink targets, total size), without
 /// building them (council s12 r1).
 pub fn validate_observed_projection(entries: &[CheckoutProjectionEntry]) -> io::Result<()> {
-    if entries.len() > 100_000 {
+    if entries.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
         return Err(invalid("checkout entry limit exceeded"));
     }
     validate_streaming_projection(entries)?;
@@ -154,7 +154,7 @@ pub fn projection_tree_id(entries: &[CheckoutProjectionEntry]) -> io::Result<Tre
 
 fn projection_tree_id_uncached(entries: &[CheckoutProjectionEntry]) -> io::Result<TreeId> {
     let _span = crate::perf::span("projection.tree_id");
-    if entries.len() > 100_000 {
+    if entries.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
         return Err(invalid("checkout entry limit exceeded"));
     }
     validate_streaming_projection(entries)?;
