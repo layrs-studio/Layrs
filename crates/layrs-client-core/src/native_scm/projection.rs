@@ -210,25 +210,53 @@ pub(super) fn verify_changed_content(
     target_side: bool,
 ) -> Result<()> {
     let _span = layrs_store_local::perf::span("transition.verify_changed_content");
-    let prior: BTreeMap<&str, &CheckoutProjectionContent> = before
-        .iter()
-        .map(|e| (e.path.as_str(), &e.content))
-        .collect();
-    let next: BTreeMap<&str, &CheckoutProjectionContent> = after
-        .iter()
-        .map(|e| (e.path.as_str(), &e.content))
-        .collect();
     // Target side: the bytes this transition writes. Base side: the Store copy
     // of every file the transition moves to backups or replaces must be intact
-    // too, otherwise the backup would become its only copy.
-    let changed_after = after
-        .iter()
-        .filter(|entry| target_side && prior.get(entry.path.as_str()) != Some(&&entry.content));
-    let changed_before = before
-        .iter()
-        .filter(|entry| next.get(entry.path.as_str()) != Some(&&entry.content));
+    // too, otherwise the backup would become its only copy. Both projections
+    // are sorted by path: one merge walk finds the entries that differ.
+    debug_assert!(before.is_sorted_by(|x, y| x.path < y.path));
+    debug_assert!(after.is_sorted_by(|x, y| x.path < y.path));
+    let mut changed: Vec<&CheckoutProjectionEntry> = Vec::new();
+    let (mut old, mut new) = (before.iter().peekable(), after.iter().peekable());
+    loop {
+        match (old.peek(), new.peek()) {
+            (None, None) => break,
+            (Some(prior), None) => {
+                changed.push(prior);
+                old.next();
+            }
+            (None, Some(next)) => {
+                if target_side {
+                    changed.push(next);
+                }
+                new.next();
+            }
+            (Some(prior), Some(next)) => match prior.path.cmp(&next.path) {
+                std::cmp::Ordering::Less => {
+                    changed.push(prior);
+                    old.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    if target_side {
+                        changed.push(next);
+                    }
+                    new.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    if prior.content != next.content {
+                        if target_side {
+                            changed.push(next);
+                        }
+                        changed.push(prior);
+                    }
+                    old.next();
+                    new.next();
+                }
+            },
+        }
+    }
     let mut verified = BTreeSet::new();
-    for entry in changed_after.chain(changed_before) {
+    for entry in changed {
         if let CheckoutProjectionContent::File { file_id, .. } = &entry.content {
             if !provided.contains(file_id) && verified.insert(file_id.clone()) {
                 let layrs_store::scm::FileAvailability::Present(_) = reader
