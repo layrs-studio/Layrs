@@ -123,13 +123,29 @@ impl NativeWorkspace {
             Metadata::empty(),
         )?;
         let change = prepare_initialize(space, layer, worktree.clone(), snapshot, stamp)?;
-        drop(scm_v1::init_with_format(
-            root.join(".layrs"),
-            store_id,
-            format,
-        )?);
-        let client = NativeClient::open(root.join(".layrs"))?;
-        client.accept(&change)?;
+        // Refused before any Store is created (a too large first capture).
+        scm_v1::preflight_batch_budgets(change.batch())?;
+        let store_path = root.join(".layrs");
+        let absent = matches!(
+            std::fs::symlink_metadata(&store_path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        );
+        drop(scm_v1::init_with_format(&store_path, store_id, format)?);
+        let accepted = NativeClient::open(&store_path).and_then(|client| {
+            client.accept(&change)?;
+            Ok(client)
+        });
+        let client = match accepted {
+            Ok(client) => client,
+            Err(error) => {
+                // The Store this call created holds no Step: removed, so the
+                // folder is as it was (an existing `.layrs` is never touched).
+                if absent {
+                    let _ = std::fs::remove_dir_all(&store_path);
+                }
+                return Err(error);
+            }
+        };
         // The folder's change index (ADR 0025) starts with what this first
         // capture proved. A cache: on failure the next capture reads all.
         let store_root = root.join(".layrs");

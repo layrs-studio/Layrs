@@ -33,9 +33,9 @@ pub mod worktree_audit;
 pub mod worktrees;
 mod write_batch;
 
-pub use admission::CompositeAdmissionResolver;
 #[cfg(any(test, feature = "test-support"))]
 pub use admission::existence_proofs_on_this_thread;
+pub use admission::{CompositeAdmissionResolver, preflight_batch_budgets};
 pub use cas::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue,
     CasScrubReport, InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PackFileHold,

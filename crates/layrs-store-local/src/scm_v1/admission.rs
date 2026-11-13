@@ -1063,7 +1063,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
 
 /// Pure static preflight, before CAS preparation as well as inside admission.
 /// This does not relax Step/Operation DAG limits or validate authority/closure.
-pub(crate) fn preflight_batch_budgets(batch: &WriteBatch) -> Result<()> {
+pub fn preflight_batch_budgets(batch: &WriteBatch) -> Result<()> {
     require_budget(
         "batch objects",
         batch.canonical_objects().len(),
