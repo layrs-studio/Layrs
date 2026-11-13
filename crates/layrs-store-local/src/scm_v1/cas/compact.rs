@@ -423,11 +423,13 @@ pub(crate) type CandidatePack = (i64, OsString, [u8; 32], bool);
 
 /// Name prefix of a maintenance pack being built (`.maint-…tmp`).
 const MAINTENANCE_PREFIX: &str = "maint-";
+/// `MAINTENANCE_PREFIX` as a directory entry starts.
+const MAINTENANCE_TEMPORARY: &str = ".maint-";
 
 /// Whether `name` is a maintenance pack being built (or left by a crash).
 fn maintenance_temporary(name: &OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|name| name.starts_with(&format!(".{MAINTENANCE_PREFIX}")))
+    name.as_encoded_bytes()
+        .starts_with(MAINTENANCE_TEMPORARY.as_bytes())
 }
 
 /// A maintenance consolidation built outside the exclusive Store lock

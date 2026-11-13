@@ -184,7 +184,7 @@ fn maintain_pausing(
 ) -> Result<MaintenanceOutcome, String> {
     let _span = crate::perf::span("store.maintenance");
     // The group, from a short shared session.
-    let (cas, catalog, candidates, mut damaged) = {
+    let (cas, catalog, candidates, mut damaged, exhausted) = {
         let store = match super::acquisition::acquire(
             "maintenance read",
             super::acquisition::SHORT_WAIT,
@@ -201,8 +201,15 @@ fn maintain_pausing(
         let lock = open_maintenance_lock(&metadata, true)
             .map_err(|error| error.to_string())?
             .ok_or("the maintenance lock was not created")?;
-        if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-            return Ok(MaintenanceOutcome::Busy);
+        // A few tries: another process may only be probing the lock
+        // (`maintenance_running`) for a moment (council s19 r3).
+        let mut tries = 0;
+        while fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+            tries += 1;
+            if tries == 4 {
+                return Ok(MaintenanceOutcome::Busy);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         *held = Some(lock);
         let cas = NativeCas::open_lazy(&store).map_err(|error| error.to_string())?;
@@ -219,27 +226,36 @@ fn maintain_pausing(
         // batch's consolidation (council s19 r2): the damaged ones found are
         // recorded, and the next pass goes on.
         let mut candidates = Vec::new();
+        let mut exhausted = true;
         for _ in 0..MAX_ATTEMPTS {
             let group = catalog.maintenance_candidates(&excluded);
             if group.len() < 2 {
+                exhausted = false;
                 break;
             }
-            match malformed_bitmap(store.layout().sqlite_path(), &catalog, &group)? {
-                Some(position) => {
-                    damaged.push(position);
-                    excluded.push(position);
-                }
-                None => {
-                    candidates = group;
-                    break;
-                }
+            // Every malformed candidate of the group in one scan (council
+            // s19 r3).
+            let malformed =
+                malformed_bitmaps(store.layout().sqlite_path(), &catalog, &group, false)?;
+            if malformed.is_empty() {
+                candidates = group;
+                exhausted = false;
+                break;
             }
+            damaged.extend_from_slice(&malformed);
+            excluded.extend_from_slice(&malformed);
         }
-        (cas, catalog, candidates, damaged)
+        (cas, catalog, candidates, damaged, exhausted)
     };
     if candidates.len() < 2 {
-        remember_damaged(root, &catalog, &damaged)?;
-        return Ok(MaintenanceOutcome::NothingToDo);
+        remember_damaged(root, &catalog, &damaged, super::acquisition::SHORT_WAIT)?;
+        // Scans ran out with candidates left: the next pass goes on with
+        // the damaged ones left out (council s19 r3).
+        return Ok(if exhausted {
+            MaintenanceOutcome::Abandoned
+        } else {
+            MaintenanceOutcome::NothingToDo
+        });
     }
     // The pack, with no Store lock held.
     let wanted: Vec<_> = candidates
@@ -278,7 +294,9 @@ fn maintain_pausing(
             };
             crate::perf::count("store.maintenance_skipped_pack", 1);
             damaged.push(position);
-            remember_damaged(root, &catalog, &damaged)?;
+            // Waited for as a batch waits: unrecorded, the next pass would
+            // build the same group again (council s19 r3).
+            remember_damaged(root, &catalog, &damaged, super::acquisition::ORDINARY_WAIT)?;
             return Ok(MaintenanceOutcome::Abandoned);
         }
     };
@@ -339,15 +357,14 @@ fn remember_damaged(
     root: &std::path::Path,
     catalog: &super::cas::compact::RegisteredCatalog,
     damaged: &[usize],
+    wait: std::time::Duration,
 ) -> Result<(), String> {
     if damaged.is_empty() {
         return Ok(());
     }
-    let store = match super::acquisition::acquire(
-        "maintenance skip record",
-        super::acquisition::SHORT_WAIT,
-        || super::open_exclusive(root),
-    ) {
+    let store = match super::acquisition::acquire("maintenance skip record", wait, || {
+        super::open_exclusive(root)
+    }) {
         Ok(store) => store,
         // Best effort, as the record itself: a busy Store is no failure of
         // the pass, and the next pass finds them again (council s19 r2).
@@ -664,6 +681,19 @@ fn malformed_bitmap(
     catalog: &super::cas::compact::RegisteredCatalog,
     candidates: &[usize],
 ) -> Result<Option<usize>, String> {
+    Ok(malformed_bitmaps(sqlite_path, catalog, candidates, true)?
+        .into_iter()
+        .next())
+}
+
+/// The candidates (positions) one of whose admission bitmaps does not fit
+/// their pack, in one scan of the admissions; only the first when `first`.
+fn malformed_bitmaps(
+    sqlite_path: &std::path::Path,
+    catalog: &super::cas::compact::RegisteredCatalog,
+    candidates: &[usize],
+    first: bool,
+) -> Result<Vec<usize>, String> {
     let entries: BTreeMap<i64, (usize, u64)> = candidates
         .iter()
         .filter_map(|position| {
@@ -683,15 +713,19 @@ fn malformed_bitmap(
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })
         .map_err(|error| error.to_string())?;
+    let mut malformed = BTreeSet::new();
     for row in rows {
         let (seq, bitmap) = row.map_err(|error| error.to_string())?;
         if let Some((position, count)) = entries.get(&seq) {
             if super::cas::compact::check_bitmap(&bitmap, *count).is_err() {
-                return Ok(Some(*position));
+                malformed.insert(*position);
+                if first {
+                    break;
+                }
             }
         }
     }
-    Ok(None)
+    Ok(malformed.into_iter().collect())
 }
 
 /// The registration transaction of a consolidation.

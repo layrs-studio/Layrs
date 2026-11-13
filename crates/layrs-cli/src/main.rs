@@ -41,9 +41,7 @@ fn main() {
     let run_span = layrs_store_local::perf::span("cli.run");
     let result = run(cli);
     drop(run_span);
-    // Opt-in diagnostics (LAYRS_PERF=1) go to stderr, never into the JSON envelope.
-    layrs_store_local::perf::emit(&std::env::args().skip(1).collect::<Vec<_>>().join(" "));
-    match result {
+    let code = match result {
         Ok(rendered) => {
             let exit_code = if diagnosis
                 && (rendered.data["clean"] != true || rendered.data["complete"] != true)
@@ -57,8 +55,7 @@ fn main() {
             } else {
                 println!("{}", rendered.human);
             }
-            layrs_cli::native::start_due();
-            std::process::exit(exit_code.as_i32());
+            exit_code.as_i32()
         }
         Err(error) => {
             if json {
@@ -66,11 +63,15 @@ fn main() {
             } else {
                 eprintln!("{error}");
             }
-            // A command may fail after committing a batch.
-            layrs_cli::native::start_due();
-            std::process::exit(error.exit_code.as_i32());
+            error.exit_code.as_i32()
         }
-    }
+    };
+    // Once the output is written; a command may also fail after committing
+    // a batch.
+    layrs_cli::native::start_due();
+    // Opt-in diagnostics (LAYRS_PERF=1) go to stderr, never into the JSON envelope.
+    layrs_store_local::perf::emit(&std::env::args().skip(1).collect::<Vec<_>>().join(" "));
+    std::process::exit(code);
 }
 
 fn run(cli: Cli) -> Result<Rendered, CliError> {

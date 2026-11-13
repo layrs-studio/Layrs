@@ -2207,6 +2207,75 @@ fn maintenance_waits_for_a_busy_store_to_publish() {
     assert_fsck_clean(&root.0);
 }
 
+/// Damaged candidates are all found in one scan and left out: the pass
+/// consolidates the healthy group (council s19 r3; past the scan budget, a
+/// pass is `Abandoned` and the next goes on).
+#[test]
+fn maintenance_goes_on_past_damaged_candidates() {
+    let (root, lane, files) = store_of_unmerged_packs("maintenance-damaged", 7);
+    let rows: Vec<(i64, Vec<u8>)> = {
+        let connection = sql(&root.0);
+        let mut statement = connection
+            .prepare(
+                "SELECT pack_seq, bitmap FROM space_pack_admissions WHERE space_id=?1                  ORDER BY pack_seq",
+            )
+            .unwrap();
+        statement
+            .query_map([lane.space.id().as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert!(rows.len() >= 6, "{}", rows.len());
+    // Three bitmaps lose a byte, as damage would.
+    let damaged: Vec<i64> = rows[1..4].iter().map(|(seq, _)| *seq).collect();
+    for (seq, bitmap) in &rows[1..4] {
+        let broken = if bitmap.len() > 1 {
+            bitmap[..bitmap.len() - 1].to_vec()
+        } else {
+            vec![bitmap[0], 0, 0]
+        };
+        sql(&root.0)
+            .execute(
+                "UPDATE space_pack_admissions SET bitmap=?1 WHERE space_id=?2 AND pack_seq=?3",
+                rusqlite::params![broken, lane.space.id().as_str(), seq],
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        maintain(&root.0).unwrap(),
+        MaintenanceOutcome::Consolidated { .. }
+    ));
+    let skipped = fs::read_to_string(root.0.join("metadata/consolidation-skipped")).unwrap();
+    assert_eq!(skipped.lines().count(), 3);
+    // The damaged packs are still registered, untouched.
+    let registered: Vec<i64> = {
+        let connection = sql(&root.0);
+        let mut statement = connection
+            .prepare("SELECT pack_seq FROM cas_packs")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    for seq in &damaged {
+        assert!(registered.contains(seq));
+    }
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    assert_eq!(
+        repository
+            .get_chunk(files[0].chunks[0].id())
+            .unwrap()
+            .as_ref(),
+        Some(&files[0].chunks[0])
+    );
+}
+
 /// One pass at a time: a pass started while another builds is `Busy`. A
 /// crashed pass's temporary pack is removed by the next one (council s17,
 /// B2b).

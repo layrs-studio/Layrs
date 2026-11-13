@@ -48,7 +48,8 @@ Commands:
   layrs maintenance
     Consolidate the pack files batches leave out (compact Store formats), as git maintenance repacks.
     Builds outside the Store lock; one pass at a time. Safe to run while other commands work.
-    Started detached after a command whose batch leaves such packs; LAYRS_AUTO_MAINTENANCE=0 disables that.
+    Started detached after a command whose batch leaves such packs; LAYRS_AUTO_MAINTENANCE=0 disables that
+    (for example in CI, so no pass outlives a job's cleanup).
   layrs identity [--actor ACTOR_ID [--device DEVICE_ID] [--name NAME]]
   layrs history STEP_OR_REFERENCE [--path PATH] [--actor ACTOR_ID] [--since RFC3339] [--until RFC3339] [--limit N] [--cursor JSON]
   layrs replay STEP_OR_REFERENCE [--mainline PARENT] [--preview]

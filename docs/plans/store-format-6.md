@@ -382,6 +382,18 @@ and `layrs store repair` come after). Agreed by all three, in this order:
    the sealed digest; the CLI reports a later pass's failure as a warning
    and words `Busy` for both causes; on Windows the detached pass breaks
    away from a kill-on-close job when allowed.
+   Council s19 r3 (Astra 8, Sol 8, Opus 8 ship; stopped after three
+   rounds): one scan finds every malformed candidate of a group, and a
+   pass whose scans run out is `Abandoned` (the next goes on); a damaged
+   pack found while building is recorded after waiting as a batch waits;
+   a pass tries the maintenance lock a few times before `Busy` (another
+   process may only probe it); the CLI starts a due pass before emitting
+   its perf report, and the detached pass emits one (`LAYRS_PERF_OUT`).
+   Later: a maintenance group can share packs with a batch's own
+   consolidation, which then retires a candidate and abandons the pass
+   (start the group above what a batch may merge, or have batches leave a
+   running pass's candidates out); Desktop and Studio Web starting
+   maintenance; a free-space check.
 7. Measurement gate: 10,000 and 100,000 files, history, the 1.5 GiB file,
    a Store past 64 MiB of packs with maintenance, a lost pack end to end,
    clone size; no command slower than format 5.

@@ -116,10 +116,13 @@ pub fn run_detached(args: &[String]) -> i32 {
     let [root] = args else {
         return 2;
     };
-    match passes(Path::new(root)) {
+    let code = match passes(Path::new(root)) {
         Ok(Passes { failure: None, .. }) => 0,
         Ok(_) | Err(_) => 1,
-    }
+    };
+    // Opt-in diagnostics (`LAYRS_PERF_OUT` for a process without stderr).
+    layrs_store_local::perf::emit(MAINTENANCE_COMMAND);
+    code
 }
 
 /// Maintenance passes over the Store at `store_root` (council s17, B2b):
