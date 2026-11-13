@@ -735,7 +735,7 @@ pub(super) fn read_tree_selected(
     let mut visited = BTreeSet::new();
     while let Some((prefix, id, depth)) = pending.pop() {
         if depth > 128
-            || files.len() + pending.len() > 100_000
+            || files.len() + pending.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES
             || !visited.insert((prefix.clone(), id.clone()))
         {
             return Err(NativeClientError::InvalidState("Tree traversal limit"));
@@ -745,7 +745,7 @@ pub(super) fn read_tree_selected(
             .ok_or(NativeClientError::Missing("Tree"))?;
         for entry in tree.entries() {
             entries += 1;
-            if entries > 100_000 {
+            if entries > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
                 return Err(NativeClientError::InvalidState("Tree traversal limit"));
             }
             let path = if prefix.is_empty() {

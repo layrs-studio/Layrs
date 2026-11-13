@@ -197,7 +197,7 @@ impl NativeWorkspace {
             Some(state.worktree.filesystem_identity()),
         )?;
         let limits = CheckoutLimits {
-            max_entries: 100_000,
+            max_entries: layrs_core::scm::MAX_CHECKOUT_ENTRIES,
             max_depth: 128,
             max_file_bytes: usize::MAX,
             max_total_bytes: usize::MAX,

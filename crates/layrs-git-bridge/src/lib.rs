@@ -118,7 +118,7 @@ impl Default for GitBridgeLimits {
         Self {
             max_commits: 10_000,
             max_objects: 100_000,
-            max_paths: 100_000,
+            max_paths: layrs_core::scm::MAX_CHECKOUT_ENTRIES,
             max_depth: 64,
             max_object_bytes: 16 * 1024 * 1024,
             max_total_bytes: 64 * 1024 * 1024,

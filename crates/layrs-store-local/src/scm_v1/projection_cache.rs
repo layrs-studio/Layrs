@@ -53,7 +53,7 @@ const VERSION: u32 = 5;
 const DIRECTORY: &str = "projection-cache";
 /// Bound on what a corrupt file can make a reader allocate.
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_ENTRIES: usize = 1_000_000;
+const MAX_ENTRIES: usize = layrs_core::scm::MAX_CHECKOUT_ENTRIES;
 const KIND_FILE: u8 = 1;
 const KIND_SYMLINK: u8 = 2;
 const KIND_EXECUTABLE: u8 = 3;

@@ -302,7 +302,7 @@ fn result_projection(
     let mut entries = Vec::new();
     let mut pending = vec![(String::new(), root.clone(), 0usize)];
     while let Some((prefix, id, depth)) = pending.pop() {
-        if depth > 128 || entries.len() + pending.len() >= 100_000 {
+        if depth > 128 || entries.len() + pending.len() >= layrs_core::scm::MAX_CHECKOUT_ENTRIES {
             return Err(NativeClientError::InvalidState(
                 "merge result exceeds checkout limits",
             ));

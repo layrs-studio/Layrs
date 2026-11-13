@@ -362,7 +362,9 @@ fn project_tree(
     let mut result = Vec::new();
     let mut total = 0u64;
     while let Some((prefix, id, depth)) = pending.pop() {
-        if depth > 128 || seen.len() + result.len() + pending.len() >= 100_000 {
+        if depth > 128
+            || seen.len() + result.len() + pending.len() >= layrs_core::scm::MAX_CHECKOUT_ENTRIES
+        {
             return Err(NativeClientError::InvalidState(
                 "checkout projection exceeds limits",
             ));
@@ -433,7 +435,7 @@ fn project_tree(
                     "checkout projection size overflow",
                 ))?;
             result.push(CheckoutProjectionEntry { path, content });
-            if result.len() + pending.len() > 100_000 {
+            if result.len() + pending.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
                 return Err(NativeClientError::InvalidState(
                     "checkout projection exceeds limits",
                 ));

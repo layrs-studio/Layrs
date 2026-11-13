@@ -43,6 +43,6 @@ pub use repository::{
     RewriteTarget, Space, Timestamp, Worktree, WorktreeStatus, WorktreeViewState,
 };
 pub use step::{Step, StepObservation};
-pub use tree::{Symlink, Tombstone, Tree, TreeEntry, TreeEntryTarget};
+pub use tree::{MAX_CHECKOUT_ENTRIES, Symlink, Tombstone, Tree, TreeEntry, TreeEntryTarget};
 
 pub use diff::{DiffContent, DiffEntry, NativeDiffLine, NativeFileChange, diff_entries};

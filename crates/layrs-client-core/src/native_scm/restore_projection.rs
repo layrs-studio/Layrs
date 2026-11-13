@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, io::Write};
 
 pub(super) fn limits() -> SnapshotLimits {
     SnapshotLimits {
-        max_entries: 100_000,
+        max_entries: layrs_core::scm::MAX_CHECKOUT_ENTRIES,
         max_depth: 128,
         max_file_bytes: usize::MAX,
         max_total_bytes: usize::MAX,
@@ -50,7 +50,7 @@ pub(super) fn captured(snapshot: &PreparedSnapshot) -> Result<Vec<CheckoutProjec
     let mut pending = vec![(String::new(), snapshot.root_tree_id().clone(), 0usize)];
     let mut entries = Vec::new();
     while let Some((prefix, id, depth)) = pending.pop() {
-        if depth > 128 || entries.len() + pending.len() >= 100_000 {
+        if depth > 128 || entries.len() + pending.len() >= layrs_core::scm::MAX_CHECKOUT_ENTRIES {
             return Err(NativeClientError::InvalidState(
                 "snapshot projection exceeds limits",
             ));

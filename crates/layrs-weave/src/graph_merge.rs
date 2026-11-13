@@ -84,7 +84,9 @@ impl Default for GraphMergeLimits {
     fn default() -> Self {
         Self {
             max_steps: 10_000,
-            max_paths: 100_000,
+            // Paths across every input Tree (a base and its heads may each
+            // hold a whole checkout).
+            max_paths: 4 * layrs_core::scm::MAX_CHECKOUT_ENTRIES,
             max_depth: 64,
             max_input_bytes: 64 * 1024 * 1024,
             max_output_bytes: 64 * 1024 * 1024,

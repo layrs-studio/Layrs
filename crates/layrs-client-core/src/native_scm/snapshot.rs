@@ -23,7 +23,7 @@ pub struct SnapshotLimits {
 impl Default for SnapshotLimits {
     fn default() -> Self {
         Self {
-            max_entries: 100_000,
+            max_entries: layrs_core::scm::MAX_CHECKOUT_ENTRIES,
             max_depth: 128,
             max_file_bytes: 64 * 1024 * 1024,
             max_total_bytes: 256 * 1024 * 1024,

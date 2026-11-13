@@ -6,6 +6,12 @@ use super::serde_support::deserialize_present_nullable;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const TREE_DOMAIN: &str = "layrs-tree-v1";
+
+/// The most entries (files, symlinks and folders together) a checkout, a
+/// Tree walk or a projection holds: a bound on memory, not a format limit.
+/// As a pack's entries (`MAX_PACK_ENTRIES`); git has no such bound, and
+/// the largest known checkouts hold a few million files.
+pub const MAX_CHECKOUT_ENTRIES: usize = 4_000_000;
 const SYMLINK_DOMAIN: &str = "layrs-symlink-v1";
 const TOMBSTONE_DOMAIN: &str = "layrs-tombstone-v1";
 

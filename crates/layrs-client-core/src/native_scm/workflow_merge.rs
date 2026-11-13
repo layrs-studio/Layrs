@@ -327,7 +327,10 @@ impl NativeWorkspace {
             ));
         }
         while let Some((id, depth)) = pending.pop() {
-            if depth > 128 || visited.len() > 100_000 || entries > 100_000 {
+            if depth > 128
+                || visited.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES
+                || entries > layrs_core::scm::MAX_CHECKOUT_ENTRIES
+            {
                 return Err(NativeClientError::InvalidState("conflict traversal limit"));
             }
             if !visited.insert(id.clone()) {
@@ -338,7 +341,7 @@ impl NativeWorkspace {
                 .get_tree(&id)?
                 .ok_or(NativeClientError::Missing("conflict Tree"))?;
             entries = entries.saturating_add(tree.entries().len());
-            if entries > 100_000 {
+            if entries > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
                 return Err(NativeClientError::InvalidState("conflict traversal limit"));
             }
             for entry in tree.entries() {
