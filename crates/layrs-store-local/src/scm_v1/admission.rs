@@ -87,11 +87,13 @@ pub struct CompositeAdmissionResolver<'a> {
     bounded: bool,
     /// The batch's Steps that are not durable yet (bounded mode).
     new_steps: BTreeMap<StepId, Step>,
+    /// Their position in a topological order, parents first (bounded mode).
+    new_step_ranks: HashMap<StepId, usize>,
     /// The durable publication frontier, walked on demand (bounded mode).
     lazy_frontier: Option<bounded::LazyFrontier>,
     /// Per observed Operation, the Steps reached from its resulting heads
     /// and those still to walk (bounded mode).
-    observation_walks: Mutex<HashMap<OperationId, ObservationWalk>>,
+    observation_walks: Mutex<HashMap<RepositoryViewId, ObservationWalk>>,
 }
 
 /// The memo scope of the Store `store_id` at `root` (`with_memo_scope`).
@@ -138,8 +140,14 @@ impl<'a> CompositeAdmissionResolver<'a> {
         #[cfg(debug_assertions)]
         if let (true, Err(error)) = (bounded, &result) {
             if let Ok(complete) = Self::with_mode(reader, batch, false) {
+                #[cfg(any(test, feature = "test-support"))]
+                let proofs = EXISTENCE_PROOFS.with(|count| count.get());
+                let expected = complete.validate_batch_in_mode();
+                #[cfg(any(test, feature = "test-support"))]
+                EXISTENCE_PROOFS.with(|count| count.set(proofs));
                 assert!(
-                    complete.validate_batch_in_mode().is_err(),
+                    expected.is_err()
+                        || matches!(error, StoreError::AdmissionBudgetExceeded { .. }),
                     "bounded admission refused a batch the complete resolver accepts: {error:?}"
                 );
             }
@@ -178,10 +186,10 @@ impl<'a> CompositeAdmissionResolver<'a> {
         } else {
             load_step_closure(reader, batch)?
         };
-        let new_steps = if bounded {
+        let (new_steps, new_step_ranks) = if bounded {
             bounded::new_batch_steps(reader, batch)?
         } else {
-            BTreeMap::new()
+            (BTreeMap::new(), HashMap::new())
         };
         let batch_operations: BTreeMap<_, _> = batch
             .entity_records()
@@ -314,6 +322,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
             memo_scope: None,
             bounded,
             new_steps,
+            new_step_ranks,
             lazy_frontier,
             observation_walks: Mutex::new(HashMap::new()),
         })
@@ -331,6 +340,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
     }
 
     pub fn step_dag(&self) -> &StepDag {
+        debug_assert!(!self.bounded, "a bounded resolver has no Step DAG");
         &self.step_dag
     }
 
@@ -347,6 +357,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
 
     /// Durable Operation DAG reachable exclusively from current heads.
     pub fn operation_dag(&self) -> &OperationDag {
+        debug_assert!(!self.bounded, "a bounded resolver has no Operation DAG");
         &self.operation_dag
     }
 
@@ -374,14 +385,21 @@ impl<'a> CompositeAdmissionResolver<'a> {
                     let expected = complete.validate_batch_in_mode();
                     #[cfg(any(test, feature = "test-support"))]
                     EXISTENCE_PROOFS.with(|count| count.set(proofs));
-                    assert_eq!(
-                        expected.is_ok(),
-                        result.is_ok(),
-                        "bounded admission disagrees with the complete resolver: bounded {result:?}, complete {expected:?}"
-                    );
+                    // The complete resolver's budgets on history it walks
+                    // give no verdict (council s23 review r2).
+                    if !matches!(expected, Err(StoreError::AdmissionBudgetExceeded { .. })) {
+                        assert_eq!(
+                            expected.is_ok(),
+                            result.is_ok(),
+                            "bounded admission disagrees with the complete resolver: bounded {result:?}, complete {expected:?}"
+                        );
+                    }
                 }
-                // History beyond the complete resolver's bounds.
-                Err(StoreError::AdmissionBudgetExceeded { .. }) => {}
+                // History beyond the complete resolver's bounds, or history
+                // its graph replay rejects (the integration order of
+                // `OperationDag::from_history`, a known defect): no verdict.
+                Err(StoreError::AdmissionBudgetExceeded { .. } | StoreError::Corruption { .. }) => {
+                }
                 Err(error) => assert!(
                     result.is_err(),
                     "bounded admission accepts a batch the complete resolver refuses: {error:?}"
@@ -1109,7 +1127,11 @@ impl<'a> CompositeAdmissionResolver<'a> {
         };
         let heads = view.layer_heads().iter().flat_map(|heads| heads.step_ids());
         if self.bounded {
-            return self.bounded_operation_reaches(operation, heads, step);
+            return self.bounded_operation_reaches(
+                operation_value.resulting_view_id(),
+                heads,
+                step,
+            );
         }
         if heads.clone().all(|head| self.step_dag.contains(head)) {
             // Observations share the Operation's immutable resulting View. Walk
@@ -1221,9 +1243,22 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 self.reader.is_step_ancestor(ancestor, descendant)
             };
         }
+        // Both new: a topological order of the new Steps answers the
+        // impossible cases (an admission's cycle check among them) without
+        // a walk (council s23 review r2).
+        if let (Some(a), Some(d)) = (
+            self.new_step_ranks.get(ancestor),
+            self.new_step_ranks.get(descendant),
+        ) {
+            if a >= d {
+                return Ok(false);
+            }
+        }
         let mut seen = HashSet::new();
         let mut pending = vec![descendant];
         while let Some(id) = pending.pop() {
+            let relations = self.ancestor_relations.fetch_add(1, Ordering::Relaxed) + 1;
+            require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
             let Some(step) = self.new_steps.get(id) else {
                 // A durable Step: a new ancestor cannot be below it.
                 if !new_ancestor && self.reader.is_step_ancestor(ancestor, id)? {
@@ -1249,12 +1284,37 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// resolver's union closure is (council s23 review r1).
     fn bounded_operation_reaches<'h>(
         &self,
-        operation: &OperationId,
+        view: &RepositoryViewId,
         heads: impl Iterator<Item = &'h StepId> + Clone,
         step: &StepId,
     ) -> Result<bool> {
         if heads.clone().any(|head| head == step) {
             return Ok(true);
+        }
+        // A durable Step never leads to a new one: for a new Step, only the
+        // new Steps are walked (council s23 review r2).
+        if self.new_steps.contains_key(step) {
+            let mut seen = HashSet::new();
+            let mut pending: Vec<&StepId> = heads
+                .filter(|head| self.new_steps.contains_key(*head))
+                .collect();
+            while let Some(id) = pending.pop() {
+                if id == step {
+                    return Ok(true);
+                }
+                if !seen.insert(id) {
+                    continue;
+                }
+                if let Some(value) = self.new_steps.get(id) {
+                    pending.extend(
+                        value
+                            .parent_step_ids()
+                            .iter()
+                            .filter(|parent| self.new_steps.contains_key(*parent)),
+                    );
+                }
+            }
+            return Ok(false);
         }
         let mut walks = self
             .observation_walks
@@ -1262,7 +1322,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .map_err(|_| StoreError::Backend {
                 message: "observation walk poisoned".into(),
             })?;
-        let walk = match walks.entry(operation.clone()) {
+        // One walk per resulting View, shared by every Operation that has
+        // it (council s23 review r2).
+        let walk = match walks.entry(view.clone()) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let query = self.ancestor_queries.fetch_add(1, Ordering::Relaxed) + 1;

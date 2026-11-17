@@ -119,6 +119,29 @@ pub(super) fn require_budget(resource: &'static str, actual: usize, limit: usize
     }
 }
 
+/// The complete resolver's bounds on the history it loads. Debug builds
+/// lower them with `LAYRS_TEST_HISTORY_LIMIT`, so tests reach histories
+/// beyond them (where only the bounded resolver can admit; council s23
+/// review r2) in a few dozen Steps.
+fn history_limit(bound: usize) -> usize {
+    #[cfg(debug_assertions)]
+    if let Some(limit) = std::env::var("LAYRS_TEST_HISTORY_LIMIT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return limit;
+    }
+    bound
+}
+
+fn history_nodes() -> usize {
+    history_limit(MAX_GRAPH_NODES)
+}
+
+fn history_edges() -> usize {
+    history_limit(MAX_GRAPH_EDGES)
+}
+
 pub(super) fn load_step_closure(
     reader: &dyn ScmReader,
     batch: &WriteBatch,
@@ -156,7 +179,7 @@ pub(super) fn load_step_closure(
             )
         {
             referenced.insert(id.clone());
-            require_budget("referenced Steps", referenced.len(), MAX_GRAPH_NODES)?;
+            require_budget("referenced Steps", referenced.len(), history_nodes())?;
         }
     }
     for id in referenced {
@@ -168,12 +191,12 @@ pub(super) fn load_step_closure(
             entry.insert(value);
         }
     }
-    require_budget("Step graph nodes", steps.len(), MAX_GRAPH_NODES)?;
+    require_budget("Step graph nodes", steps.len(), history_nodes())?;
     let mut edge_count: usize = steps
         .values()
         .map(|value| value.parent_step_ids().len())
         .sum();
-    require_budget("Step graph edges", edge_count, MAX_GRAPH_EDGES)?;
+    require_budget("Step graph edges", edge_count, history_edges())?;
     let mut pending: Vec<_> = steps.values().cloned().collect();
     while let Some(step) = pending.pop() {
         for parent in step.parent_step_ids() {
@@ -186,14 +209,14 @@ pub(super) fn load_step_closure(
                     kind: "Step parent",
                     id: parent.to_string(),
                 })?;
-            require_budget("Step graph nodes", steps.len() + 1, MAX_GRAPH_NODES)?;
+            require_budget("Step graph nodes", steps.len() + 1, history_nodes())?;
             edge_count = edge_count
                 .checked_add(value.parent_step_ids().len())
                 .ok_or(StoreError::AdmissionBudgetExceeded {
                     resource: "Step graph edges",
-                    limit: MAX_GRAPH_EDGES,
+                    limit: history_edges(),
                 })?;
-            require_budget("Step graph edges", edge_count, MAX_GRAPH_EDGES)?;
+            require_budget("Step graph edges", edge_count, history_edges())?;
             pending.push(value.clone());
             steps.insert(parent.clone(), value);
         }
@@ -225,12 +248,12 @@ pub(super) fn load_operation_closure(
             })?;
         operations.insert(id.clone(), value);
     }
-    require_budget("Operation graph nodes", operations.len(), MAX_GRAPH_NODES)?;
+    require_budget("Operation graph nodes", operations.len(), history_nodes())?;
     let mut edge_count: usize = operations
         .values()
         .map(|value| value.parent_operation_ids().len())
         .sum();
-    require_budget("Operation graph edges", edge_count, MAX_GRAPH_EDGES)?;
+    require_budget("Operation graph edges", edge_count, history_edges())?;
     let mut pending: Vec<_> = operations.values().cloned().collect();
     while let Some(operation) = pending.pop() {
         for parent in operation.parent_operation_ids() {
@@ -246,15 +269,15 @@ pub(super) fn load_operation_closure(
             require_budget(
                 "Operation graph nodes",
                 operations.len() + 1,
-                MAX_GRAPH_NODES,
+                history_nodes(),
             )?;
             edge_count = edge_count
                 .checked_add(value.parent_operation_ids().len())
                 .ok_or(StoreError::AdmissionBudgetExceeded {
                     resource: "Operation graph edges",
-                    limit: MAX_GRAPH_EDGES,
+                    limit: history_edges(),
                 })?;
-            require_budget("Operation graph edges", edge_count, MAX_GRAPH_EDGES)?;
+            require_budget("Operation graph edges", edge_count, history_edges())?;
             pending.push(value.clone());
             operations.insert(parent.clone(), value);
         }
@@ -301,7 +324,7 @@ pub(super) fn load_durable_frontier_closure(
     require_budget(
         "durable frontier Operation graph nodes",
         operations.len(),
-        MAX_GRAPH_NODES,
+        history_nodes(),
     )?;
     let mut edge_count: usize = operations
         .values()
@@ -310,7 +333,7 @@ pub(super) fn load_durable_frontier_closure(
     require_budget(
         "durable frontier Operation graph edges",
         edge_count,
-        MAX_GRAPH_EDGES,
+        history_edges(),
     )?;
     while let Some(operation) = pending.pop() {
         for parent in operation.parent_operation_ids() {
@@ -328,18 +351,18 @@ pub(super) fn load_durable_frontier_closure(
             require_budget(
                 "durable frontier Operation graph nodes",
                 operations.len() + 1,
-                MAX_GRAPH_NODES,
+                history_nodes(),
             )?;
             edge_count = edge_count
                 .checked_add(value.parent_operation_ids().len())
                 .ok_or(StoreError::AdmissionBudgetExceeded {
                     resource: "durable frontier Operation graph edges",
-                    limit: MAX_GRAPH_EDGES,
+                    limit: history_edges(),
                 })?;
             require_budget(
                 "durable frontier Operation graph edges",
                 edge_count,
-                MAX_GRAPH_EDGES,
+                history_edges(),
             )?;
             pending.push(value.clone());
             operations.insert(parent.clone(), value);

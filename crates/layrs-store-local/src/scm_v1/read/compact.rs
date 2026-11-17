@@ -43,7 +43,10 @@ impl NativeScmReader<'_> {
         if !self.compact() {
             return Ok(false);
         }
-        Ok(self.catalog()?.damage().is_some())
+        let catalog = self.catalog()?;
+        // A cached pack whose file is gone is damaged too (council s23
+        // review r2), as a fresh process would find it.
+        Ok(catalog.damage().is_some() || !catalog.pack_files_present())
     }
 
     /// Whether a readable copy of `id` is stored: a readable registered pack
@@ -283,16 +286,20 @@ impl NativeScmReader<'_> {
         files: impl IntoIterator<Item = &'f FileId>,
     ) -> Result<std::collections::BTreeMap<FileId, u64>> {
         let catalog = self.catalog()?;
-        let mut lengths = std::collections::BTreeMap::new();
-        for file in files.into_iter().collect::<BTreeSet<_>>() {
-            if let Some(length) = catalog
+        let files: Vec<&FileId> = files
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        // In-memory index lookups, in parallel for a large batch (a capture
+        // rewriting folders of thousands of Files).
+        let found = in_parallel(&files, |file| {
+            catalog
                 .file_length_with(file, self.positive)
-                .map_err(cas_read_error)?
-            {
-                lengths.insert(file.clone(), length);
-            }
-        }
-        Ok(lengths)
+                .map_err(cas_read_error)
+                .map(|length| length.map(|length| (file.clone(), length)))
+        })?;
+        Ok(found.into_iter().flatten().collect())
     }
 
     pub(super) fn file_manifest_ids_metadata_compact(
@@ -350,16 +357,18 @@ impl NativeScmReader<'_> {
         // here (`file_manifest_admitted`): the exact path reports it
         // (council s14 r1, s17 B1b).
         let admissions = self.admissions(&catalog, space)?;
-        let mut closed = BTreeSet::new();
-        for file in files.into_iter().collect::<BTreeSet<_>>() {
-            if catalog
+        let files: Vec<&FileId> = files
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let found = in_parallel(&files, |file| {
+            catalog
                 .file_manifest_admitted(&admissions, file, MAX_FILE_MANIFESTS)
-                .map_err(cas_read_error)?
-            {
-                closed.insert(file.clone());
-            }
-        }
-        Ok(closed)
+                .map_err(cas_read_error)
+                .map(|closed| closed.then(|| file.clone()))
+        })?;
+        Ok(found.into_iter().flatten().collect())
     }
 
     pub(super) fn admitted_chunk_ids_of_files_compact<'f>(
@@ -456,4 +465,46 @@ impl NativeScmReader<'_> {
         }
         Ok(Some(rows))
     }
+}
+
+/// `answer` for each of `files`, in order: on a few threads when there are
+/// many (each answer is an in-memory lookup), else on this one. The first
+/// error is returned.
+fn in_parallel<T: Send>(
+    files: &[&FileId],
+    answer: impl Fn(&FileId) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
+    const PER_THREAD: usize = 2_048;
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(files.len().div_ceil(PER_THREAD));
+    if threads <= 1 {
+        return files.iter().map(|file| answer(file)).collect();
+    }
+    let size = files.len().div_ceil(threads);
+    let parts: Vec<Result<Vec<T>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(size)
+            .map(|part| {
+                let answer = &answer;
+                scope.spawn(move || part.iter().map(|file| answer(file)).collect())
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(StoreError::Backend {
+                        message: "a metadata lookup thread panicked".into(),
+                    })
+                })
+            })
+            .collect()
+    });
+    let mut all = Vec::with_capacity(files.len());
+    for part in parts {
+        all.extend(part?);
+    }
+    Ok(all)
 }

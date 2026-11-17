@@ -17,12 +17,12 @@ use std::collections::VecDeque;
 
 /// The batch's Steps that are not durable yet, after the checks the Step
 /// DAG made on them: no duplicate or self parent, every parent in the batch
-/// or durable. Their acyclicity is checked by `validate_step_admission`
-/// through `is_step_ancestor`.
+/// or durable, no cycle among them (Kahn's order, whose positions are
+/// returned: parents first).
 pub(super) fn new_batch_steps(
     reader: &dyn ScmReader,
     batch: &WriteBatch,
-) -> Result<BTreeMap<StepId, Step>> {
+) -> Result<(BTreeMap<StepId, Step>, HashMap<StepId, usize>)> {
     let carried: BTreeMap<_, _> = batch
         .canonical_objects()
         .iter()
@@ -64,7 +64,38 @@ pub(super) fn new_batch_steps(
         })
         .unwrap_or(usize::MAX);
     require_budget("Step graph edges", edges, MAX_GRAPH_EDGES)?;
-    Ok(new_steps)
+    let mut indegrees: BTreeMap<&StepId, usize> = BTreeMap::new();
+    let mut children: BTreeMap<&StepId, Vec<&StepId>> = BTreeMap::new();
+    for (id, step) in &new_steps {
+        let mut degree = 0;
+        for parent in step.parent_step_ids() {
+            if new_steps.contains_key(parent) {
+                degree += 1;
+                children.entry(parent).or_default().push(id);
+            }
+        }
+        indegrees.insert(id, degree);
+    }
+    let mut ready: Vec<&StepId> = indegrees
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| *id)
+        .collect();
+    let mut ranks = HashMap::with_capacity(new_steps.len());
+    while let Some(id) = ready.pop() {
+        ranks.insert(id.clone(), ranks.len());
+        for child in children.get(id).into_iter().flatten() {
+            let degree = indegrees.get_mut(child).expect("a new Step");
+            *degree -= 1;
+            if *degree == 0 {
+                ready.push(child);
+            }
+        }
+    }
+    if ranks.len() != new_steps.len() {
+        return Err(graph_corruption("new Steps form a cycle"));
+    }
+    Ok((new_steps, ranks))
 }
 
 /// The checks `validate_global_operation_history` made, on the batch's new
@@ -255,7 +286,11 @@ impl LazyFrontier {
         let mut pending = VecDeque::from([descendant.clone()]);
         while let Some(id) = pending.pop_front() {
             let Some(value) = reader.get_operation(&id)? else {
-                return Ok(false);
+                // Retained Operations are durable: one missing is damage,
+                // not a refusal (council s23 review r2).
+                return Err(StoreError::Corruption {
+                    message: format!("durable Operation {id} is missing"),
+                });
             };
             for parent in value.parent_operation_ids() {
                 if parent == ancestor {

@@ -2054,6 +2054,18 @@ impl RegisteredCatalog {
         self.damaged.first().map(|(_, error)| error)
     }
 
+    /// Whether every registered pack file still exists where it was loaded
+    /// from (council s23 review r2): a pack whose index this process cached
+    /// is not read again, so a file deleted since would only be seen as
+    /// damaged by a fresh process.
+    pub(crate) fn pack_files_present(&self) -> bool {
+        self.fresh
+            || self
+                .packs
+                .iter()
+                .all(|pack| pack.pack.image.is_some() || pack.pack.path.exists())
+    }
+
     /// `Ok(value)` when the catalog answers exactly about `keys` (the
     /// keys the question asks): every unreadable registered pack's keys row
     /// excludes them all (council s17, B1b). Otherwise a negative or
