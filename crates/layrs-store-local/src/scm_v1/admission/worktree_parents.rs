@@ -63,7 +63,7 @@ impl CompositeAdmissionResolver<'_> {
         // Never authorize through the batch overlay, passive imports or a
         // fabricated same-batch Worktree/Operation. This parent must already be
         // durable and reachable from the complete durable publication frontier.
-        if !self.durable_operation_dag.contains(parent_id) {
+        if !self.frontier_retains(parent_id)? {
             return Err(invalid_operation_frontier(
                 operation,
                 "Worktree parent is not retained by the durable frontier",
@@ -105,9 +105,8 @@ impl CompositeAdmissionResolver<'_> {
                     .iter()
                     .any(|state| state.worktree_id() == source_id)
                 || !self
-                    .durable_operation_dag
-                    .is_ancestor_or_equal(parent_id, source.active_operation_id())
-                    .map_err(|error| invalid_operation_frontier(operation, error.to_string()))?
+                    .frontier_is_ancestor_or_equal(parent_id, source.active_operation_id())
+                    .map_err(|error| invalid_operation_frontier(operation, error))?
             {
                 return Err(invalid_operation_frontier(
                     operation,
@@ -218,7 +217,7 @@ impl CompositeAdmissionResolver<'_> {
         if worktree.space_id() != operation.space_id()
             || parent.space_id() != operation.space_id()
             || worktree.active_operation_id() != change.expected_operation_id()
-            || !self.durable_operation_dag.contains(parent.id())
+            || !self.frontier_retains(parent.id())?
             || !parent_view
                 .worktrees()
                 .iter()

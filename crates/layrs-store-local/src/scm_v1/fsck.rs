@@ -890,7 +890,9 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
     Ok(findings)
 }
 
-fn query_gc_expected(connection: &Connection) -> rusqlite::Result<Vec<(String, String, String)>> {
+pub(super) fn query_gc_expected(
+    connection: &Connection,
+) -> rusqlite::Result<Vec<(String, String, String)>> {
     query_triples(
         connection,
         "SELECT 'current_view', space_id, repository_view_id FROM current_repository_views

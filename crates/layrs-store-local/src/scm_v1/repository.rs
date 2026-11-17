@@ -431,6 +431,7 @@ impl NativeScmRepository {
         completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
         let validated = held.is_some();
+        let precheck = crate::perf::span("batch.precheck");
         // Reject an already-stale new request before installing any bytes. The
         // immutable reader uses this same exclusive capability, never another
         // Store lock (a held session reads through its own writer: its WAL
@@ -455,6 +456,8 @@ impl NativeScmRepository {
             }
         };
         store.verify_filesystem_identity().map_err(native_backend)?;
+        drop(precheck);
+        let cas_span = crate::perf::span("batch.cas_writer");
         let cas = match &held {
             Some(writer) => {
                 NativeCasWriter::with_session_writer(store, Arc::clone(&self.cas_faults), writer)
@@ -474,6 +477,7 @@ impl NativeScmRepository {
         if compact {
             plan_file_records(&cas, batch, chunks, &whole)?;
         }
+        drop(cas_span);
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
         // External chunks are read and checked here in order, then every
         // object is installed as by `put`, concurrently; outcomes and fault
@@ -516,10 +520,12 @@ impl NativeScmRepository {
 
         // Ends with a checked checkpoint below (durable before the caller
         // acts on the commit).
+        let writer_span = crate::perf::span("batch.writer_open");
         let connection = match held {
             Some(writer) => writer,
             None => store.begin_session_writer().map_err(schema_backend)?,
         };
+        drop(writer_span);
         self.hit(RepositoryFaultPoint::AfterWriterOpen)?;
         connection
             .execute_batch("BEGIN IMMEDIATE")
@@ -663,6 +669,7 @@ impl NativeScmRepository {
         }
         let validation = crate::perf::span("batch.validate");
         // A writer's reads: positive evidence only (council s17, B1a).
+        let immutables = crate::perf::span("batch.immutables");
         let reader = NativeTransactionalScmReader::new(connection, cas)?.with_positive_evidence();
         if publication.is_some() {
             // Objects this batch just wrote (`existed == false`) had no
@@ -679,9 +686,13 @@ impl NativeScmRepository {
         }
         // A held session validated this batch under the same exclusive
         // capability, before its journal (council s10, Q1).
+        drop(immutables);
         if !validated {
-            let resolver = CompositeAdmissionResolver::new(&reader, batch)?
-                .with_memo_scope(memo_scope.to_owned());
+            let resolver = {
+                let _span = crate::perf::span("batch.resolver_new");
+                CompositeAdmissionResolver::bounded(&reader, batch)?
+                    .with_memo_scope(memo_scope.to_owned())
+            };
             resolver.validate_batch()?;
         }
         drop(reader);
@@ -710,8 +721,8 @@ impl NativeScmRepository {
         self.hit(RepositoryFaultPoint::AfterAdmissions)?;
         apply_mutations(&guard, batch, self)?;
         drop(rows);
-        let gc_roots = crate::perf::span("batch.rebuild_gc_roots");
-        rebuild_gc_roots(&guard)?;
+        let gc_roots = crate::perf::span("batch.update_gc_roots");
+        update_gc_roots(&guard, batch)?;
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
@@ -1593,6 +1604,133 @@ fn apply_mutations(c: &Connection, b: &WriteBatch, repo: &NativeScmRepository) -
     Ok(())
 }
 
+/// The GC roots after `batch` (council s23): equal to `rebuild_gc_roots`,
+/// without rewriting every root of history on each write. Roots that follow
+/// mutable state (current Views, Operation heads, Worktrees, pins) are
+/// recomputed: their number follows the current state. Roots of immutable
+/// records (retained Operations and their rewrites, observations, markers,
+/// releases, admitted Products) never change once written: only this
+/// batch's are added. `fsck` checks the result against the full projection.
+fn update_gc_roots(c: &Connection, batch: &WriteBatch) -> Result<()> {
+    // Debug builds check the result against the full projection, when the
+    // roots were complete before (a test may seed rows without them).
+    #[cfg(debug_assertions)]
+    let complete_before = gc_roots_complete(c)?;
+    c.execute_batch(
+        "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','worktree','pin');
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'current_view',space_id,repository_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM current_repository_views;
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'operation_head',operation_id,resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_heads JOIN operations USING(operation_id);
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'worktree',w.worktree_id,o.resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id;
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'worktree',w.worktree_id,rvw.base_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER)
+             FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id
+             JOIN repository_view_worktrees rvw ON rvw.repository_view_id=o.resulting_view_id AND rvw.worktree_id=w.worktree_id
+             WHERE rvw.base_step_id IS NOT NULL;
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'worktree',w.worktree_id,rvw.materialized_tree_id,CAST(unixepoch('subsec')*1000 AS INTEGER)
+             FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id
+             JOIN repository_view_worktrees rvw ON rvw.repository_view_id=o.resulting_view_id AND rvw.worktree_id=w.worktree_id
+             WHERE rvw.materialized_tree_id IS NOT NULL;
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'pin',pin_id,object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM object_pins;",
+    )
+    .map_err(sql_backend)?;
+    let now = "CAST(unixepoch('subsec')*1000 AS INTEGER)";
+    for record in batch.entity_records() {
+        let (statements, id): (&[&str], &str) = match record {
+            EntityRecord::Operation(value) => (
+                &[
+                    "SELECT 'retained_operation',operation_id,resulting_view_id,{now} FROM operations WHERE operation_id=?1",
+                    "SELECT 'retained_operation',operation_id,old_step_id,{now} FROM operation_rewrites WHERE operation_id=?1",
+                    "SELECT 'retained_operation',operation_id,new_step_id,{now} FROM operation_rewrite_targets WHERE operation_id=?1",
+                ],
+                value.id().as_str(),
+            ),
+            EntityRecord::StepObservation(value) => (
+                &[
+                    "SELECT 'observation',observation_id,step_id,{now} FROM step_observations WHERE observation_id=?1",
+                ],
+                value.id().as_str(),
+            ),
+            EntityRecord::Marker(value) => (
+                &["SELECT 'marker',marker_id,target_step_id,{now} FROM markers WHERE marker_id=?1"],
+                value.id().as_str(),
+            ),
+            EntityRecord::Release(value) => (
+                &[
+                    "SELECT 'release',release_id,target_step_id,{now} FROM releases WHERE release_id=?1",
+                ],
+                value.id().as_str(),
+            ),
+            _ => continue,
+        };
+        for select in statements {
+            c.prepare_cached(&format!(
+                "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) {}",
+                select.replace("{now}", now)
+            ))
+            .and_then(|mut statement| statement.execute(params![id]))
+            .map_err(sql_backend)?;
+        }
+    }
+    // An admitted Product: carried by the batch, or admitted by it.
+    let products: std::collections::BTreeSet<&str> = batch
+        .canonical_objects()
+        .iter()
+        .filter_map(|object| match object {
+            CanonicalObject::Product(value) => Some(value.id().as_str()),
+            _ => None,
+        })
+        .chain(
+            batch
+                .admissions()
+                .iter()
+                .filter_map(|admission| match admission.object_id() {
+                    StoreObjectId::Product(id) => Some(id.as_str()),
+                    _ => None,
+                }),
+        )
+        .collect();
+    for product in products {
+        c.prepare_cached(&format!(
+            "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) SELECT 'product',p.product_object_id,p.product_object_id,{now} FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id WHERE p.product_object_id=?1"
+        ))
+        .and_then(|mut statement| statement.execute(params![product]))
+        .map_err(sql_backend)?;
+    }
+    #[cfg(debug_assertions)]
+    if complete_before {
+        assert!(
+            gc_roots_complete(c)?,
+            "incremental GC roots differ from the full projection"
+        );
+    }
+    Ok(())
+}
+
+/// Whether `gc_roots` holds exactly the full projection `fsck` expects.
+#[cfg(debug_assertions)]
+fn gc_roots_complete(c: &Connection) -> Result<bool> {
+    let mut statement = c
+        .prepare("SELECT root_kind, root_id, object_id FROM gc_roots")
+        .map_err(sql_backend)?;
+    let actual: std::collections::BTreeSet<(String, String, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(sql_backend)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_backend)?;
+    let expected: std::collections::BTreeSet<_> = super::fsck::query_gc_expected(c)
+        .map_err(sql_backend)?
+        .into_iter()
+        .collect();
+    Ok(actual == expected)
+}
+
+/// Every GC root, from scratch (the projection `fsck` checks).
+#[allow(dead_code)]
 fn rebuild_gc_roots(c: &Connection) -> Result<()> {
     c.execute("DELETE FROM gc_roots", []).map_err(sql_backend)?;
     c.execute("INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) SELECT 'product',p.product_object_id,p.product_object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id",[]).map_err(sql_backend)?;
