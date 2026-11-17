@@ -218,12 +218,8 @@ impl super::NativeWorkspace {
         single_pass: bool,
         refs: Option<scm_v1::FileRecordRefs>,
         damaged: bool,
-    ) -> Result<(
-        PreparedSnapshot,
-        scm_v1::change_index::ChangeIndex,
-        Option<PendingProjection>,
-    )> {
-        use scm_v1::change_index::{IndexEntry, StatKey};
+    ) -> Result<(PreparedSnapshot, NextIndex, Option<PendingProjection>)> {
+        use scm_v1::change_index::StatKey;
         let _span = layrs_store_local::perf::span("capture.indexed");
         // Entries written against a projection trust nothing until it is
         // supplied again (council s3, D1).
@@ -319,57 +315,8 @@ impl super::NativeWorkspace {
         )?;
         layrs_store_local::perf::count("capture.index_trusted", captured.trusted as u64);
         layrs_store_local::perf::count("capture.index_hashed", captured.hashed.len() as u64);
-        let next_span = layrs_store_local::perf::span("capture.next_index");
-        let hashed: std::collections::BTreeMap<&str, &std::fs::Metadata> = captured
-            .hashed
-            .iter()
-            .map(|(path, listed)| (path.as_str(), listed))
-            .collect();
-        // Nothing read and every entry of the index trusted: each file came
-        // from its own entry (same FileId), so the rebuilt index would hold
-        // exactly these entries.
-        let every_entry_trusted = captured.hashed.is_empty() && captured.trusted == index.len();
-        let mut next = if every_entry_trusted {
-            index.clone()
-        } else {
-            index.emptied()
-        };
-        for entry in captured.entries.iter().filter(|_| !every_entry_trusted) {
-            let CheckoutProjectionContent::File {
-                file_id,
-                byte_length,
-                executable,
-            } = &entry.content
-            else {
-                continue;
-            };
-            match hashed.get(entry.path.as_str()) {
-                Some(listed) => {
-                    if let Some(stat) = StatKey::of(listed) {
-                        next.insert(
-                            entry.path.clone(),
-                            IndexEntry {
-                                file_id: file_id.clone(),
-                                length: *byte_length,
-                                executable: *executable,
-                                stat,
-                                verified_at,
-                                native: None,
-                            },
-                        );
-                    }
-                }
-                None => {
-                    if let Some(old) = index
-                        .entry(&entry.path)
-                        .filter(|old| &old.file_id == file_id)
-                    {
-                        next.insert(entry.path.clone(), old.clone());
-                    }
-                }
-            }
-        }
-        drop(next_span);
+        let hashed = captured.hashed;
+        let trusted = captured.trusted;
         // Exactly the base projection (paths, FileIds, modes): its Tree is
         // the base projection's own, memoized when the projection was read,
         // whether or not some files were read again (a racy entry hashed to
@@ -396,8 +343,13 @@ impl super::NativeWorkspace {
                 }
             };
             if step_root == root {
+                let mut next = build_next_index(index, &base, &hashed, trusted, verified_at);
                 next.bind(&step_root, &base);
-                return Ok((PreparedSnapshot::unchanged(root), next, None));
+                return Ok((
+                    PreparedSnapshot::unchanged(root),
+                    NextIndex::Ready(next),
+                    None,
+                ));
             }
         }
         // Only the changed folders are built (council s20) when the base is
@@ -444,15 +396,22 @@ impl super::NativeWorkspace {
         };
         // Built from these very entries: the Tree of their projection.
         scm_v1::checkout::remember_projection_tree_id(&captured.entries, snapshot.root_tree_id());
-        // Recorded against the projection of the Tree this capture builds,
-        // the next base (council s3, D1).
-        next.bind(snapshot.root_tree_id(), &captured.entries);
+        // `next` is bound by the caller to `pending`'s projection, the Tree
+        // this capture builds (council s3, D1), while it accepts the capture.
         let pending = PendingProjection {
             root: snapshot.root_tree_id().clone(),
             entries: captured.entries,
             refs,
         };
-        Ok((snapshot, next, Some(pending)))
+        Ok((
+            snapshot,
+            NextIndex::Deferred {
+                hashed,
+                trusted,
+                verified_at,
+            },
+            Some(pending),
+        ))
     }
 
     pub(super) fn capture_projection(
@@ -535,6 +494,12 @@ pub(super) struct PendingProjection {
 }
 
 impl PendingProjection {
+    /// Binds `index` to this projection, the Tree the capture builds (the
+    /// next base; council s3, D1).
+    pub(super) fn bind(&self, index: &mut scm_v1::change_index::ChangeIndex) {
+        index.bind(&self.root, &self.entries);
+    }
+
     pub(super) fn save(&self, store_root: &Path) {
         scm_v1::projection_cache::save(
             store_root,
@@ -545,5 +510,111 @@ impl PendingProjection {
                 .as_ref()
                 .map(|refs| refs as &dyn scm_v1::projection_cache::FileRefs),
         );
+    }
+}
+
+/// The next change index: an entry for each file of the captured `entries`,
+/// proven now (`hashed`, at `verified_at`) or kept from `index` when it still
+/// names the same content. Built while the capture is accepted (council s22).
+pub(super) fn build_next_index(
+    index: &scm_v1::change_index::ChangeIndex,
+    entries: &[CheckoutProjectionEntry],
+    hashed: &[(String, std::fs::Metadata)],
+    trusted: usize,
+    verified_at: i64,
+) -> scm_v1::change_index::ChangeIndex {
+    use scm_v1::change_index::{IndexEntry, StatKey};
+    let _span = layrs_store_local::perf::span("capture.next_index");
+    let hashed_count = hashed.len();
+    let hashed: std::collections::BTreeMap<&str, &std::fs::Metadata> = hashed
+        .iter()
+        .map(|(path, listed)| (path.as_str(), listed))
+        .collect();
+    // Nothing read and every entry of the index trusted: each file came
+    // from its own entry (same FileId), so the rebuilt index would hold
+    // exactly these entries.
+    let every_entry_trusted = hashed_count == 0 && trusted == index.len();
+    let mut next = if every_entry_trusted {
+        index.clone()
+    } else {
+        index.emptied()
+    };
+    for entry in entries.iter().filter(|_| !every_entry_trusted) {
+        let CheckoutProjectionContent::File {
+            file_id,
+            byte_length,
+            executable,
+        } = &entry.content
+        else {
+            continue;
+        };
+        match hashed.get(entry.path.as_str()) {
+            Some(listed) => {
+                if let Some(stat) = StatKey::of(listed) {
+                    next.insert(
+                        entry.path.clone(),
+                        IndexEntry {
+                            file_id: file_id.clone(),
+                            length: *byte_length,
+                            executable: *executable,
+                            stat,
+                            verified_at,
+                            native: None,
+                        },
+                    );
+                }
+            }
+            None => {
+                if let Some(old) = index
+                    .entry(&entry.path)
+                    .filter(|old| &old.file_id == file_id)
+                {
+                    next.insert(entry.path.clone(), old.clone());
+                }
+            }
+        }
+    }
+    next
+}
+
+/// The change index a capture records next: built (no new projection), or
+/// left to the caller, who builds it from the base index and the pending
+/// projection while it accepts the capture.
+pub(super) enum NextIndex {
+    Ready(scm_v1::change_index::ChangeIndex),
+    Deferred {
+        hashed: Vec<(String, std::fs::Metadata)>,
+        trusted: usize,
+        verified_at: i64,
+    },
+}
+
+impl NextIndex {
+    /// The index, built now if it was left to the caller.
+    pub(super) fn build(
+        self,
+        index: &scm_v1::change_index::ChangeIndex,
+        pending: Option<&PendingProjection>,
+    ) -> scm_v1::change_index::ChangeIndex {
+        match self {
+            Self::Ready(next) => next,
+            Self::Deferred {
+                hashed,
+                trusted,
+                verified_at,
+            } => {
+                let mut next = build_next_index(
+                    index,
+                    pending.map_or(&[][..], |pending| &pending.entries[..]),
+                    &hashed,
+                    trusted,
+                    verified_at,
+                );
+                if let Some(pending) = pending {
+                    pending.bind(&mut next);
+                }
+                next
+            }
+        }
     }
 }

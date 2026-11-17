@@ -718,21 +718,48 @@ impl NativeWorkspace {
                         }
                     }
                 };
-                let (plan, next, pending) = plan;
+                let (plan, mut next, pending) = plan;
                 let store_root = self.store_root();
                 if let CapturePlan::Change(change) = &plan {
                     let _span = layrs_store_local::perf::span("capture.accept");
-                    // The new Tree's projection is recorded (derived data)
-                    // while the capture is accepted.
-                    std::thread::scope(|scope| {
+                    // The new Tree's projection and the next change index
+                    // (both caches) are recorded while the capture is
+                    // accepted: their work, proportional to the checkout,
+                    // overlaps the acceptance (council s22). Recorded before
+                    // the acceptance ends, a cache bound to a capture that
+                    // then fails is only a miss for the next command.
+                    let previous = index.as_ref();
+                    let recorded = std::thread::scope(|scope| {
                         if let Some(pending) = &pending {
                             scope.spawn(move || pending.save(store_root));
                         }
-                        self.client.accept(change)
-                    })?;
+                        let recording = next.take().zip(previous).map(|(next, previous)| {
+                            let pending = pending.as_ref();
+                            scope.spawn(move || {
+                                let _span = layrs_store_local::perf::span("capture.index_record");
+                                let mut next = next.build(previous, pending);
+                                next.set_base_step(change.step_id());
+                                // An idle capture that proved nothing new
+                                // writes nothing.
+                                let unchanged = next.same_entries(previous);
+                                if !unchanged && next.save(store_root).is_err() {
+                                    layrs_store_local::perf::count("capture.index_unsaved", 1);
+                                }
+                            })
+                        });
+                        let accepted = self.client.accept(change);
+                        if let Some(recording) = recording {
+                            let _ = recording.join();
+                        }
+                        accepted
+                    });
+                    recorded?;
                 } else if let Some(pending) = &pending {
                     pending.save(store_root);
                 }
+                let next = next
+                    .zip(index.as_ref())
+                    .map(|(next, index)| next.build(index, pending.as_ref()));
                 Ok((plan, next))
             })();
             match attempt {
@@ -741,9 +768,11 @@ impl NativeWorkspace {
                     | NativeClientError::Store(layrs_store::scm::StoreError::CasMismatch { .. }),
                 ) => continue,
                 Ok((plan, next)) => {
-                    // Recorded only after acceptance; a cache, so a failed
-                    // write only makes the next capture read more. An idle
-                    // capture that proved nothing new writes nothing.
+                    // A change recorded its index while it was accepted
+                    // (`next` was taken). Otherwise recorded now; a cache,
+                    // so a failed write only makes the next capture read
+                    // more. An idle capture that proved nothing new writes
+                    // nothing.
                     let unchanged = match (&next, &index) {
                         (Some(next), Some(index)) => next.same_entries(index),
                         _ => false,
