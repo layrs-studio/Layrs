@@ -258,11 +258,19 @@ impl NativeClient {
     /// (council s13 Q4). A pending recovery, or a Worktree that is not
     /// ready, refuses.
     pub fn worktree_base_step(&self, worktree_id: &WorktreeId) -> Result<StepId> {
-        let store = self.open_store()?;
-        if layrs_store_local::scm_v1::materialize::recovery_pending(&store, worktree_id)? {
+        self.worktree_base_step_with(&self.open_store()?, worktree_id)
+    }
+
+    /// `worktree_base_step` on an already open Store.
+    pub fn worktree_base_step_with(
+        &self,
+        store: &layrs_store_local::scm_v1::NativeStoreOpen,
+        worktree_id: &WorktreeId,
+    ) -> Result<StepId> {
+        if layrs_store_local::scm_v1::materialize::recovery_pending(store, worktree_id)? {
             return Err(NativeClientError::NeedsRepair);
         }
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(store)?;
         let worktree = reader
             .get_worktree(worktree_id)?
             .ok_or(NativeClientError::Missing("Worktree"))?;

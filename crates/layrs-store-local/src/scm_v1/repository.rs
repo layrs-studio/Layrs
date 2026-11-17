@@ -428,33 +428,26 @@ impl NativeScmRepository {
         // holds the journal). Any existing receipt preserves the original
         // CAS-before-replay path, including digest collisions and corrupt
         // receipts.
-        store.verify_filesystem_identity().map_err(native_backend)?;
+        // The batch's own writer serves every read before its transaction
+        // (the precheck, the CAS catalog), as a held session's does: one
+        // SQLite connection per batch.
         let held = match held {
-            Some(writer) => {
-                let writer = Mutex::new(writer);
-                Self::precheck_new(&writer, batch)?;
-                Some(writer.into_inner().map_err(|_| poisoned())?)
-            }
+            Some(writer) => writer,
             None => {
-                let connection =
-                    super::sqlite::open_read_only(store.layout().sqlite_path(), SHORT_WAIT)
-                        .map_err(schema_backend)?;
-                super::sqlite::validate_store_identity(&connection, store.store_id())
-                    .map_err(schema_backend)?;
-                Self::precheck_new(&Mutex::new(connection), batch)?;
-                None
+                let _span = crate::perf::span("batch.writer_open");
+                store.begin_session_writer().map_err(schema_backend)?
             }
+        };
+        let held = {
+            let writer = Mutex::new(held);
+            Self::precheck_new(&writer, batch)?;
+            writer.into_inner().map_err(|_| poisoned())?
         };
         store.verify_filesystem_identity().map_err(native_backend)?;
         drop(precheck);
         let cas_span = crate::perf::span("batch.cas_writer");
-        let cas = match &held {
-            Some(writer) => {
-                NativeCasWriter::with_session_writer(store, Arc::clone(&self.cas_faults), writer)
-            }
-            None => NativeCasWriter::with_fault_injector(store, Arc::clone(&self.cas_faults)),
-        }
-        .map_err(cas_backend)?;
+        let cas = NativeCasWriter::with_session_writer(store, Arc::clone(&self.cas_faults), &held)
+            .map_err(cas_backend)?;
         // A chunk a `whole` manifest of the batch names, or whose registered
         // record is whole, is checked in the file domain and planned as its
         // File's record.
@@ -510,12 +503,7 @@ impl NativeScmRepository {
 
         // Ends with a checked checkpoint below (durable before the caller
         // acts on the commit).
-        let writer_span = crate::perf::span("batch.writer_open");
-        let connection = match held {
-            Some(writer) => writer,
-            None => store.begin_session_writer().map_err(schema_backend)?,
-        };
-        drop(writer_span);
+        let connection = held;
         self.hit(RepositoryFaultPoint::AfterWriterOpen)?;
         connection
             .execute_batch("BEGIN IMMEDIATE")

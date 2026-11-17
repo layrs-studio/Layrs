@@ -353,6 +353,29 @@ impl NativeWorkspace {
         Ok(())
     }
 
+    /// Holds `store`, a shared session this process opened on this
+    /// Workspace's Store (its discovery's), for the reads that follow, as
+    /// `hold_session` would (none is opened again). Kept until the next
+    /// `release_session`, which every write path makes first.
+    pub fn adopt_session(&self, store: scm_v1::NativeStoreOpen) {
+        if let Ok(mut held) = self.held.0.lock() {
+            if held.is_none() {
+                *held = Some(std::sync::Arc::new(store));
+            }
+        }
+    }
+
+    /// Ends a session held by `adopt_session` (or `hold_session`).
+    pub fn release_held_session(&self) {
+        self.release_session();
+    }
+
+    /// `NativeClient::worktree_base_step`, in the held session if one is.
+    pub fn worktree_base_step(&self, worktree_id: &WorktreeId) -> Result<StepId> {
+        self.client
+            .worktree_base_step_with(&*self.session_store()?, worktree_id)
+    }
+
     /// The held session if any, else a session of its own.
     pub(super) fn session_store(&self) -> Result<SessionStore> {
         let held = self.held.0.lock().ok().and_then(|held| held.clone());

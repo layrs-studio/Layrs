@@ -21,6 +21,9 @@ struct Context {
     /// The project's state as discovery read it (Layer names and ids, the
     /// project folder): read once per command.
     project_state: layrs_client_core::native_scm::WorkspaceState,
+    /// The shared session the project's discovery opened: kept only by a
+    /// merge (its first reads), released by every other command at once.
+    project_session: Option<layrs_store_local::scm_v1::NativeStoreOpen>,
 }
 
 fn context(cli: &Cli) -> Result<Context, CliError> {
@@ -32,23 +35,20 @@ fn context(cli: &Cli) -> Result<Context, CliError> {
         .unwrap_or_else(std::env::current_dir)
         .map_err(error)?;
     let start = std::path::absolute(&start).map_err(error)?;
-    // Each discovery's opening session is released at once (a Room
-    // command may write); only the state it read is kept.
-    let discover = |root: &Path| {
-        NativeWorkspace::discover_session(root)
-            .map(|(workspace, _, state)| (workspace, state))
-            .map_err(error)
-    };
+    // A discovery's opening session is kept for the project only (see
+    // `Context::project_session`); only the state it read is kept otherwise.
+    let discover = |root: &Path| NativeWorkspace::discover_session(root).map_err(error);
     if let Some((room_root, project_root)) = virtual_room_origin(&start).map_err(error)? {
-        let (project, project_state) = discover(&project_root)?;
+        let (project, session, project_state) = discover(&project_root)?;
         let current_room = room_at(&project, &room_root)?;
         return Ok(Context {
             project,
             current_room,
             project_state,
+            project_session: Some(session),
         });
     }
-    let (here, here_state) = discover(&start)?;
+    let (here, here_session, here_state) = discover(&start)?;
     // A physical Room is a Worktree of the same Store: always act from the
     // project folder that owns the Store, so merges reach its files.
     let project_root = here
@@ -58,15 +58,17 @@ fn context(cli: &Cli) -> Result<Context, CliError> {
         .to_path_buf();
     let here_root = PathBuf::from(here_state.worktree.checkout_root());
     let current_room = room_at(&here, &here_root)?;
-    let (project, project_state) = if same_path(&project_root, &here_root) {
-        (here, here_state)
+    let (project, project_session, project_state) = if same_path(&project_root, &here_root) {
+        (here, here_session, here_state)
     } else {
+        drop(here_session);
         discover(&project_root)?
     };
     Ok(Context {
         project,
         current_room,
         project_state,
+        project_session: Some(project_session),
     })
 }
 
@@ -184,8 +186,21 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
         layrs_store_local::scm_v1::request_catalog_warmup();
     }
     let span = layrs_store_local::perf::span("room.context");
-    let context = context(cli)?;
+    let mut context = context(cli)?;
     drop(span);
+    // Only a merge's first reads continue in the discovery's session.
+    let session = context.project_session.take();
+    let session = match command {
+        RoomCommand::Merge {
+            preview: false,
+            capture: false,
+            ..
+        } => session,
+        _ => {
+            drop(session);
+            None
+        }
+    };
     match command {
         RoomCommand::Location { action, global } => {
             location(Some(&context.project), action, *global)
@@ -243,7 +258,12 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             let span = layrs_store_local::perf::span("room.selected");
             let mut room = selected(&context, name.as_ref())?;
             drop(span);
-            merge(
+            // Held until the fast-forward attempt releases it (every path
+            // that writes releases it first).
+            if let Some(session) = session {
+                context.project.adopt_session(session);
+            }
+            let merged = merge(
                 cli,
                 &context.project,
                 &context.project_state,
@@ -251,7 +271,9 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
                 into.as_deref(),
                 *preview,
                 *capture,
-            )
+            );
+            context.project.release_held_session();
+            merged
         }
         RoomCommand::Drop { name, force, full } => {
             let room = selected(&context, name.as_ref())?;
@@ -606,7 +628,6 @@ fn merge(
         let worktree = layrs_core::scm::WorktreeId::parse(worktree.to_owned())
             .map_err(|e| CliError::runtime(e.to_string()))?;
         project
-            .client()
             .worktree_base_step(&worktree)
             .map_err(error)?
             .as_str()
@@ -649,15 +670,34 @@ fn merge(
     };
     if !preview {
         let span = layrs_store_local::perf::span("room.merge.fast_forward_attempt");
-        let attempt = project.fast_forward_layer(&target_id, &parse(&expected)?, &parse(&head)?);
+        // The Room's record after a fast-forward is written and synced
+        // meanwhile; it replaces the old one only once the merge succeeded.
+        let merged_record = RoomRecord {
+            merged_step_id: Some(head.clone()),
+            ..room.clone()
+        };
+        let (attempt, staged) = std::thread::scope(|scope| {
+            let staged = scope.spawn(|| project.stage_room_update(&merged_record));
+            let attempt =
+                project.fast_forward_layer(&target_id, &parse(&expected)?, &parse(&head)?);
+            let staged = staged.join().unwrap_or(Err(
+                layrs_client_core::native_scm::NativeClientError::InvalidState(
+                    "staging the Room record panicked",
+                ),
+            ));
+            Ok::<_, CliError>((attempt, staged))
+        })?;
         drop(span);
         match attempt {
             Ok(materialized) => {
                 room.merged_step_id = Some(head.clone());
                 let _span = layrs_store_local::perf::span("room.merge.update_room");
-                project.update_room(room).map_err(|e| {
-                    error(format!("recording the merge in Room {}: {e}", room.name))
-                })?;
+                staged
+                    .and_then(|staged| staged.commit())
+                    .or_else(|_| project.update_room(room))
+                    .map_err(|e| {
+                        error(format!("recording the merge in Room {}: {e}", room.name))
+                    })?;
                 return Ok(Rendered {
                     human: with_note(format!(
                         "Room {} merged into {target} (fast-forward to {head}){}",

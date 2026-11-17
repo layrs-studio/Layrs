@@ -80,7 +80,7 @@ pub use room_location::{
 mod rooms;
 pub use rooms::{
     default_rooms_parent, is_virtual_room_root, room_layer_name, unregister_virtual_room,
-    validate_room_name, virtual_room_origin, RoomKind, RoomRecord,
+    validate_room_name, virtual_room_origin, RoomKind, RoomRecord, StagedRoomUpdate,
 };
 mod worktree_operations;
 pub use remote::{

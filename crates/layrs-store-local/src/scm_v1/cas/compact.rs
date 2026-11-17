@@ -93,6 +93,56 @@ fn pack_load_gate(key: &(String, OsString)) -> Option<Arc<Mutex<()>>> {
         .map(|mut gates| Arc::clone(gates.entry(key.clone()).or_default()))
 }
 
+/// Candidates of at most this many raw bytes are copied clustered
+/// (`copy_clustered`, held in memory meanwhile).
+const CLUSTER_MAX_RAW: u64 = 64 * 1024 * 1024;
+/// Raw bytes a clustered pack's records share a block up to (council s24
+/// phase 0: 256 KiB brings 1,000 versions of a 100-entry folder from 4.7 to
+/// 0.6 KiB per version).
+const CLUSTER_BLOCK: usize = 256 * 1024;
+
+/// Where a record goes in a clustered copy: its kind, then for a Tree its
+/// first and last entry names (as stored), which the versions of one folder
+/// mostly share.
+type ClusterKey = (u8, Vec<u8>, Vec<u8>);
+
+fn cluster_key(loaded: &LoadedPack, raw: &[u8], record: pack2::RecordRef) -> ClusterKey {
+    let pack2::RecordRef::Explicit(ordinal) = record else {
+        return (FILE_KIND, Vec::new(), Vec::new());
+    };
+    let Some((code, _, location)) = loaded.index.explicit(ordinal) else {
+        return (0, Vec::new(), Vec::new());
+    };
+    if code != pack2::kind_code(StoreObjectKind::Tree) {
+        return (code, Vec::new(), Vec::new());
+    }
+    let Ok(body) = pack2::record_body(raw, location, code, &loaded.path) else {
+        return (code, Vec::new(), Vec::new());
+    };
+    // A key only orders records: a malformed body gets an empty one (the
+    // copy validates it).
+    const NAME: &[u8] = b"\"name\":\"";
+    let name_at = |start: usize| -> Vec<u8> {
+        let rest = &body[start + NAME.len()..];
+        let mut end = 0;
+        while end < rest.len() && !(rest[end] == b'"' && (end == 0 || rest[end - 1] != b'\\')) {
+            end += 1;
+        }
+        rest[..end].to_vec()
+    };
+    let first = body
+        .windows(NAME.len())
+        .position(|window| window == NAME)
+        .map(name_at)
+        .unwrap_or_default();
+    let last = body
+        .windows(NAME.len())
+        .rposition(|window| window == NAME)
+        .map(name_at)
+        .unwrap_or_default();
+    (code, first, last)
+}
+
 fn alias_corruption(path: &Path, error: impl fmt::Display) -> CasError {
     pack2::pack2_corruption(
         path,
@@ -1011,6 +1061,18 @@ impl NativeCas {
             .collect();
         let mut packs = Vec::with_capacity(candidates.len());
         let mut keys_of = Vec::with_capacity(candidates.len());
+        // Candidates that fit in memory are copied clustered (council s24,
+        // phase 1): every record read first, then written grouped by kind
+        // and, for Trees, by folder lineage, in larger blocks.
+        let raw_total: u64 = candidates
+            .iter()
+            .filter_map(|position| catalog.packs.get(*position))
+            .flat_map(|registered| registered.pack.index.blocks.iter())
+            .map(|block| u64::from(block.raw_len))
+            .sum();
+        if raw_total <= CLUSTER_MAX_RAW {
+            return self.copy_clustered(catalog, candidates, open, &whole_files);
+        }
         for &position in candidates {
             // Only what the candidate's own bytes prove (corruption, a wrong
             // id, a registered file missing) names it; a plain I/O failure
@@ -1066,6 +1128,94 @@ impl NativeCas {
                 loaded.is_inline(),
             ));
         }
+        Ok((packs, keys_of))
+    }
+
+    /// `copy_candidates`, clustered: every record of every candidate is read
+    /// (each block once, kept in memory), then written in lineage order (by
+    /// kind; Trees by their first and last entry names, the versions of one
+    /// folder; each group in the candidates' order, oldest first) into
+    /// blocks of `CLUSTER_BLOCK` raw bytes. The same records, checks and
+    /// remap as the plain copy; only their places differ.
+    fn copy_clustered(
+        &self,
+        catalog: &RegisteredCatalog,
+        candidates: &[usize],
+        open: &mut OpenPack,
+        whole_files: &HashSet<[u8; 32]>,
+    ) -> Result<(Vec<CandidatePack>, CandidateKeys), ConsolidationFailure> {
+        let general = |error| ConsolidationFailure { pack: None, error };
+        let failed = |position: usize, error: CasError| match error {
+            error @ CasError::Io { .. } => ConsolidationFailure { pack: None, error },
+            error => ConsolidationFailure {
+                pack: Some(position),
+                error,
+            },
+        };
+        let mut packs = Vec::with_capacity(candidates.len());
+        let mut keys_of = Vec::with_capacity(candidates.len());
+        let mut loaded_of: Vec<&LoadedPack> = Vec::with_capacity(candidates.len());
+        let mut raws: Vec<Arc<Vec<u8>>> = Vec::new();
+        // (lineage key, order read, candidate, raw block, record)
+        let mut records: Vec<(ClusterKey, usize, usize, usize, pack2::RecordRef)> = Vec::new();
+        for (candidate, &position) in candidates.iter().enumerate() {
+            let registered = catalog.packs.get(position).ok_or_else(|| {
+                failed(
+                    position,
+                    io_error(
+                        "consolidate CAS packs",
+                        &self.objects_dir,
+                        io::Error::other("candidate pack is not registered"),
+                    ),
+                )
+            })?;
+            let loaded = &registered.pack;
+            let index = &loaded.index;
+            keys_of.push(loaded.logical_keys().map_err(|e| failed(position, e))?);
+            for (block, block_records) in index.records_by_block().into_iter().enumerate() {
+                if block_records.is_empty() {
+                    continue;
+                }
+                let raw = catalog
+                    .block(self, position, block as u32)
+                    .map_err(|e| failed(position, e))?;
+                raws.push(raw);
+                let at = raws.len() - 1;
+                for record in block_records {
+                    let key = cluster_key(loaded, &raws[at], record);
+                    records.push((key, records.len(), candidate, at, record));
+                }
+            }
+            loaded_of.push(loaded);
+            packs.push((
+                registered.seq,
+                loaded.name.clone(),
+                index.digest,
+                loaded.is_inline(),
+            ));
+        }
+        records.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+        open.builder.set_block_target(CLUSTER_BLOCK);
+        let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
+        let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
+        for (_, _, candidate, at, record) in records {
+            let position = candidates[candidate];
+            self.copy_record(
+                open,
+                loaded_of[candidate],
+                &raws[at],
+                record,
+                whole_files,
+                &mut explicit_written,
+                &mut files_written,
+            )
+            .map_err(|failure| match failure {
+                CopyFailure::Source(error) => failed(position, error),
+                CopyFailure::Target(error) => general(error),
+            })?;
+            self.spill_if_over(open).map_err(general)?;
+        }
+        crate::perf::count("cas.consolidate_clustered", 1);
         Ok((packs, keys_of))
     }
 

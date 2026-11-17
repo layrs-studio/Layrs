@@ -1115,6 +1115,9 @@ pub(super) struct FileIdentity {
 pub(super) struct Pack2Builder {
     /// `PACK2_VERSION`, or `PACK2_VERSION_LARGE_TREES` in Store format 7.
     version: u32,
+    /// Raw bytes records share a block up to (`BLOCK_TARGET`, or more for a
+    /// consolidated pack: `set_block_target`).
+    block_target: usize,
     block: Vec<u8>,
     /// Records of the open block: (explicit index or file index, offset).
     blocks: Vec<BlockInfo>,
@@ -1144,6 +1147,7 @@ impl Pack2Builder {
         out.write_all(&header_bytes(version))?;
         Ok(Self {
             version,
+            block_target: BLOCK_TARGET,
             block: Vec::with_capacity(BLOCK_TARGET),
             blocks: Vec::new(),
             block_hashes: Vec::new(),
@@ -1182,6 +1186,19 @@ impl Pack2Builder {
         Ok(())
     }
 
+    /// Lets records share blocks of up to `target` raw bytes (at most a
+    /// record's limit, which every reader accepts as a block): a
+    /// consolidated pack whose versions of one folder sit together compresses
+    /// them against each other (council s24, phase 1).
+    pub(super) fn set_block_target(&mut self, target: usize) {
+        self.block_target = target.clamp(BLOCK_TARGET, MAX_RECORD_BYTES);
+    }
+
+    /// Whether a record of `body_len` bytes gets a block of its own here.
+    fn alone(&self, body_len: usize) -> bool {
+        record_header(0, body_len).len() + body_len > self.block_target
+    }
+
     /// Appends one record and returns where it is. A large body is encoded
     /// here unless the caller already did (`encoded`, outside any lock).
     fn place(
@@ -1195,7 +1212,7 @@ impl Pack2Builder {
             return Err(io::Error::other("record exceeds the pack record limit"));
         }
         let length = body.len() as u32;
-        if is_large(body.len()) {
+        if self.alone(body.len()) {
             // Flushing first keeps every block index final once assigned.
             self.flush(out)?;
             let block = match encoded {
@@ -1206,7 +1223,7 @@ impl Pack2Builder {
             return Ok(location_of(index, 0, length));
         }
         let header = record_header(kind, body.len());
-        if self.block.len() + header.len() + body.len() > BLOCK_TARGET {
+        if self.block.len() + header.len() + body.len() > self.block_target {
             self.flush(out)?;
         }
         let offset = self.block.len() as u32;

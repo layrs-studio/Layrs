@@ -242,25 +242,34 @@ impl NativeWorkspace {
 
     /// Replaces the record of an existing Room (same name).
     pub fn update_room(&self, record: &RoomRecord) -> Result<()> {
+        self.stage_room_update(record)?.commit()
+    }
+
+    /// `update_room` in two halves: the new record is written and synced
+    /// beside the old one now (e.g. while the operation it records runs),
+    /// and replaces it only on `commit`; dropped uncommitted, it is removed.
+    pub fn stage_room_update(&self, record: &RoomRecord) -> Result<StagedRoomUpdate> {
         self.room(&record.name)?;
         let directory = self.rooms_registry();
         let target = directory.join(format!("{}.json", record.name));
         let staged = directory.join(format!(".{}.{}.tmp", record.name, uuid::Uuid::new_v4()));
         let bytes = serde_json::to_vec_pretty(record)
             .map_err(|_| NativeClientError::InvalidState("Room record encoding failed"))?;
+        let update = StagedRoomUpdate {
+            staged,
+            target,
+            committed: false,
+        };
         {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&staged)?;
+                .open(&update.staged)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
         }
-        rename_retrying(&staged, &target).inspect_err(|_| {
-            let _ = std::fs::remove_file(&staged);
-        })?;
-        Ok(())
+        Ok(update)
     }
 
     /// Retires a Room's Worktree: its history stays, but it is no longer
@@ -412,6 +421,31 @@ fn read_record(path: &Path) -> Result<RoomRecord> {
 /// access: an antivirus or indexer briefly holding the old record open makes
 /// the replacement fail with "access denied", as git for Windows retries its
 /// own renames. Any other error, or a refusal that lasts, is returned.
+/// A Room record written and synced beside the one it replaces
+/// (`NativeWorkspace::stage_room_update`).
+pub struct StagedRoomUpdate {
+    staged: PathBuf,
+    target: PathBuf,
+    committed: bool,
+}
+
+impl StagedRoomUpdate {
+    /// Replaces the Room's record with the staged one.
+    pub fn commit(mut self) -> Result<()> {
+        rename_retrying(&self.staged, &self.target)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedRoomUpdate {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.staged);
+        }
+    }
+}
+
 fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut delay = std::time::Duration::from_millis(2);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
