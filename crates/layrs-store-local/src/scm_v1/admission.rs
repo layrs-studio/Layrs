@@ -1,6 +1,6 @@
 //! Composite admission view over durable state and one immutable WriteBatch.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -67,9 +67,11 @@ pub struct CompositeAdmissionResolver<'a> {
     /// Files proven closed in a Space by a durably admitted manifest, from
     /// the admission bitmaps (council s13 Q2), and those whose closure a
     /// finished walk already charged.
-    durably_closed_files: Mutex<BTreeSet<(SpaceId, FileId)>>,
-    charged_files: Mutex<BTreeSet<(SpaceId, FileId)>>,
-    verified_files: Mutex<BTreeMap<FileId, bool>>,
+    /// Per Space, answered without cloning a key (council s21: a Tree of
+    /// 10,000 Files asks 10,000 times).
+    durably_closed_files: Mutex<HashMap<SpaceId, HashSet<FileId>>>,
+    charged_files: Mutex<HashMap<SpaceId, HashSet<FileId>>>,
+    verified_files: Mutex<HashMap<FileId, bool>>,
     ancestor_cache: Mutex<BTreeMap<(StepId, StepId), bool>>,
     ancestor_sets: Mutex<BTreeMap<StepId, BTreeSet<StepId>>>,
     operation_step_closures: Mutex<BTreeMap<OperationId, BTreeSet<StepId>>>,
@@ -226,9 +228,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
             admitted_cache: Mutex::new(BTreeMap::new()),
             closed_admissions: Mutex::new(BTreeSet::new()),
             file_manifest_cache: Mutex::new(BTreeMap::new()),
-            durably_closed_files: Mutex::new(BTreeSet::new()),
-            charged_files: Mutex::new(BTreeSet::new()),
-            verified_files: Mutex::new(BTreeMap::new()),
+            durably_closed_files: Mutex::new(HashMap::new()),
+            charged_files: Mutex::new(HashMap::new()),
+            verified_files: Mutex::new(HashMap::new()),
             ancestor_cache: Mutex::new(BTreeMap::new()),
             ancestor_sets: Mutex::new(BTreeMap::new()),
             operation_step_closures: Mutex::new(BTreeMap::new()),
@@ -360,10 +362,11 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// (council s13 Q2) and has no manifest in this batch.
     pub(super) fn durably_closed(&self, file_id: &FileId, space: &SpaceId) -> bool {
         !self.manifests_by_file.contains_key(file_id)
-            && self
-                .durably_closed_files
-                .lock()
-                .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
+            && self.durably_closed_files.lock().is_ok_and(|proven| {
+                proven
+                    .get(space)
+                    .is_some_and(|files| files.contains(file_id))
+            })
     }
 
     /// Answers, in bulk, the per-File metadata questions that validating the
@@ -375,13 +378,13 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// per-File path's.
     fn prefetch_tree_files(&self) -> Result<()> {
         let _span = crate::perf::span("validate.prefetch_tree_files");
-        let mut files = BTreeSet::new();
+        let mut files: Vec<&FileId> = Vec::new();
         for object in self.batch.canonical_objects() {
             if let CanonicalObject::Tree(tree) = object {
                 for entry in tree.entries() {
                     if let Some(file) = entry.target().file_id() {
                         if !self.manifests_by_file.contains_key(file) {
-                            files.insert(file);
+                            files.push(file);
                         }
                     }
                 }
@@ -390,7 +393,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
         if files.is_empty() {
             return Ok(());
         }
-        let files: Vec<&FileId> = files.into_iter().collect();
+        // Sorted and unique, as a set would give, without its inserts.
+        files.sort_unstable();
+        files.dedup();
         let present = self.reader.files_present_metadata(&files)?;
         if let Ok(mut cache) = self.verified_files.lock() {
             for file in present {
@@ -435,7 +440,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 .filter(|file| !closed.contains(*file))
                 .collect();
             if let Ok(mut proven) = self.durably_closed_files.lock() {
-                proven.extend(closed.into_iter().map(|file| (space.clone(), file)));
+                proven.entry(space.clone()).or_default().extend(closed);
             }
             self.prefetch_admitted_manifests(&remaining, space)?;
         }
@@ -733,7 +738,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
         let mut visited = BTreeSet::new();
         // Files closed from the bitmaps, charged one object visit each as
         // their manifest would have been (council s13 Q2).
-        let mut visited_files: BTreeSet<FileId> = BTreeSet::new();
+        let mut visited_files: HashSet<FileId> = HashSet::new();
         // Beside an unreadable pack the induction below does not hold: a
         // durably admitted object's closure may have been in that pack, so
         // its dependencies are walked (council s18 r2).
@@ -819,11 +824,23 @@ impl<'a> CompositeAdmissionResolver<'a> {
                     edge_visits,
                     MAX_ADMISSION_EDGE_VISITS,
                 )?;
-                for file_id in file_ids {
-                    if self.durably_closed(file_id, space) {
-                        let charged = self.charged_files.lock().is_ok_and(|charged| {
-                            charged.contains(&(space.clone(), file_id.clone()))
-                        });
+                // Each lock once per Tree, not once per File.
+                let mut open = Vec::new();
+                {
+                    let closed_files = self.durably_closed_files.lock().ok();
+                    let closed_here = closed_files.as_ref().and_then(|closed| closed.get(space));
+                    let charged_files = self.charged_files.lock().ok();
+                    let charged_here = charged_files
+                        .as_ref()
+                        .and_then(|charged| charged.get(space));
+                    for file_id in file_ids {
+                        let closed = !self.manifests_by_file.contains_key(file_id)
+                            && closed_here.is_some_and(|closed| closed.contains(file_id));
+                        if !closed {
+                            open.push(file_id);
+                            continue;
+                        }
+                        let charged = charged_here.is_some_and(|charged| charged.contains(file_id));
                         if !charged && visited_files.insert(file_id.clone()) {
                             let visits = self.admission_visits.fetch_add(1, Ordering::Relaxed) + 1;
                             require_budget(
@@ -833,8 +850,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
                             )?;
                             crate::perf::count("admission.durable_closed", 1);
                         }
-                        continue;
                     }
+                }
+                for file_id in open {
                     let manifest = self
                         .admissible_manifest_for_file(file_id, space)?
                         .ok_or_else(|| admission_rejected(&object_id))?;
@@ -846,7 +864,10 @@ impl<'a> CompositeAdmissionResolver<'a> {
             closed.extend(visited.into_iter().map(|object| (space.clone(), object)));
         }
         if let Ok(mut charged) = self.charged_files.lock() {
-            charged.extend(visited_files.into_iter().map(|file| (space.clone(), file)));
+            charged
+                .entry(space.clone())
+                .or_default()
+                .extend(visited_files);
         }
         Ok(())
     }
