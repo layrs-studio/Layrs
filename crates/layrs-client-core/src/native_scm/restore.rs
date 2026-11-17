@@ -682,10 +682,12 @@ impl NativeWorkspace {
         drop(reader);
         drop(store);
         drop(prepare_span);
-        // The materializer takes the Store exclusively.
-        self.release_session();
+        // The materializer takes the Store exclusively: the held session is
+        // handed over for its first reads and the staging, and released
+        // before that.
+        let session = self.take_held_session();
         let _span = layrs_store_local::perf::span("transition.materialize");
-        self.materialize_projection(&before, &after, &batch, faults)
+        self.materialize_projection(&before, &after, &batch, faults, session)
     }
 
     /// Materializes `before` -> `after` together with `batch`: every written
@@ -697,6 +699,7 @@ impl NativeWorkspace {
         after: &[CheckoutProjectionEntry],
         batch: &WriteBatch,
         faults: &dyn MaterializationFaults,
+        session: Option<scm_v1::NativeStoreOpen>,
     ) -> Result<()> {
         // `after` by path: searched in place when sorted (a projection is),
         // else through a map.
@@ -715,8 +718,21 @@ impl NativeWorkspace {
         // `end_staging` releases it: never retained across journal/commit
         // phases. Every byte is proven by the manifest verifier and by the
         // materializer's `VerifiedWriter`.
-        let staging_store = restore_projection::SharedStagingStore::new(|| self.open_store());
-        let mut end_staging = || staging_store.end();
+        // A handed session serves the materializer's first reads, then the
+        // staging's first reader (the materializer puts it back here).
+        let session = std::sync::Mutex::new(session);
+        let staging_store = restore_projection::SharedStagingStore::new(|| {
+            match session.lock().ok().and_then(|mut slot| slot.take()) {
+                Some(store) => Ok(store),
+                None => self.open_store(),
+            }
+        });
+        let mut end_staging = || {
+            staging_store.end();
+            if let Ok(mut slot) = session.lock() {
+                drop(slot.take());
+            }
+        };
         let write_shared = |path: &str, output: &mut dyn std::io::Write| {
             let entry =
                 find(path).ok_or_else(|| std::io::Error::other("prepared restore file absent"))?;
@@ -731,7 +747,7 @@ impl NativeWorkspace {
                 message: "unexpected restore chunk source".into(),
             })
         };
-        scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
+        let applied = scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
             self.store_root(),
             self.store_identity(),
             self.metadata_identity(),
@@ -746,8 +762,13 @@ impl NativeWorkspace {
                 write_file: &mut write_file,
                 end_staging: Some(&mut end_staging),
                 write_file_shared: Some(&write_shared),
+                session: Some(&session),
             },
-        )?;
+        );
+        if let Ok(mut slot) = session.lock() {
+            drop(slot.take());
+        }
+        applied?;
         Ok(())
     }
 }

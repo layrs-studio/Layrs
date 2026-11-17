@@ -268,7 +268,7 @@ impl NativeWorkspace {
                 // Store copies of the base files this merge displaces are
                 // verified before the journal, as for a switch.
                 self.verify_displaced_content(&before, &after)?;
-                self.materialize_projection(&before, &after, &batch, faults)?;
+                self.materialize_projection(&before, &after, &batch, faults, None)?;
             } else {
                 // No files change: the folder keeps its bytes and its working
                 // changes (council s10, Q2), and the View retains the old

@@ -578,6 +578,7 @@ impl NativeWorkspace {
                 write_file: &mut write_file,
                 end_staging: Some(&mut end_staging),
                 write_file_shared: Some(&write_shared),
+                session: None,
             },
         )?;
         lease.verify()?;

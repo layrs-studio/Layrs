@@ -318,6 +318,7 @@ pub fn apply_checkout_bound_metadata(
             write_file: &mut write_file,
             end_staging: None,
             write_file_shared: None,
+            session: None,
         },
     )
 }
@@ -391,11 +392,16 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // journal and backups, so a retry of the same immutable batch needs
     // fresh physical paths. The checkout lock serializes attempts; the
     // journal session counts again.
-    let (_checkout_lock, worktree, attempt, journaled_folders, pending) = {
-        let store = open(store_root)
-            .map_err(error)?
-            .with_filesystem_identity(store_identity)?
-            .with_metadata_identity(metadata_identity)?;
+    let handed = sources
+        .session
+        .and_then(|slot| slot.lock().ok().and_then(|mut slot| slot.take()));
+    let (_checkout_lock, worktree, attempt, journaled_folders, pending, session) = {
+        let store = match handed {
+            Some(store) => store,
+            None => open(store_root).map_err(error)?,
+        }
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
         let lock = lock_checkout_in(&store, worktree_id)?;
         let worktree = super::NativeScmReader::new(&store)
             .map_err(error)?
@@ -409,8 +415,11 @@ pub fn apply_checkout_with_sources_bound_metadata(
         let journaled_folders = journaled_attempt_folders(&connection, worktree_id)?;
         drop(connection);
         let pending = recovery_pending(&store, worktree_id)?;
-        (lock, worktree, attempt, journaled_folders, pending)
+        (lock, worktree, attempt, journaled_folders, pending, store)
     };
+    // Held through the precheck; never past it unless the direct path hands
+    // it to the staging (`CheckoutSources::session`).
+    let mut session = Some(session);
     super::checkout::projection_tree_id(before)?;
     let projection = super::checkout::projection_tree_id(after)?;
     super::repository::streaming_preflight(batch, sources.chunks).map_err(error)?;
@@ -461,6 +470,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
     drop(precheck);
     crate::perf::count("materialize.changed_paths", paths.len() as u64);
     if paths.is_empty() {
+        drop(session.take());
         return NativeScmRepository::new(store_root)
             .with_short_acquisition()
             .with_store_identity(store_identity)
@@ -520,6 +530,13 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // journal, no backups, no syncs. A first materialization keeps its own
     // path (it writes in place, journaled).
     if !fresh && !faults.journaled() {
+        // The staging reads through this session (its `end_staging`
+        // releases it before the batch takes the Store exclusively).
+        if let (Some(slot), Some(store)) = (sources.session, session.take()) {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(store);
+            }
+        }
         let attempt_name = format!(
             "{}-{}-attempt-{attempt}",
             attempt_prefix(worktree_id),
@@ -549,6 +566,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
             sources,
         );
     }
+    drop(session.take());
     let recovery_id = RecoveryId::parse(format!(
         "recovery:{}:attempt:{attempt}",
         batch.request_digest()

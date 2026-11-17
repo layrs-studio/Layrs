@@ -796,6 +796,7 @@ impl NativeRemote {
                 write_file: &mut write_file,
                 end_staging: None,
                 write_file_shared: None,
+                session: None,
             };
             scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
                 workspace.store_root(),

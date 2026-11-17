@@ -14,6 +14,13 @@ pub struct CheckoutSources<'a> {
     /// Optional thread-safe equivalent of `write_file`. When present, files
     /// are staged concurrently (reads, verification and writes overlap).
     pub write_file_shared: Option<&'a (dyn Fn(&str, &mut dyn Write) -> io::Result<()> + Sync)>,
+    /// A shared session on this Store the caller hands over (the one its
+    /// reads for this transition held), or an empty slot: the
+    /// materializer's first reads use it instead of opening the Store, and
+    /// on the direct path it is put back for the staging; on any other path
+    /// it is released before the Store is taken exclusively. The caller's
+    /// `end_staging` empties the slot.
+    pub session: Option<&'a std::sync::Mutex<Option<NativeStoreOpen>>>,
 }
 
 /// One regular file to stage as `new-{index}` in the backup directory.

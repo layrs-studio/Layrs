@@ -385,6 +385,13 @@ impl NativeWorkspace {
         })
     }
 
+    /// Ends the held session and hands it over (`None` when none is held,
+    /// or when a read still uses it: then it ends with that read).
+    pub(super) fn take_held_session(&self) -> Option<scm_v1::NativeStoreOpen> {
+        let store = self.held.0.lock().ok()?.take()?;
+        std::sync::Arc::try_unwrap(store).ok()
+    }
+
     /// Ends the held session; every read using it must have ended.
     pub(super) fn release_session(&self) {
         if let Ok(mut held) = self.held.0.lock() {

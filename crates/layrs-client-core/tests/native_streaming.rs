@@ -169,6 +169,7 @@ fn exercise(count: usize) {
         write_file: &mut write,
         end_staging: None,
         write_file_shared: None,
+        session: None,
     };
     // Interrupt after replacing the real large file; recovery must stream its
     // fingerprint and restore the exact old original without changing heads.
