@@ -80,7 +80,11 @@ pub struct GraphMergeLimits {
     pub max_depth: usize,
     /// Resident input bytes: Steps, metadata objects, in-memory File content
     /// and content actually loaded from a [`MergeFileSource`]. Unread
-    /// source-backed Files are not charged.
+    /// source-backed Files are not charged. Input Trees are charged at their
+    /// canonical size (~150 bytes an entry): 64 MiB holds about 400,000
+    /// entries of distinct input Trees (a Tree shared by the base and a head
+    /// counts once), so this, not `max_input_paths`, bounds a merge of very
+    /// large checkouts (council s21 r1).
     pub max_input_bytes: usize,
     pub max_output_bytes: usize,
 }

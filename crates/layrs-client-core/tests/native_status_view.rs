@@ -92,6 +92,23 @@ fn the_view_decides_clear_cases_and_defers_the_others() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// `.git` (a submodule's or a git worktree's file) and `.layrs` are never
+/// part of a checkout, at any depth, for the view as for the scan (council
+/// s21 r1).
+#[test]
+fn a_nested_git_entry_is_never_a_change() {
+    let (root, workspace) = workspace("nested-git");
+    fs::write(
+        root.join("d/.git"),
+        b"gitdir: ../.git/modules/d
+",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("d/e/.layrs")).unwrap();
+    assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn an_ignored_new_file_leaves_the_folder_clean() {
     let (root, workspace) = workspace("ignored");

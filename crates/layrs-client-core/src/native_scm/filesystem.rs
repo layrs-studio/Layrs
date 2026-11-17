@@ -403,6 +403,11 @@ impl super::NativeWorkspace {
         // Only the changed folders are built (council s20) when the base is
         // exactly its root Tree as a projection (no Tombstone, Conflict or
         // empty folder), known without computing it; else every folder.
+        // The memo is this process's own record (a BLAKE3 fingerprint of the
+        // entries, written once their Tree was computed, or read back from
+        // the projection cache Layrs wrote with that computed Tree, as git
+        // trusts its index): release builds trust it, debug builds check it
+        // against `projection_tree_id` (council s21 r1).
         let incremental = base_root.filter(|root| {
             !damaged && scm_v1::checkout::known_projection_tree_id(&base).as_ref() == Some(*root)
         });

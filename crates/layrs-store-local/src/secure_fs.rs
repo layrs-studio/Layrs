@@ -298,6 +298,14 @@ impl PinnedDirectory {
         self.sync()
     }
 
+    /// As `remove_empty_child`, without syncing the parent (a removal a crash
+    /// may undo: a leftover empty folder is swept later).
+    pub(crate) fn remove_empty_child_unsynced(&self, name: &OsStr) -> io::Result<()> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        platform::remove_empty_directory_at(&self.file, name)
+    }
+
     pub(crate) fn existing_parent(
         &self,
         relative: &Path,

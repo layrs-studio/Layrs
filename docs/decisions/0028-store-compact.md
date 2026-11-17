@@ -149,6 +149,15 @@ fichier dans l'index du pack.
 - **Écriture.** Un chunk `whole` n'est stocké que comme l'enregistrement de
   son fichier ; un objet `whole` est refusé par tout Store qui n'est pas au
   format 7, et un pack de version 2 y est lu comme une corruption.
+- **Packs v2, version 3 (conseil s20).** Un Store au format 7 écrit ses
+  packs en version 3 : un Tree de plus de 1 Mio (un dossier d'environ
+  10 000 entrées ou plus) y reste, dans un bloc à lui, jusqu'à 64 Mio par
+  enregistrement ; un manifeste ou un chunk garde la borne de 1 Mio. Les
+  bornes de lecture de l'index (bloc brut, corps d'un enregistrement)
+  dépendent de la version du pack. Un lecteur du format 7 antérieur à
+  cette version lit un pack de version 3 comme abîmé : le format 7 reste
+  en opt-in, et une barrière de lecture (une version minimale de lecteur)
+  viendra avant qu'il ne devienne le format par défaut.
 - **Captures.** Les captures d'un Store au format 7 gardent les petits
   fichiers en `whole` (`step`, `room step`, `init`, captures avant une
   opération). Les fichiers reçus d'un serveur, les fusions et les captures

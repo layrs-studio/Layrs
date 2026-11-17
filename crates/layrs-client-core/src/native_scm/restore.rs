@@ -213,6 +213,11 @@ impl NativeWorkspace {
     /// merge writes must still hold its base content, which the materializer
     /// proves right before replacing it; one that does not refuses the merge
     /// before anything is written.
+    ///
+    /// Another Store write between the read and the commit (a capture in
+    /// another Room, say) makes the batch stale: it refuses at validation,
+    /// before any file is written, and the fast-forward is prepared again
+    /// from the new state (council s21 r1).
     pub fn fast_forward_layer(
         &self,
         target: &LayerId,
@@ -220,6 +225,24 @@ impl NativeWorkspace {
         step: &StepId,
     ) -> Result<bool> {
         let _total = layrs_store_local::perf::span("room.fast_forward");
+        let mut retries = 0_u32;
+        loop {
+            match self.fast_forward_layer_once(target, expected_head, step) {
+                Err(error) if retries < 8 && stale_batch(&error) => {
+                    retries += 1;
+                    layrs_store_local::perf::count("room.fast_forward_retry", 1);
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn fast_forward_layer_once(
+        &self,
+        target: &LayerId,
+        expected_head: &StepId,
+        step: &StepId,
+    ) -> Result<bool> {
         // The state and the Step's admission, in one session.
         let span = layrs_store_local::perf::span("ff.state");
         // From here to the batch, every read uses one held session (council
@@ -296,7 +319,7 @@ impl NativeWorkspace {
                 Some(reference),
                 OperationKind::MoveLayerHeads,
                 "Fast-forward Room merge",
-                &FastForwardContract,
+                &FastForwardContract { step: step.clone() },
             )?;
             return Ok(true);
         }
@@ -840,4 +863,17 @@ pub(super) fn read_tree_selected(
         .into_iter()
         .map(|(path, content)| CheckoutEntry { path, content })
         .collect())
+}
+
+/// A batch refused because the Store moved since it was prepared (its CAS
+/// no longer holds), whether reported directly or through the materializer.
+fn stale_batch(error: &NativeClientError) -> bool {
+    match error {
+        NativeClientError::Store(StoreError::CasMismatch { .. }) => true,
+        NativeClientError::Filesystem(error) => error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<StoreError>())
+            .is_some_and(|inner| matches!(inner, StoreError::CasMismatch { .. })),
+        _ => false,
+    }
 }

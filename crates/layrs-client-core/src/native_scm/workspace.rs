@@ -130,7 +130,24 @@ impl NativeWorkspace {
             std::fs::symlink_metadata(&store_path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
         );
-        drop(scm_v1::init_with_format(&store_path, store_id, format)?);
+        // The Store this call creates holds no Step until the first capture
+        // is accepted: on any failure it is removed, so the folder is as it
+        // was. An existing `.layrs` is never touched, nor one that replaced
+        // this call's own meanwhile (council s21 r1).
+        let identity = match scm_v1::init_with_format(&store_path, store_id.clone(), format) {
+            Ok(store) => {
+                drop(store);
+                layrs_store_local::scm_v1::checkout::CheckoutReader::open(&store_path, None)
+                    .map(|store| store.identity())
+                    .ok()
+            }
+            Err(error) => {
+                if absent {
+                    remove_created_store(&store_path, &store_id, None);
+                }
+                return Err(error.into());
+            }
+        };
         let accepted = NativeClient::open(&store_path).and_then(|client| {
             client.accept(&change)?;
             Ok(client)
@@ -138,10 +155,8 @@ impl NativeWorkspace {
         let client = match accepted {
             Ok(client) => client,
             Err(error) => {
-                // The Store this call created holds no Step: removed, so the
-                // folder is as it was (an existing `.layrs` is never touched).
                 if absent {
-                    let _ = std::fs::remove_dir_all(&store_path);
+                    remove_created_store(&store_path, &store_id, identity.as_deref());
                 }
                 return Err(error);
             }
@@ -798,5 +813,27 @@ impl NativeWorkspace {
             result.push(operation);
         }
         Ok(result)
+    }
+}
+
+/// Removes the Store a refused `initialize` created, only while `.layrs` is
+/// still that Store (council s21 r1): the same folder, when its identity was
+/// read, and its marker naming this call's StoreId. Creation stopped before
+/// the marker: only an empty folder goes. Anything else stays untouched.
+fn remove_created_store(store_path: &Path, store_id: &StoreId, identity: Option<&str>) {
+    if layrs_store_local::scm_v1::checkout::CheckoutReader::open(store_path, identity).is_err() {
+        return;
+    }
+    match scm_v1::inspect(store_path) {
+        Ok(scm_v1::NativeStoreInspection::AbsentOrEmpty { .. }) => {
+            let _ = std::fs::remove_dir(store_path);
+        }
+        Ok(
+            scm_v1::NativeStoreInspection::NativeReady { marker, .. }
+            | scm_v1::NativeStoreInspection::NativeInitializing { marker, .. },
+        ) if marker.store_id() == store_id => {
+            let _ = std::fs::remove_dir_all(store_path);
+        }
+        _ => {}
     }
 }

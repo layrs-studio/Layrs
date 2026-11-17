@@ -23,10 +23,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError};
 
-const MAGIC: &[u8; 8] = b"LYRSSV01";
+const MAGIC: &[u8; 8] = b"LYRSSV02";
+/// A view ends with the blake3 of every byte before it (council s21 r1):
+/// the derived database is not synced, and a damaged view must be a miss,
+/// never a wrong proof.
+const CHECKSUM_LEN: usize = 32;
 /// The key prefix of a view in the change index table.
 const KEY_PREFIX: &str = "status:";
 /// The most bytes a stored view may hold (decompressed).
@@ -217,6 +221,8 @@ pub(crate) fn encode(
     put_bytes(&mut out, step.unwrap_or_default().as_bytes());
     put_signed(&mut out, margin_nanos);
     out.extend_from_slice(sections);
+    let checksum = *blake3::hash(&out).as_bytes();
+    out.extend_from_slice(&checksum);
     out
 }
 
@@ -316,8 +322,13 @@ impl StatusView {
         Self::parse(bytes)
     }
 
-    fn parse(bytes: Vec<u8>) -> Option<Self> {
+    fn parse(mut bytes: Vec<u8>) -> Option<Self> {
         let _span = crate::perf::span("status_view.parse");
+        let body = bytes.len().checked_sub(CHECKSUM_LEN)?;
+        if blake3::hash(&bytes[..body]).as_bytes()[..] != bytes[body..] {
+            return None;
+        }
+        bytes.truncate(body);
         if bytes.get(..MAGIC.len())? != MAGIC {
             return None;
         }
@@ -396,8 +407,11 @@ impl StatusView {
             view: self,
             root: checkout.root(),
             ignored: &ignored,
-            queue: Mutex::new(vec![String::new()]),
-            pending: AtomicUsize::new(1),
+            work: Mutex::new(Queue {
+                folders: vec![String::new()],
+                pending: 1,
+            }),
+            ready: Condvar::new(),
             verdict: AtomicU8::new(CLEAN),
         };
         let threads = std::thread::available_parallelism()
@@ -537,10 +551,16 @@ struct Walk<'a> {
     view: &'a StatusView,
     root: &'a Path,
     ignored: &'a super::checkout_ignore::IgnoreRules,
-    queue: Mutex<Vec<String>>,
-    /// Folders queued or being compared.
-    pending: AtomicUsize,
+    work: Mutex<Queue>,
+    /// Signalled when folders are queued, or when the walk ends.
+    ready: Condvar,
     verdict: AtomicU8,
+}
+
+struct Queue {
+    folders: Vec<String>,
+    /// Folders queued or being compared.
+    pending: usize,
 }
 
 impl Walk<'_> {
@@ -555,28 +575,41 @@ impl Walk<'_> {
 
     fn work(&self) {
         loop {
-            if self.verdict.load(Ordering::Acquire) == CHANGED {
-                return;
-            }
-            let next = self.queue.lock().ok().and_then(|mut queue| queue.pop());
-            let Some(folder) = next else {
-                if self.pending.load(Ordering::Acquire) == 0 {
-                    return;
-                }
-                std::thread::yield_now();
-                continue;
-            };
-            match self.compare(&folder) {
-                Ok(children) => {
-                    self.pending.fetch_add(children.len(), Ordering::AcqRel);
-                    if let Ok(mut queue) = self.queue.lock() {
-                        queue.extend(children);
+            // Waits (no spinning, council s21 r1) for a folder, the end of
+            // the walk, or a change found.
+            let folder = {
+                let mut work = self.work.lock().unwrap_or_else(PoisonError::into_inner);
+                loop {
+                    if self.verdict.load(Ordering::Acquire) == CHANGED {
+                        return;
                     }
+                    if let Some(folder) = work.folders.pop() {
+                        break folder;
+                    }
+                    if work.pending == 0 {
+                        return;
+                    }
+                    work = self
+                        .ready
+                        .wait(work)
+                        .unwrap_or_else(PoisonError::into_inner);
                 }
+            };
+            let children = self.compare(&folder).unwrap_or_else(|_| {
                 // The full path reports the error itself.
-                Err(_) => self.decide(UNKNOWN),
+                self.decide(UNKNOWN);
+                Vec::new()
+            });
+            let mut work = self.work.lock().unwrap_or_else(PoisonError::into_inner);
+            work.pending = work.pending + children.len() - 1;
+            let wake = !children.is_empty()
+                || work.pending == 0
+                || self.verdict.load(Ordering::Acquire) == CHANGED;
+            work.folders.extend(children);
+            drop(work);
+            if wake {
+                self.ready.notify_all();
             }
-            self.pending.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -655,9 +688,8 @@ impl Walk<'_> {
 
     /// An entry the base does not have.
     fn untracked(&self, folder: &str, name: &str, metadata: &fs::Metadata) {
-        if folder.is_empty()
-            && (name.eq_ignore_ascii_case(".layrs") || name.eq_ignore_ascii_case(".git"))
-        {
+        // Never part of a checkout, at any depth (as the scan skips them).
+        if name.eq_ignore_ascii_case(".layrs") || name.eq_ignore_ascii_case(".git") {
             return;
         }
         let path = Self::path(folder, name);
@@ -876,6 +908,11 @@ mod tests {
         let mut longer = full.clone();
         longer.push(0);
         assert!(StatusView::parse(longer).is_none());
+        // Any damaged byte is a miss (council s21 r1), not another proof.
+        let middle = full.len() / 2;
+        let mut damaged = full.clone();
+        damaged[middle] ^= 1;
+        assert!(StatusView::parse(damaged).is_none());
         assert!(StatusView::parse(full).unwrap().step().is_none());
     }
 }

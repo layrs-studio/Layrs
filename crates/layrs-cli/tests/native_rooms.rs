@@ -390,9 +390,22 @@ fn a_fast_forward_writes_directly_without_a_journal() {
         b"a new file\n"
     );
     assert!(!project.join("src/b.txt").exists());
-    let status = run(&project, &["status"], true);
+    // Decided by the status view, bound to the fast-forward's Step.
+    let perf = fixture.0.join("status.perf");
+    let output = Command::new(env!("CARGO_BIN_EXE_layrs"))
+        .current_dir(&project)
+        .env("LAYRS_PERF", "1")
+        .env("LAYRS_PERF_OUT", &perf)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let status = &envelope["data"];
     assert_eq!(status["needsRepair"], false, "{status}");
     assert_eq!(status["dirty"], false, "{status}");
+    let report = fs::read_to_string(&perf).unwrap();
+    assert!(report.contains("\"status_view.decided\""), "{report}");
     let backups = project.join(".layrs/metadata/repair-backups");
     let left = fs::read_dir(&backups)
         .map(|entries| entries.count())

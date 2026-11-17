@@ -44,6 +44,12 @@ pub trait MaterializationFaults {
     fn journaled(&self) -> bool {
         true
     }
+    /// The Step whose projection the transition writes, when the caller
+    /// knows it: the change index and its status view are then bound to it
+    /// (council s21 r1), not only to its projection's Tree.
+    fn target_step(&self) -> Option<&layrs_core::scm::StepId> {
+        None
+    }
 }
 
 /// Paths a held session may cover (council s10, Q1).
@@ -106,13 +112,20 @@ impl MaterializationFaults for NoMaterializationFaults {
 
 /// A fast-forward's materialization under git's contract (user decision,
 /// 2026-11-17): written directly, without a recovery journal (`direct`).
-pub struct FastForwardContract;
+/// `step` is the Step whose projection it writes: the change index and its
+/// status view are bound to it.
+pub struct FastForwardContract {
+    pub step: layrs_core::scm::StepId,
+}
 impl MaterializationFaults for FastForwardContract {
     fn check(&self, _: MaterializationPoint) -> io::Result<()> {
         Ok(())
     }
     fn journaled(&self) -> bool {
         false
+    }
+    fn target_step(&self) -> Option<&layrs_core::scm::StepId> {
+        Some(&self.step)
     }
 }
 
@@ -287,7 +300,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // journal and backups, so a retry of the same immutable batch needs
     // fresh physical paths. The checkout lock serializes attempts; the
     // journal session counts again.
-    let (_checkout_lock, worktree, attempt, journaled_folders) = {
+    let (_checkout_lock, worktree, attempt, journaled_folders, pending) = {
         let store = open(store_root)
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
@@ -304,7 +317,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .ok_or_else(|| error("materialization attempt overflow"))?;
         let journaled_folders = journaled_attempt_folders(&connection, worktree_id)?;
         drop(connection);
-        (lock, worktree, attempt, journaled_folders)
+        let pending = recovery_pending(&store, worktree_id)?;
+        (lock, worktree, attempt, journaled_folders, pending)
     };
     super::checkout::projection_tree_id(before)?;
     let projection = super::checkout::projection_tree_id(after)?;
@@ -440,6 +454,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 identity: worktree.filesystem_identity(),
                 attempt_name: &attempt_name,
                 journaled_folders: &journaled_folders,
+                recovery_pending: pending,
+                target_step: faults.target_step(),
                 projection: &projection,
                 before,
                 after,
@@ -518,7 +534,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // The attempt's own folder is always created durably (a synced
         // creation), before the journal is applying: recovery of an applying
         // journal needs it (council s2 r2).
-        let backup = empty_attempt_folder(&backups, attempt_name.as_ref())?;
+        let backup = empty_attempt_folder(&backups, attempt_name.as_ref(), true)?;
         let stage = crate::perf::span("materialize.stage");
         let staging = stage_all(&backup, &paths, &prior, &next, sources);
         if let Some(end_staging) = sources.end_staging.as_mut() {
@@ -1079,7 +1095,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // keeping them only doubled the disk use of every replaced file.
         // Best effort: a leftover backup is harmless and never read again.
         let _purge = crate::perf::span("materialize.purge_backup");
-        purge_completed_backup(&backups, backup, &backup_root, &sealed);
+        purge_completed_backup(&backups, backup, &backup_root, &sealed, true);
     }
     if indexed {
         // A cache: failing to record it only makes the next capture read more.
@@ -1259,6 +1275,7 @@ fn sweep_unjournaled_attempts(
 fn empty_attempt_folder(
     backups: &PinnedDirectory,
     name: &std::ffi::OsStr,
+    synced: bool,
 ) -> io::Result<PinnedDirectory> {
     match backups.open_child(name) {
         Ok(existing) => {
@@ -1269,7 +1286,14 @@ fn empty_attempt_folder(
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => {}
         Err(failure) => return Err(failure),
     }
-    backups.create_new_child(name)
+    if synced {
+        return backups.create_new_child(name);
+    }
+    // A fast-forward under git's contract: no directory sync (a crash may
+    // lose the folder, and nothing durable refers to it).
+    let attempt = backups.create_new_child_unsynced(name)?;
+    attempt.verify_path_identity()?;
+    Ok(attempt)
 }
 
 /// Removes the staged files (`new-*`) and barrier markers of an attempt
@@ -1337,6 +1361,7 @@ fn purge_completed_backup(
     backup: PinnedDirectory,
     root: &Path,
     sealed: &[(String, BackupSeal)],
+    synced: bool,
 ) {
     let mut deleted = 0usize;
     for (name, seal) in sealed {
@@ -1363,7 +1388,11 @@ fn purge_completed_backup(
     drop(backup);
     if deleted == sealed.len() {
         if let Some(name) = root.file_name() {
-            let _ = backups.remove_empty_child(name);
+            let _ = if synced {
+                backups.remove_empty_child(name)
+            } else {
+                backups.remove_empty_child_unsynced(name)
+            };
         }
     }
 }

@@ -245,6 +245,39 @@ impl NativeScmRepository {
         )
     }
 
+    /// `apply_batch_with_chunks`, running `before_commit` once with the
+    /// exclusive Store held, after the batch was validated in its own
+    /// transaction (admission, CAS expectations) and right before its
+    /// COMMIT; an error rolls the transaction back (council s21 r1: a
+    /// fast-forward writes its folder there, `materialize::direct`). Not
+    /// run when the batch was applied earlier (`AlreadyApplied`).
+    pub(crate) fn apply_batch_with_chunks_before_commit(
+        &mut self,
+        batch: &WriteBatch,
+        chunks: &[(ChunkId, u64)],
+        read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<ApplyBatchOutcome> {
+        let mut before_commit = Some(before_commit);
+        let mut calls = 0_u8;
+        self.apply_batch_with_chunks_guarded(
+            batch,
+            chunks,
+            read_chunk,
+            || {
+                // The guard runs before the CAS installation, then once the
+                // batch is validated, right before COMMIT.
+                calls = calls.saturating_add(1);
+                match before_commit.take_if(|_| calls == 2) {
+                    Some(action) => action(),
+                    None => Ok(()),
+                }
+            },
+            self.acquisition_budget,
+            None,
+        )
+    }
+
     pub(crate) fn with_short_acquisition(mut self) -> Self {
         self.acquisition_budget = SHORT_WAIT;
         self
