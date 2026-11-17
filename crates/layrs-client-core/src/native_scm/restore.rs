@@ -5,7 +5,7 @@ use layrs_store::scm::*;
 use layrs_store_local::scm_v1::{
     self,
     checkout::{CheckoutContent, CheckoutEntry, CheckoutProjectionEntry},
-    materialize::{MaterializationFaults, NoMaterializationFaults},
+    materialize::{FastForwardContract, MaterializationFaults, NoMaterializationFaults},
     NativeScmReader,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -296,7 +296,7 @@ impl NativeWorkspace {
                 Some(reference),
                 OperationKind::MoveLayerHeads,
                 "Fast-forward Room merge",
-                &NoMaterializationFaults,
+                &FastForwardContract,
             )?;
             return Ok(true);
         }

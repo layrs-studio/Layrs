@@ -351,17 +351,20 @@ fn room_merge_refuses_to_remove_untracked_files_under_a_replaced_folder() {
     assert_eq!(run(&project, &["status"], true)["needsRepair"], false);
 }
 
-/// A small fast-forward on one NTFS volume holds one exclusive session from
-/// its journal to its metadata commit (council s10, Q1).
-#[cfg(windows)]
+/// A fast-forward writes the folder directly, under git's contract (user
+/// decision, 2026-11-17): no recovery journal, no backups, nothing left in
+/// the Store's attempt folders; the folder holds the target and no repair
+/// is pending.
 #[test]
-fn a_small_fast_forward_holds_one_session() {
+fn a_fast_forward_writes_directly_without_a_journal() {
     let fixture = Fixture::new();
     let project = init(&fixture);
     let dir = fixture.room_dir("agent-h");
     let created = run(&project, &["room", "new", "agent-h", "--dir", &dir], true);
     let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
-    fs::write(room.join("src/a.txt"), b"a, held\n").unwrap();
+    fs::write(room.join("src/a.txt"), b"a, fast-forwarded\n").unwrap();
+    fs::write(room.join("src/new.txt"), b"a new file\n").unwrap();
+    fs::remove_file(room.join("src/b.txt")).unwrap();
     run(&room, &["room", "step"], true);
     let perf = fixture.0.join("merge.perf");
     let output = Command::new(env!("CARGO_BIN_EXE_layrs"))
@@ -373,8 +376,28 @@ fn a_small_fast_forward_holds_one_session() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let report = fs::read_to_string(&perf).unwrap();
-    assert!(report.contains("\"materialize.held_session\""), "{report}");
-    assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a, held\n");
+    assert!(report.contains("\"materialize.direct\""), "{report}");
+    assert!(
+        !report.contains("\"materialize.session_journal\""),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(project.join("src/a.txt")).unwrap(),
+        b"a, fast-forwarded\n"
+    );
+    assert_eq!(
+        fs::read(project.join("src/new.txt")).unwrap(),
+        b"a new file\n"
+    );
+    assert!(!project.join("src/b.txt").exists());
+    let status = run(&project, &["status"], true);
+    assert_eq!(status["needsRepair"], false, "{status}");
+    assert_eq!(status["dirty"], false, "{status}");
+    let backups = project.join(".layrs/metadata/repair-backups");
+    let left = fs::read_dir(&backups)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "attempt folders left in {}", backups.display());
 }
 
 #[test]

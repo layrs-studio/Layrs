@@ -17,6 +17,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
 };
+mod direct;
 mod fresh;
 mod lease;
 mod sources;
@@ -35,6 +36,12 @@ pub trait MaterializationFaults {
     /// Recipes that renew leases over virtual time, or let another process
     /// take the Store between phases, answer false.
     fn held_session(&self) -> bool {
+        true
+    }
+    /// Whether this materialization keeps a recovery journal (resumable
+    /// after a crash). A fast-forward answers false: git's contract (user
+    /// decision, 2026-11-17), written directly (`direct`).
+    fn journaled(&self) -> bool {
         true
     }
 }
@@ -94,6 +101,18 @@ pub struct NoMaterializationFaults;
 impl MaterializationFaults for NoMaterializationFaults {
     fn check(&self, _: MaterializationPoint) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// A fast-forward's materialization under git's contract (user decision,
+/// 2026-11-17): written directly, without a recovery journal (`direct`).
+pub struct FastForwardContract;
+impl MaterializationFaults for FastForwardContract {
+    fn check(&self, _: MaterializationPoint) -> io::Result<()> {
+        Ok(())
+    }
+    fn journaled(&self) -> bool {
+        false
     }
 }
 
@@ -400,6 +419,37 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 "executable bit cannot be materialized on this platform",
             ));
         }
+    }
+    // Git's contract for a fast-forward (user decision, 2026-11-17): no
+    // journal, no backups, no syncs. A first materialization keeps its own
+    // path (it writes in place, journaled).
+    if !fresh && !faults.journaled() {
+        let attempt_name = format!(
+            "{}-{}-attempt-{attempt}",
+            attempt_prefix(worktree_id),
+            batch.request_digest().to_string().replace(':', "-")
+        );
+        return direct::apply(
+            &direct::DirectCheckout {
+                store_root,
+                store_identity,
+                metadata_identity,
+                store_directory: &store_directory,
+                worktree_id,
+                checkout_root: worktree.checkout_root(),
+                identity: worktree.filesystem_identity(),
+                attempt_name: &attempt_name,
+                journaled_folders: &journaled_folders,
+                projection: &projection,
+                before,
+                after,
+                batch,
+            },
+            &paths,
+            &prior,
+            &next,
+            sources,
+        );
     }
     let recovery_id = RecoveryId::parse(format!(
         "recovery:{}:attempt:{attempt}",
