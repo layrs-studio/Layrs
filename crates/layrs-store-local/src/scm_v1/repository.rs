@@ -654,6 +654,15 @@ impl NativeScmRepository {
         self.check_materializations(connection, batch, locked_at_ms)?;
 
         precheck_mutations(connection, batch)?;
+        // Debug builds: whether the GC roots match the full projection
+        // before this batch changes anything (council s23 review r1).
+        #[cfg(debug_assertions)]
+        let roots_complete = {
+            let guard = connection.lock().map_err(|_| poisoned())?;
+            gc_roots_complete(&guard)?
+        };
+        #[cfg(not(debug_assertions))]
+        let roots_complete = false;
         // These rows are visible only inside this transaction. The admission
         // resolver can read and rehash streamed chunks without retaining their
         // bytes in WriteBatch; any later failure rolls back all these rows.
@@ -722,7 +731,7 @@ impl NativeScmRepository {
         apply_mutations(&guard, batch, self)?;
         drop(rows);
         let gc_roots = crate::perf::span("batch.update_gc_roots");
-        update_gc_roots(&guard, batch)?;
+        update_gc_roots(&guard, batch, roots_complete)?;
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
@@ -1611,11 +1620,7 @@ fn apply_mutations(c: &Connection, b: &WriteBatch, repo: &NativeScmRepository) -
 /// records (retained Operations and their rewrites, observations, markers,
 /// releases, admitted Products) never change once written: only this
 /// batch's are added. `fsck` checks the result against the full projection.
-fn update_gc_roots(c: &Connection, batch: &WriteBatch) -> Result<()> {
-    // Debug builds check the result against the full projection, when the
-    // roots were complete before (a test may seed rows without them).
-    #[cfg(debug_assertions)]
-    let complete_before = gc_roots_complete(c)?;
+fn update_gc_roots(c: &Connection, batch: &WriteBatch, complete_before: bool) -> Result<()> {
     c.execute_batch(
         "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','worktree','pin');
          INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
@@ -1701,6 +1706,9 @@ fn update_gc_roots(c: &Connection, batch: &WriteBatch) -> Result<()> {
         .and_then(|mut statement| statement.execute(params![product]))
         .map_err(sql_backend)?;
     }
+    // Debug builds check the result against the full projection, when the
+    // roots were complete before the batch (a test may seed rows without
+    // them).
     #[cfg(debug_assertions)]
     if complete_before {
         assert!(
@@ -1708,6 +1716,8 @@ fn update_gc_roots(c: &Connection, batch: &WriteBatch) -> Result<()> {
             "incremental GC roots differ from the full projection"
         );
     }
+    #[cfg(not(debug_assertions))]
+    let _ = complete_before;
     Ok(())
 }
 
@@ -1727,47 +1737,6 @@ fn gc_roots_complete(c: &Connection) -> Result<bool> {
         .into_iter()
         .collect();
     Ok(actual == expected)
-}
-
-/// Every GC root, from scratch (the projection `fsck` checks).
-#[allow(dead_code)]
-fn rebuild_gc_roots(c: &Connection) -> Result<()> {
-    c.execute("DELETE FROM gc_roots", []).map_err(sql_backend)?;
-    c.execute("INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) SELECT 'product',p.product_object_id,p.product_object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id",[]).map_err(sql_backend)?;
-    c.execute_batch(
-        "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'current_view',space_id,repository_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM current_repository_views;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'operation_head',operation_id,resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_heads JOIN operations USING(operation_id);
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'retained_operation',operation_id,resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operations;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'retained_operation',operation_id,old_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_rewrites;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'retained_operation',operation_id,new_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_rewrite_targets;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'worktree',w.worktree_id,o.resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'worktree',w.worktree_id,rvw.base_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER)
-             FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id
-             JOIN repository_view_worktrees rvw ON rvw.repository_view_id=o.resulting_view_id AND rvw.worktree_id=w.worktree_id
-             WHERE rvw.base_step_id IS NOT NULL;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'worktree',w.worktree_id,rvw.materialized_tree_id,CAST(unixepoch('subsec')*1000 AS INTEGER)
-             FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id
-             JOIN repository_view_worktrees rvw ON rvw.repository_view_id=o.resulting_view_id AND rvw.worktree_id=w.worktree_id
-             WHERE rvw.materialized_tree_id IS NOT NULL;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'marker',marker_id,target_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM markers;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'release',release_id,target_step_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM releases;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'observation',observation_id,step_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM step_observations;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'pin',pin_id,object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM object_pins;",
-    )
-    .map_err(sql_backend)?;
-    Ok(())
 }
 
 fn edge(c: &Connection, s: &str, k: &str, i: usize, t: &str) -> Result<()> {

@@ -89,6 +89,9 @@ pub struct CompositeAdmissionResolver<'a> {
     new_steps: BTreeMap<StepId, Step>,
     /// The durable publication frontier, walked on demand (bounded mode).
     lazy_frontier: Option<bounded::LazyFrontier>,
+    /// Per observed Operation, the Steps reached from its resulting heads
+    /// and those still to walk (bounded mode).
+    observation_walks: Mutex<HashMap<OperationId, (HashSet<StepId>, Vec<StepId>)>>,
 }
 
 /// The memo scope of the Store `store_id` at `root` (`with_memo_scope`).
@@ -114,12 +117,30 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// unreadable pack (council s18: every historical Step is read) and for
     /// a batch carrying a Weave Product (merge bases need the Step DAG).
     pub fn bounded(reader: &'a dyn ScmReader, batch: &'a WriteBatch) -> Result<Self> {
+        // A Product carried or admitted by id (council s23 review r1): its
+        // context needs the Step DAG.
         let products = batch
             .canonical_objects()
             .iter()
-            .any(|object| matches!(object, CanonicalObject::Product(_)));
+            .any(|object| matches!(object, CanonicalObject::Product(_)))
+            || batch
+                .admissions()
+                .iter()
+                .any(|admission| matches!(admission.object_id(), StoreObjectId::Product(_)));
         let bounded = !products && reader.durable_admission_proves_closure()?;
-        Self::with_mode(reader, batch, bounded)
+        let result = Self::with_mode(reader, batch, bounded);
+        // Debug builds: a batch the bounded resolver refuses to build, the
+        // complete resolver refuses too.
+        #[cfg(debug_assertions)]
+        if let (true, Err(error)) = (bounded, &result) {
+            if let Ok(complete) = Self::with_mode(reader, batch, false) {
+                assert!(
+                    complete.validate_batch_in_mode().is_err(),
+                    "bounded admission refused a batch the complete resolver accepts: {error:?}"
+                );
+            }
+        }
+        result
     }
 
     fn with_mode(reader: &'a dyn ScmReader, batch: &'a WriteBatch, bounded: bool) -> Result<Self> {
@@ -290,6 +311,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
             bounded,
             new_steps,
             lazy_frontier,
+            observation_walks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -333,23 +355,33 @@ impl<'a> CompositeAdmissionResolver<'a> {
         // resolver, where history is small enough for it (council s23).
         #[cfg(debug_assertions)]
         if self.bounded {
-            if let Ok(complete) = Self::with_mode(self.reader, self.batch, false) {
-                let complete = Self {
-                    chunk_source: self.chunk_source,
-                    memo_scope: self.memo_scope.clone(),
-                    ..complete
-                };
-                // The oracle's own work is not counted (tests count proofs).
-                #[cfg(any(test, feature = "test-support"))]
-                let proofs = EXISTENCE_PROOFS.with(|count| count.get());
-                let expected = complete.validate_batch_in_mode();
-                #[cfg(any(test, feature = "test-support"))]
-                EXISTENCE_PROOFS.with(|count| count.set(proofs));
-                assert_eq!(
-                    expected.is_ok(),
-                    result.is_ok(),
-                    "bounded admission disagrees with the complete resolver: bounded {result:?}, complete {expected:?}"
-                );
+            match Self::with_mode(self.reader, self.batch, false) {
+                Ok(complete) => {
+                    // Independent: no process memo the bounded run filled.
+                    let complete = Self {
+                        chunk_source: self.chunk_source,
+                        memo_scope: None,
+                        ..complete
+                    };
+                    // The oracle's own work is not counted (tests count
+                    // proofs).
+                    #[cfg(any(test, feature = "test-support"))]
+                    let proofs = EXISTENCE_PROOFS.with(|count| count.get());
+                    let expected = complete.validate_batch_in_mode();
+                    #[cfg(any(test, feature = "test-support"))]
+                    EXISTENCE_PROOFS.with(|count| count.set(proofs));
+                    assert_eq!(
+                        expected.is_ok(),
+                        result.is_ok(),
+                        "bounded admission disagrees with the complete resolver: bounded {result:?}, complete {expected:?}"
+                    );
+                }
+                // History beyond the complete resolver's bounds.
+                Err(StoreError::AdmissionBudgetExceeded { .. }) => {}
+                Err(error) => assert!(
+                    result.is_err(),
+                    "bounded admission accepts a batch the complete resolver refuses: {error:?}"
+                ),
             }
         }
         result
@@ -370,6 +402,16 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 CanonicalObject::Tree(value) => {
                     let _span = crate::perf::span("validate.object.tree");
                     validate_tree_admission(value, self)
+                }
+                // A durable Step carried again (a receive re-sends its graph):
+                // its Tree, parents and acyclicity were proven when it was
+                // admitted, and `ensure_immutables` proves the bytes equal
+                // (council s23 review r1: asking its ancestry walked all
+                // history for each one).
+                CanonicalObject::Step(value)
+                    if self.bounded && !self.new_steps.contains_key(value.id()) =>
+                {
+                    Ok(())
                 }
                 CanonicalObject::Step(value) => {
                     let _span = crate::perf::span("validate.object.step");
@@ -605,7 +647,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
 
             let heads = match &self.lazy_frontier {
                 Some(frontier) => frontier
-                    .publish(self.reader, operation, durable_heads)
+                    .publish(self.reader, operation, durable_heads)?
                     .map_err(|reason| invalid_operation_frontier(operation, reason))?,
                 None => {
                     let mut candidate = self.durable_operation_dag.clone();
@@ -1062,6 +1104,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
             return Ok(false);
         };
         let heads = view.layer_heads().iter().flat_map(|heads| heads.step_ids());
+        if self.bounded {
+            return self.bounded_operation_reaches(operation, heads, step);
+        }
         if heads.clone().all(|head| self.step_dag.contains(head)) {
             // Observations share the Operation's immutable resulting View. Walk
             // its union closure once, rather than charging every observation x
@@ -1194,6 +1239,61 @@ impl<'a> CompositeAdmissionResolver<'a> {
         Ok(false)
     }
 
+    /// `operation_reaches_step` without the Step DAG: equality with a head
+    /// first, then one walk per Operation down from its resulting heads,
+    /// shared by all its observations and charged as the complete
+    /// resolver's union closure is (council s23 review r1).
+    fn bounded_operation_reaches<'h>(
+        &self,
+        operation: &OperationId,
+        heads: impl Iterator<Item = &'h StepId> + Clone,
+        step: &StepId,
+    ) -> Result<bool> {
+        if heads.clone().any(|head| head == step) {
+            return Ok(true);
+        }
+        let mut walks = self
+            .observation_walks
+            .lock()
+            .map_err(|_| StoreError::Backend {
+                message: "observation walk poisoned".into(),
+            })?;
+        let walk = match walks.entry(operation.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let query = self.ancestor_queries.fetch_add(1, Ordering::Relaxed) + 1;
+                require_budget("ancestor queries", query, MAX_ANCESTOR_QUERIES)?;
+                entry.insert((HashSet::new(), heads.cloned().collect::<Vec<_>>()))
+            }
+        };
+        let (reached, pending) = walk;
+        loop {
+            if reached.contains(step) {
+                return Ok(true);
+            }
+            let Some(next) = pending.pop() else {
+                return Ok(false);
+            };
+            if !reached.insert(next.clone()) {
+                continue;
+            }
+            let relations = self.ancestor_relations.fetch_add(1, Ordering::Relaxed) + 1;
+            require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
+            let parents = match self.new_steps.get(&next) {
+                Some(step) => step.parent_step_ids().to_vec(),
+                None => match self.reader.get_step(&next)? {
+                    Some(step) => step.parent_step_ids().to_vec(),
+                    None => continue,
+                },
+            };
+            pending.extend(
+                parents
+                    .into_iter()
+                    .filter(|parent| !reached.contains(parent)),
+            );
+        }
+    }
+
     /// Whether the durable Operation `id` is in its Space's durable
     /// publication frontier (a head or an ancestor of one).
     pub(super) fn frontier_retains(&self, id: &OperationId) -> Result<bool> {
@@ -1211,27 +1311,25 @@ impl<'a> CompositeAdmissionResolver<'a> {
         &self,
         ancestor: &OperationId,
         descendant: &OperationId,
-    ) -> std::result::Result<bool, String> {
+    ) -> Result<std::result::Result<bool, String>> {
         match &self.lazy_frontier {
-            None => self
+            None => Ok(self
                 .durable_operation_dag
                 .is_ancestor_or_equal(ancestor, descendant)
-                .map_err(|error| error.to_string()),
+                .map_err(|error| error.to_string())),
             Some(frontier) => {
-                if !self
-                    .frontier_retains(ancestor)
-                    .map_err(|error| error.to_string())?
-                    || !self
-                        .frontier_retains(descendant)
-                        .map_err(|error| error.to_string())?
-                {
-                    return Err(format!(
+                // Reader failures stay the Store's errors; only the rule's
+                // answer becomes a frontier refusal.
+                if !self.frontier_retains(ancestor)? || !self.frontier_retains(descendant)? {
+                    return Ok(Err(format!(
                         "{ancestor} or {descendant} is outside the durable frontier"
-                    ));
+                    )));
                 }
-                frontier
-                    .is_ancestor_or_equal(self.reader, ancestor, descendant)
-                    .map_err(|error| error.to_string())
+                Ok(Ok(frontier.is_ancestor_or_equal(
+                    self.reader,
+                    ancestor,
+                    descendant,
+                )?))
             }
         }
     }

@@ -105,7 +105,7 @@ impl CompositeAdmissionResolver<'_> {
                     .iter()
                     .any(|state| state.worktree_id() == source_id)
                 || !self
-                    .frontier_is_ancestor_or_equal(parent_id, source.active_operation_id())
+                    .frontier_is_ancestor_or_equal(parent_id, source.active_operation_id())?
                     .map_err(|error| invalid_operation_frontier(operation, error))?
             {
                 return Err(invalid_operation_frontier(

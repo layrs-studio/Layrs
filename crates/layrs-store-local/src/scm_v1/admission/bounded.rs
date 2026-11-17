@@ -55,7 +55,15 @@ pub(super) fn new_batch_steps(
         }
         new_steps.insert(id.clone(), (*step).clone());
     }
+    // Bounds on what the batch adds (council s23 review r1), not history.
     require_budget("Step graph nodes", new_steps.len(), MAX_GRAPH_NODES)?;
+    let edges = new_steps
+        .values()
+        .try_fold(0_usize, |sum, step| {
+            sum.checked_add(step.parent_step_ids().len())
+        })
+        .unwrap_or(usize::MAX);
+    require_budget("Step graph edges", edges, MAX_GRAPH_EDGES)?;
     Ok(new_steps)
 }
 
@@ -72,6 +80,13 @@ pub(super) fn validate_new_operations(
         new_operations.len(),
         MAX_GRAPH_NODES,
     )?;
+    let edges = new_operations
+        .values()
+        .try_fold(0_usize, |sum, operation| {
+            sum.checked_add(operation.parent_operation_ids().len())
+        })
+        .unwrap_or(usize::MAX);
+    require_budget("Operation graph edges", edges, MAX_GRAPH_EDGES)?;
     let mut initializers = BTreeMap::<&SpaceId, &OperationId>::new();
     let mut indegrees = BTreeMap::<&OperationId, usize>::new();
     let mut children = BTreeMap::<&OperationId, Vec<&OperationId>>::new();
@@ -262,56 +277,52 @@ impl LazyFrontier {
         reader: &dyn ScmReader,
         operation: &Operation,
         heads: &[OperationId],
-    ) -> std::result::Result<Vec<OperationId>, String> {
+    ) -> Result<std::result::Result<Vec<OperationId>, String>> {
         let id = operation.id();
         let parents = operation.parent_operation_ids();
         if operation.kind() == OperationKind::IntegrateOperations {
             // The parents are exactly the complete current heads, in order.
             let expected: BTreeSet<_> = heads.iter().collect();
             if expected.len() != heads.len() {
-                return Err(format!("duplicate integration parent in {heads:?}"));
+                return Ok(Err(format!("duplicate integration parent in {heads:?}")));
             }
             let expected: Vec<_> = expected.into_iter().cloned().collect();
             if parents != expected.as_slice() {
-                return Err(format!(
+                return Ok(Err(format!(
                     "integration parents {parents:?} differ from the current heads {expected:?}"
-                ));
+                )));
             }
             if parents.len() < 2 {
-                return Err(format!("integration {id} requires multiple parents"));
+                return Ok(Err(format!("integration {id} requires multiple parents")));
             }
-            return Ok(vec![id.clone()]);
+            return Ok(Ok(vec![id.clone()]));
         }
         match operation.kind() {
             OperationKind::Initialize if !parents.is_empty() => {
-                return Err(format!("Initialize Operation {id} has parents"));
+                return Ok(Err(format!("Initialize Operation {id} has parents")));
             }
             OperationKind::Initialize => {}
             _ if parents.is_empty() => {
-                return Err(format!("Operation {id} requires a parent"));
+                return Ok(Err(format!("Operation {id} requires a parent")));
             }
             _ => {}
         }
         for parent in parents {
             if parent == id {
-                return Err(format!("Operation {id} is its own parent"));
+                return Ok(Err(format!("Operation {id} is its own parent")));
             }
-            let value = reader
-                .get_operation(parent)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("Operation {id} references missing {parent}"))?;
+            let Some(value) = reader.get_operation(parent)? else {
+                return Ok(Err(format!("Operation {id} references missing {parent}")));
+            };
             if value.space_id() != operation.space_id() {
-                return Err(format!(
+                return Ok(Err(format!(
                     "Operation {id} has parent {parent} in another Space"
-                ));
+                )));
             }
-            if !self
-                .retains(reader, &value)
-                .map_err(|error| error.to_string())?
-            {
-                return Err(format!(
+            if !self.retains(reader, &value)? {
+                return Ok(Err(format!(
                     "Operation {id} references {parent}, outside the durable frontier"
-                ));
+                )));
             }
         }
         let mut next: BTreeSet<OperationId> = heads
@@ -320,7 +331,7 @@ impl LazyFrontier {
             .cloned()
             .collect();
         next.insert(id.clone());
-        Ok(next.into_iter().collect())
+        Ok(Ok(next.into_iter().collect()))
     }
 }
 

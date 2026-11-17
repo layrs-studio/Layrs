@@ -257,7 +257,7 @@ impl NativeWorkspace {
             file.write_all(&bytes)?;
             file.sync_all()?;
         }
-        std::fs::rename(&staged, &target).inspect_err(|_| {
+        rename_retrying(&staged, &target).inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
         })?;
         Ok(())
@@ -446,6 +446,27 @@ mod tests {
                 default_rooms_parent(Path::new(other), "x", "space:1").unwrap(),
                 Path::new(other).parent().unwrap().join("game.rooms")
             );
+        }
+    }
+}
+
+/// Renames `from` over `to`, retrying for a short while when Windows refuses
+/// access: an antivirus or indexer briefly holding the old record open makes
+/// the replacement fail with "access denied", as git for Windows retries its
+/// own renames. Any other error, or a refusal that lasts, is returned.
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut delay = std::time::Duration::from_millis(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match std::fs::rename(from, to) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(100));
+            }
+            result => return result,
         }
     }
 }
