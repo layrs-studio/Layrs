@@ -101,7 +101,7 @@ struct Written<'a> {
 pub(super) fn write(
     fresh: &FreshCheckout<'_>,
     paths: &[&str],
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    next: &ByPath<'_>,
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<ApplyBatchOutcome> {
     let root = Path::new(fresh.checkout_root);
@@ -273,7 +273,7 @@ pub(super) fn write(
 fn write_tree<'a>(
     checkout: &PinnedDirectory,
     paths: &[&'a str],
-    next: &BTreeMap<&'a str, &CheckoutProjectionContent>,
+    next: &ByPath<'a>,
     sources: &mut CheckoutSources<'_>,
     settling: Option<&SettlingClose>,
 ) -> io::Result<Written<'a>> {
@@ -412,7 +412,7 @@ fn verify(
     checkout: &PinnedDirectory,
     root: &Path,
     written: &Written<'_>,
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    next: &ByPath<'_>,
     proven_at: Option<i64>,
     tick: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<(String, super::super::change_index::IndexEntry)>> {

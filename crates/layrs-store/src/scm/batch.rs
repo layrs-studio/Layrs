@@ -230,27 +230,7 @@ impl WriteBatch {
             let id = value.object_id();
             (id.kind(), id.as_str().to_owned())
         });
-        for pair in canonical_objects.windows(2) {
-            let first = pair[0].object_id();
-            let second = pair[1].object_id();
-            if first == second {
-                return Err(StoreError::DuplicateObject {
-                    kind: first.kind(),
-                    id: first.to_string(),
-                });
-            }
-        }
-
         entity_records.sort_by_key(|value| (value.kind(), value.id_str().to_owned()));
-        for pair in entity_records.windows(2) {
-            if pair[0].kind() == pair[1].kind() && pair[0].id_str() == pair[1].id_str() {
-                return Err(StoreError::DuplicateEntity {
-                    kind: pair[0].kind(),
-                    id: pair[0].id_str().to_owned(),
-                });
-            }
-        }
-
         admissions.sort_by_key(|value| {
             (
                 value.space_id().as_str().to_owned(),
@@ -258,37 +238,9 @@ impl WriteBatch {
                 value.object_id().as_str().to_owned(),
             )
         });
-        for pair in admissions.windows(2) {
-            if pair[0] == pair[1] {
-                return Err(StoreError::DuplicateAdmission {
-                    space_id: pair[0].space_id().to_string(),
-                    object_id: pair[0].object_id().to_string(),
-                });
-            }
-        }
-
         mutations.sort_by_key(StoreMutation::target_key);
-        let mut targets = BTreeSet::new();
-        for mutation in &mutations {
-            let target = mutation.target_key();
-            if !targets.insert(target.clone()) {
-                return Err(StoreError::DuplicateMutableTarget { target });
-            }
-        }
-
-        validate_operation_publications(&entity_records, &mutations)?;
-
-        let payload = BatchPayload {
-            schema_version: "layrs.store-write-batch.v1",
-            canonical_objects: &canonical_objects,
-            entity_records: &entity_records,
-            admissions: &admissions,
-            mutations: &mutations,
-        };
-        let canonical = canonical_json(&payload).map_err(|error| StoreError::Serialization {
-            message: error.to_string(),
-        })?;
-        let request_digest = RequestDigest::compute(&canonical);
+        let request_digest =
+            checked_digest(&canonical_objects, &entity_records, &admissions, &mutations)?;
 
         Ok(Self {
             transaction_id,
@@ -298,6 +250,32 @@ impl WriteBatch {
             admissions,
             mutations,
         })
+    }
+
+    /// Whether this batch is exactly what `new` builds from its own
+    /// collections: each in canonical order without duplicates, Operation
+    /// publications coupled, and its digest theirs. Checked in place, without
+    /// copying the objects (a backend's preflight).
+    pub fn verify(&self) -> Result<()> {
+        if self.canonical_objects.is_empty()
+            && self.entity_records.is_empty()
+            && self.admissions.is_empty()
+            && self.mutations.is_empty()
+        {
+            return Err(StoreError::EmptyBatch);
+        }
+        let digest = checked_digest(
+            &self.canonical_objects,
+            &self.entity_records,
+            &self.admissions,
+            &self.mutations,
+        )?;
+        if digest != self.request_digest {
+            return Err(StoreError::Corruption {
+                message: "WriteBatch digest changed after construction".into(),
+            });
+        }
+        Ok(())
     }
 
     pub fn transaction_id(&self) -> &TransactionId {
@@ -323,6 +301,122 @@ impl WriteBatch {
     pub fn mutations(&self) -> &[StoreMutation] {
         &self.mutations
     }
+}
+
+/// The checks `WriteBatch::new` makes of its sorted collections (each
+/// strictly in canonical order: an equal neighbour is a duplicate), then
+/// their digest.
+fn checked_digest(
+    canonical_objects: &[CanonicalObject],
+    entity_records: &[EntityRecord],
+    admissions: &[SpaceObjectAdmission],
+    mutations: &[StoreMutation],
+) -> Result<RequestDigest> {
+    use std::cmp::Ordering;
+    let out_of_order = || StoreError::Corruption {
+        message: "WriteBatch collections are not in canonical order".into(),
+    };
+    for pair in canonical_objects.windows(2) {
+        let first = pair[0].object_id();
+        let second = pair[1].object_id();
+        match (first.kind(), first.as_str()).cmp(&(second.kind(), second.as_str())) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                return Err(StoreError::DuplicateObject {
+                    kind: first.kind(),
+                    id: first.to_string(),
+                });
+            }
+            Ordering::Greater => return Err(out_of_order()),
+        }
+    }
+    for pair in entity_records.windows(2) {
+        match (pair[0].kind(), pair[0].id_str()).cmp(&(pair[1].kind(), pair[1].id_str())) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                return Err(StoreError::DuplicateEntity {
+                    kind: pair[0].kind(),
+                    id: pair[0].id_str().to_owned(),
+                });
+            }
+            Ordering::Greater => return Err(out_of_order()),
+        }
+    }
+    let admission_key = |value: &SpaceObjectAdmission| {
+        let object = value.object_id();
+        (
+            value.space_id().as_str().to_owned(),
+            object.kind(),
+            object.as_str().to_owned(),
+        )
+    };
+    for pair in admissions.windows(2) {
+        match admission_key(&pair[0]).cmp(&admission_key(&pair[1])) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                return Err(StoreError::DuplicateAdmission {
+                    space_id: pair[0].space_id().to_string(),
+                    object_id: pair[0].object_id().to_string(),
+                });
+            }
+            Ordering::Greater => return Err(out_of_order()),
+        }
+    }
+    for pair in mutations.windows(2) {
+        let target = pair[1].target_key();
+        match pair[0].target_key().cmp(&target) {
+            Ordering::Less => {}
+            Ordering::Equal => return Err(StoreError::DuplicateMutableTarget { target }),
+            Ordering::Greater => return Err(out_of_order()),
+        }
+    }
+
+    validate_operation_publications(entity_records, mutations)?;
+
+    let payload = BatchPayload {
+        schema_version: "layrs.store-write-batch.v1",
+        canonical_objects,
+        entity_records,
+        admissions,
+        mutations,
+    };
+    Ok(RequestDigest::compute(&batch_canonical_json(&payload)?))
+}
+
+/// `canonical_json(payload)`, byte for byte (keys in UTF-16 order:
+/// admissions, canonicalObjects, entityRecords, mutations, schemaVersion),
+/// each Tree written by its own canonical encoder instead of through a JSON
+/// value per entry: a capture of a folder of 10,000 files carries a Tree of
+/// that many entries (`batch_json_matches_the_general_encoder`).
+fn batch_canonical_json(payload: &BatchPayload<'_>) -> Result<Vec<u8>> {
+    let serialization = |error: layrs_core::scm::ScmError| StoreError::Serialization {
+        message: error.to_string(),
+    };
+    let mut out = Vec::new();
+    out.extend_from_slice(b"{\"admissions\":");
+    out.extend(canonical_json(&payload.admissions).map_err(serialization)?);
+    out.extend_from_slice(b",\"canonicalObjects\":[");
+    for (index, object) in payload.canonical_objects.iter().enumerate() {
+        if index != 0 {
+            out.push(b',');
+        }
+        match object {
+            CanonicalObject::Tree(tree) => {
+                out.extend_from_slice(b"{\"kind\":\"tree\",\"value\":");
+                out.extend(tree.canonical_json().map_err(serialization)?);
+                out.push(b'}');
+            }
+            other => out.extend(canonical_json(other).map_err(serialization)?),
+        }
+    }
+    out.extend_from_slice(b"],\"entityRecords\":");
+    out.extend(canonical_json(&payload.entity_records).map_err(serialization)?);
+    out.extend_from_slice(b",\"mutations\":");
+    out.extend(canonical_json(&payload.mutations).map_err(serialization)?);
+    out.extend_from_slice(b",\"schemaVersion\":");
+    out.extend(canonical_json(&payload.schema_version).map_err(serialization)?);
+    out.push(b'}');
+    Ok(out)
 }
 
 fn validate_operation_publications(
@@ -484,4 +578,66 @@ fn validate_operation_head_transition(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use layrs_core::scm::{
+        FileId, RepoPathComponent, Symlink, Tree, TreeEntry, TreeEntryTarget, TreeId,
+    };
+
+    fn id(seed: &str) -> String {
+        format!("blake3:{}", blake3::hash(seed.as_bytes()).to_hex())
+    }
+
+    #[test]
+    fn batch_json_matches_the_general_encoder() {
+        let names = ["a", "B", "caf\u{e9}", "quo\"te", "tab\tname", "\u{1f600}x"];
+        let tree = |seed: &str| {
+            let entries = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let id = id(&format!("{seed}{name}"));
+                    let target = if index % 2 == 0 {
+                        TreeEntryTarget::file(FileId::parse(id).unwrap())
+                    } else {
+                        TreeEntryTarget::tree(TreeId::parse(id).unwrap())
+                    };
+                    TreeEntry::new(
+                        RepoPathComponent::parse(*name).unwrap(),
+                        target,
+                        index % 3 == 0,
+                    )
+                })
+                .collect();
+            CanonicalObject::Tree(Tree::new(entries).unwrap())
+        };
+        let objects = vec![
+            tree("one"),
+            CanonicalObject::Symlink(Symlink::new("target \"quoted\"").unwrap()),
+            tree("two"),
+            CanonicalObject::Tree(Tree::new(Vec::new()).unwrap()),
+        ];
+        let payload = BatchPayload {
+            schema_version: "layrs.store-write-batch.v1",
+            canonical_objects: &objects,
+            entity_records: &[],
+            admissions: &[],
+            mutations: &[],
+        };
+        assert_eq!(
+            batch_canonical_json(&payload).unwrap(),
+            canonical_json(&payload).unwrap()
+        );
+        let empty = BatchPayload {
+            canonical_objects: &[],
+            ..payload
+        };
+        assert_eq!(
+            batch_canonical_json(&empty).unwrap(),
+            canonical_json(&empty).unwrap()
+        );
+    }
 }

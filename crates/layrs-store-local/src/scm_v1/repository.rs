@@ -393,24 +393,14 @@ impl NativeScmRepository {
     }
 
     /// Checks a batch before any Store is taken: budgets, streaming chunk
-    /// descriptors, and the digest rebuilt through the public constructor
-    /// (ordering, duplicate targets, publication coupling, canonical JSON).
+    /// descriptors, and what the public constructor checks, in place
+    /// (`WriteBatch::verify`: ordering, duplicate targets, publication
+    /// coupling, canonical JSON and digest).
     fn preflight_batch(batch: &WriteBatch, chunks: &[(ChunkId, u64)]) -> Result<()> {
+        let _span = crate::perf::span("batch.preflight");
         super::admission::preflight_batch_budgets(batch)?;
         streaming::preflight(batch, chunks)?;
-        let verified = WriteBatch::new(
-            batch.transaction_id().clone(),
-            batch.canonical_objects().to_vec(),
-            batch.entity_records().to_vec(),
-            batch.admissions().to_vec(),
-            batch.mutations().to_vec(),
-        )?;
-        if verified.request_digest() != batch.request_digest() {
-            return Err(StoreError::Corruption {
-                message: "WriteBatch digest changed after construction".into(),
-            });
-        }
-        Ok(())
+        batch.verify()
     }
 
     /// The batch applied under the exclusive capability `store`, taken at

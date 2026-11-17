@@ -196,11 +196,69 @@ impl Slot {
 
 /// Digest of a checkout projection, entries in path order (council s3, D1):
 /// what binds an index to exactly the projection it was compared against.
+/// An index being loaded early (`ChangeIndex::prefetch`): its Store root,
+/// Worktree and loading thread.
+type Prefetched = (
+    std::path::PathBuf,
+    WorktreeId,
+    std::thread::JoinHandle<Option<ChangeIndex>>,
+);
+
+fn prefetched() -> &'static std::sync::Mutex<Option<Prefetched>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<Prefetched>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(Default::default)
+}
+
 pub fn projection_digest(projection: &[CheckoutProjectionEntry]) -> [u8; 32] {
+    // The same byte stream, its slices encoded on a few threads (decoding
+    // each FileId's digest is most of the work) and hashed in order.
+    const SLICE: usize = 8_192;
+    let slices: Vec<&[CheckoutProjectionEntry]> = projection.chunks(SLICE).collect();
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(slices.len());
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"layrs.change-index.projection.v1\0");
-    let mut buffer = Vec::with_capacity(256);
-    for entry in projection {
+    if threads <= 1 {
+        for slice in &slices {
+            hasher.update(&digest_stream(slice));
+        }
+    } else {
+        let per_thread = slices.len().div_ceil(threads);
+        let streams: Vec<Vec<u8>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = slices
+                .chunks(per_thread)
+                .map(|group| {
+                    scope.spawn(move || {
+                        let mut stream = Vec::new();
+                        for slice in group {
+                            stream.extend_from_slice(&digest_stream(slice));
+                        }
+                        stream
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| match handle.join() {
+                    Ok(stream) => stream,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                })
+                .collect()
+        });
+        for stream in &streams {
+            hasher.update(stream);
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// `projection_digest`'s stream for `entries`.
+fn digest_stream(entries: &[CheckoutProjectionEntry]) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(entries.len() * 64);
+    for entry in entries {
         put_varint(&mut buffer, entry.path.len() as u64);
         buffer.extend_from_slice(entry.path.as_bytes());
         match &entry.content {
@@ -220,13 +278,8 @@ pub fn projection_digest(projection: &[CheckoutProjectionEntry]) -> [u8; 32] {
                 buffer.extend_from_slice(target.as_bytes());
             }
         }
-        if buffer.len() >= 64 * 1024 {
-            hasher.update(&buffer);
-            buffer.clear();
-        }
     }
-    hasher.update(&buffer);
-    *hasher.finalize().as_bytes()
+    buffer
 }
 
 /// Looks up a projection's files by path, for paths asked in increasing
@@ -321,7 +374,32 @@ impl ChangeIndex {
 
     /// `None` when the mechanism is off for this Worktree. A damaged index is
     /// returned empty, with the conservative margin: every file is read.
+    /// Starts loading the index of `worktree_id` on a thread; the next
+    /// `load` of that same index in this process takes it (waiting for it if
+    /// needed) instead of reading it again. A `save` of it before then drops
+    /// the early copy. For a command that will read the index after other
+    /// work (a fast-forward reads it once the folder is staged).
+    pub fn prefetch(store_root: &Path, worktree_id: &WorktreeId) {
+        let (root, worktree) = (store_root.to_path_buf(), worktree_id.clone());
+        let loading = std::thread::Builder::new()
+            .name("layrs-change-index".into())
+            .spawn(move || Self::load_now(&root, &worktree));
+        if let (Ok(loading), Ok(mut slot)) = (loading, prefetched().lock()) {
+            *slot = Some((store_root.to_path_buf(), worktree_id.clone(), loading));
+        }
+    }
+
     pub fn load(store_root: &Path, worktree_id: &WorktreeId) -> Option<Self> {
+        let early = prefetched().lock().ok().and_then(|mut slot| {
+            slot.take_if(|(root, worktree, _)| root == store_root && worktree == worktree_id)
+        });
+        match early {
+            Some((_, _, loading)) => loading.join().ok().flatten(),
+            None => Self::load_now(store_root, worktree_id),
+        }
+    }
+
+    fn load_now(store_root: &Path, worktree_id: &WorktreeId) -> Option<Self> {
         let _span = crate::perf::span("change_index.load");
         let empty = || Self {
             worktree_id: worktree_id.clone(),
@@ -398,22 +476,34 @@ impl ChangeIndex {
     /// capture read more (a torn value fails its checksum).
     pub fn save(&self, store_root: &Path) -> io::Result<()> {
         let _span = crate::perf::span("change_index.save");
+        // An early copy of this index (`prefetch`) would now be stale.
+        if let Ok(mut slot) = prefetched().lock() {
+            slot.take_if(|(root, worktree, _)| root == store_root && *worktree == self.worktree_id);
+        }
         if self.unreadable {
             crate::perf::count("change_index.save_skipped_unreadable", 1);
             return Ok(());
         }
-        let bytes = encode_bound(self);
         // With its status view, when the entries are still those it was
-        // built from, in the same transaction (a cache too).
-        let view = match (&self.status_sections, &self.binding) {
-            (Some(sections), Some(binding)) => Some(super::status_view::encode(
-                binding.tree.as_str(),
-                self.base_step.as_deref(),
-                self.margin_nanos,
-                sections,
-            )),
-            _ => None,
-        };
+        // built from, in the same transaction (a cache too); both encoded
+        // at once.
+        let (bytes, view) = std::thread::scope(|scope| {
+            let view = scope.spawn(|| match (&self.status_sections, &self.binding) {
+                (Some(sections), Some(binding)) => Some(super::status_view::encode(
+                    binding.tree.as_str(),
+                    self.base_step.as_deref(),
+                    self.margin_nanos,
+                    sections,
+                )),
+                _ => None,
+            });
+            let bytes = encode_bound(self);
+            let view = match view.join() {
+                Ok(view) => view,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            (bytes, view)
+        });
         match view {
             Some(view) => {
                 let key = super::status_view::key(self.worktree_id.as_str());
@@ -605,7 +695,7 @@ impl ChangeIndex {
         self.status_sections = Some(std::sync::Arc::new(super::status_view::encode_sections(
             projection,
             self.margin_nanos,
-            &mut |position, _| proofs[position],
+            &|position, _| proofs[position],
         )));
         self.base_step = None;
     }

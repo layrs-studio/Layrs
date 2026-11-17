@@ -237,6 +237,7 @@ impl NativeWorkspace {
             .map(|l| l.store_root.clone())
             .unwrap_or_else(|| root.join(".layrs"));
         drop(span);
+        scm_v1::warm_catalog_if_requested(&store_root);
         let span = layrs_store_local::perf::span("discover.client");
         let (client, store) = NativeClient::open_with_store(&store_root)?;
         drop(span);
@@ -662,8 +663,11 @@ impl NativeWorkspace {
                                 None => self.state_with(&store)?,
                             };
                             let step = super::references::base_step(&state)?;
-                            let projection =
-                                self.read_step_projection_with(&store, state.space.id(), &step)?;
+                            let projection = self.read_step_projection_once_with(
+                                &store,
+                                state.space.id(),
+                                &step,
+                            )?;
                             let reader = NativeScmReader::new(&store)?;
                             let root = reader
                                 .get_step(&step)?

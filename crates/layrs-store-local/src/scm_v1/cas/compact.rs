@@ -79,6 +79,20 @@ fn pack_cache() -> &'static PackCache {
     CACHE.get_or_init(Default::default)
 }
 
+/// One gate per pack this process loads: a second reader of a pack being
+/// loaded (a warm-up thread's, `scm_v1::warm_catalog`) waits for it instead
+/// of decoding it again.
+type PackLoadGates = Mutex<HashMap<(String, OsString), Arc<Mutex<()>>>>;
+
+fn pack_load_gate(key: &(String, OsString)) -> Option<Arc<Mutex<()>>> {
+    static GATES: OnceLock<PackLoadGates> = OnceLock::new();
+    GATES
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .map(|mut gates| Arc::clone(gates.entry(key.clone()).or_default()))
+}
+
 fn alias_corruption(path: &Path, error: impl fmt::Display) -> CasError {
     pack2::pack2_corruption(
         path,
@@ -261,12 +275,22 @@ impl NativeCas {
         }
         // Only a cached pack file: a pack is served only in the form its
         // registration declares (an inline pack is never its file).
-        if let Some(pack) = pack_cache()
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(&key).cloned())
-            .filter(|pack| pack.image.is_none())
-        {
+        let cached = || {
+            pack_cache()
+                .lock()
+                .ok()
+                .and_then(|cache| cache.get(&key).cloned())
+                .filter(|pack| pack.image.is_none())
+        };
+        if let Some(pack) = cached() {
+            self.check_pack_version(&pack.index, &pack.path)?;
+            return Ok(pack);
+        }
+        // Loaded once: a reader arriving while another loads it waits, then
+        // finds it cached (a failed load is not cached: it loads it itself).
+        let gate = pack_load_gate(&key);
+        let _loading = gate.as_ref().and_then(|gate| gate.lock().ok());
+        if let Some(pack) = cached() {
             self.check_pack_version(&pack.index, &pack.path)?;
             return Ok(pack);
         }
@@ -3346,6 +3370,7 @@ impl NativeCas {
         }
         let record_kind = if planned.is_some() { FILE_KIND } else { code };
         let encoded = if pack2::is_large(bytes.len()) {
+            let _span = crate::perf::span("cas.encode_large");
             Some(
                 pack2::EncodedBlock::single_record(record_kind, &bytes).map_err(|error| {
                     io_error("compress CAS pack block", &self.staging_dir, error)

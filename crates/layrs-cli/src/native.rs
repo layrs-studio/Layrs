@@ -210,6 +210,11 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     }
     // Shared discovery validates both a primary Store and a secondary file
     // locator, including its registered root and filesystem identity.
+    // A `step` reads its base projection first: its Store's catalog loads
+    // while the Workspace is discovered.
+    if matches!(cli.command, CliCommand::Step { .. }) {
+        layrs_store_local::scm_v1::request_catalog_warmup();
+    }
     let discover_span = layrs_store_local::perf::span("cli.discover");
     // `status` is read-only: it continues in the session discovery opened,
     // and so do the reads a `step` makes before reading the folder (it

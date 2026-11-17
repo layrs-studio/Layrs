@@ -86,3 +86,37 @@ pub use schema::{
 };
 pub use sqlite::ScmSchemaError;
 pub use write_batch::{RepositoryFaultInjector, RepositoryFaultPoint};
+
+/// Asks the next Workspace discovery of this process to load its Store's
+/// catalog on a thread (`warm_catalog_if_requested`): for a command that
+/// will read projections, so the packs' indexes load while it discovers.
+pub fn request_catalog_warmup() {
+    CATALOG_WARMUP.store(true, std::sync::atomic::Ordering::Release);
+}
+
+static CATALOG_WARMUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `warm_catalog`, once, if `request_catalog_warmup` asked for it.
+pub fn warm_catalog_if_requested(root: &std::path::Path) {
+    if CATALOG_WARMUP.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        warm_catalog(root);
+    }
+}
+
+/// Loads the catalog of the Store at `root` (its registered packs' indexes,
+/// cached for this process and checked against their registration at every
+/// catalog load) on a detached thread, through its own shared session.
+/// Best effort: a failure is the reader's to find and report.
+pub fn warm_catalog(root: &std::path::Path) {
+    let root = root.to_path_buf();
+    let _ = std::thread::Builder::new()
+        .name("layrs-catalog".into())
+        .spawn(move || {
+            let _span = crate::perf::span("warm.catalog");
+            if let Ok(store) = open(&root) {
+                if let Ok(reader) = NativeScmReader::new(&store) {
+                    let _ = reader.catalog_damaged();
+                }
+            }
+        });
+}

@@ -504,6 +504,7 @@ impl NativeClient {
         // holds (received v1, kept whole; council s16 r1): only when its
         // chunks can leave the spool with it.
         let mut chunks = snapshot.chunks.take();
+        let new_objects_span = layrs_store_local::perf::span("prepare.new_objects");
         let NewObjects {
             objects,
             mut redundant,
@@ -532,6 +533,8 @@ impl NativeClient {
             .into_iter()
             .filter(|object| !redundant_object(object, &redundant, &redundant_chunks))
             .collect();
+        drop(new_objects_span);
+        let _batch_span = layrs_store_local::perf::span("prepare.write_batch");
         let admissions = admissions_with_chunks(worktree.space_id(), &objects, chunks.as_deref());
         let batch = WriteBatch::new(
             stamp.transaction_id,

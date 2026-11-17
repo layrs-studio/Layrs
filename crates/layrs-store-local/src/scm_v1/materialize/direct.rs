@@ -42,8 +42,8 @@ pub(super) struct DirectCheckout<'a> {
 pub(super) fn apply(
     context: &DirectCheckout<'_>,
     paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    prior: &ByPath<'_>,
+    next: &ByPath<'_>,
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<ApplyBatchOutcome> {
     let _span = crate::perf::span("materialize.direct");
@@ -58,27 +58,45 @@ pub(super) fn apply(
         .ensure_child_unsynced("repair-backups".as_ref())?;
     sweep_unjournaled_attempts(&backups, context.worktree_id, context.journaled_folders);
     let attempt = empty_attempt_folder(&backups, context.attempt_name.as_ref(), false)?;
-    let stage = crate::perf::span("materialize.stage");
-    let staged = stage_all(&attempt, paths, prior, next, sources);
-    if let Some(end_staging) = sources.end_staging.as_mut() {
-        end_staging();
-    }
-    drop(stage);
     let mut sealed = Vec::new();
-    let result = match staged {
-        Ok((staged, _, written)) => write(
-            context,
-            &attempt,
-            paths,
-            prior,
-            next,
-            sources,
-            staged,
-            written,
-            &mut sealed,
-        ),
-        Err(failure) => Err(failure),
-    };
+    let result = std::thread::scope(|scope| {
+        // The change index (a cache) is read while the files are staged and
+        // the batch validated (`write` records it).
+        let loading = super::super::change_index::ChangeIndex::is_enabled(
+            context.store_root,
+            context.worktree_id,
+        )
+        .then(|| {
+            scope.spawn(|| {
+                let _span = crate::perf::span("materialize.change_index_load");
+                super::super::change_index::ChangeIndex::load(
+                    context.store_root,
+                    context.worktree_id,
+                )
+            })
+        });
+        let stage = crate::perf::span("materialize.stage");
+        let staged = stage_all(&attempt, paths, prior, next, sources);
+        if let Some(end_staging) = sources.end_staging.as_mut() {
+            end_staging();
+        }
+        drop(stage);
+        match staged {
+            Ok((staged, _, written)) => write(
+                context,
+                &attempt,
+                paths,
+                prior,
+                next,
+                sources,
+                staged,
+                written,
+                &mut sealed,
+                loading,
+            ),
+            Err(failure) => Err(failure),
+        }
+    });
     // Whatever happened: every original moved aside was proven to hold base
     // content (in the Store) and is removed while still that very file, and
     // the staged files left (the transition failed) go with the folder.
@@ -98,24 +116,25 @@ fn write(
     context: &DirectCheckout<'_>,
     attempt: &PinnedDirectory,
     paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    prior: &ByPath<'_>,
+    next: &ByPath<'_>,
     sources: &mut CheckoutSources<'_>,
     staged: BTreeMap<&str, PinnedLeaf>,
     written: BTreeMap<&str, StagedStamp>,
     sealed: &mut Vec<(String, BackupSeal)>,
+    loading: Option<
+        std::thread::ScopedJoinHandle<'_, Option<super::super::change_index::ChangeIndex>>,
+    >,
 ) -> io::Result<ApplyBatchOutcome> {
     let checkout = PinnedDirectory::open(Path::new(context.checkout_root))?;
     if checkout.identity_token() != context.identity {
         return Err(error("checkout identity changed"));
     }
-    let indexed = super::super::change_index::ChangeIndex::is_enabled(
-        context.store_root,
-        context.worktree_id,
-    );
-    let mut proven: Vec<(String, super::super::change_index::IndexEntry)> = Vec::new();
-    let mut files = || -> io::Result<()> {
+    let indexed = loading.is_some();
+    // Returns what the installed files proved for the change index.
+    let mut files = || -> io::Result<Vec<(String, super::super::change_index::IndexEntry)>> {
         let _write = crate::perf::span("materialize.direct_write");
+        let mut proven: Vec<(String, super::super::change_index::IndexEntry)> = Vec::new();
         // Originals moved aside so far, to put back if the transition
         // refuses before anything is installed.
         let mut moved: Vec<(String, &str)> = Vec::new();
@@ -276,22 +295,51 @@ fn write(
                 "checkout changed during materialization: the folder is partly updated",
             ));
         }
-        Ok(())
+        Ok(proven)
     };
     // The folder's own failure, reported as itself (not as the Store's).
     let mut failure: Option<io::Error> = None;
-    // The change index (a cache) is read while the batch commits; it is
-    // resolved against `before` below, as after the commit.
-    let (outcome, loaded) = std::thread::scope(|scope| {
-        let loading = indexed.then(|| {
-            scope.spawn(|| {
-                let _span = crate::perf::span("materialize.change_index_load");
-                super::super::change_index::ChangeIndex::load(
-                    context.store_root,
-                    context.worktree_id,
-                )
-            })
-        });
+    // The change index (a cache) is read while the batch is validated, then
+    // recorded on its own thread as soon as the folder is written (what the
+    // installed files proved comes through `written_tx`), while the batch
+    // commits: a cache bound to a transition whose commit then fails is
+    // only a miss for the next command (its binding is not the Worktree's
+    // base), as for a capture.
+    let (written_tx, written_rx) =
+        std::sync::mpsc::sync_channel::<Vec<(String, super::super::change_index::IndexEntry)>>(1);
+    let outcome = std::thread::scope(|scope| {
+        if let Some(loading) = loading {
+            scope.spawn(move || {
+                let Some(mut index) = loading.join().ok().flatten() else {
+                    return;
+                };
+                // What does not depend on the written files, while they are
+                // written.
+                let digest = {
+                    let _span = crate::perf::span("materialize.change_index_early");
+                    index.resolve(context.before);
+                    super::super::change_index::projection_digest(context.after)
+                };
+                // Nothing is recorded unless the folder was written.
+                let Ok(proven) = written_rx.recv() else {
+                    return;
+                };
+                let _span = crate::perf::span("materialize.change_index");
+                for path in paths {
+                    index.remove_path(path);
+                }
+                for (path, entry) in proven {
+                    index.insert(path, entry);
+                }
+                index.bind_digested(context.projection, context.after, &digest);
+                if let Some(step) = context.target_step {
+                    index.set_base_step(step);
+                }
+                if index.save(context.store_root).is_err() {
+                    crate::perf::count("materialize.change_index_unsaved", 1);
+                }
+            });
+        }
         let metadata = crate::perf::span("materialize.direct_metadata");
         let outcome = NativeScmRepository::new(context.store_root)
             .with_short_acquisition()
@@ -301,17 +349,23 @@ fn write(
                 context.batch,
                 sources.chunks,
                 &mut sources.read_chunk,
-                || {
-                    files().map_err(|error| {
+                || match files() {
+                    Ok(proven) => {
+                        let _ = written_tx.send(proven);
+                        Ok(())
+                    }
+                    Err(error) => {
                         let message = error.to_string();
                         failure = Some(error);
-                        layrs_store::scm::StoreError::Backend { message }
-                    })
+                        Err(layrs_store::scm::StoreError::Backend { message })
+                    }
                 },
             );
         drop(metadata);
-        let loaded = loading.and_then(|loading| loading.join().ok().flatten());
-        (outcome, loaded)
+        // The recording thread ends once the sender is gone (nothing sent:
+        // nothing recorded).
+        drop(written_tx);
+        outcome
     });
     if let Some(failure) = failure {
         return Err(failure);
@@ -320,24 +374,6 @@ fn write(
     {
         let _close = crate::perf::span("materialize.close_staged");
         drop(close_in_background(staged.into_values().collect()));
-    }
-    if let Some(mut index) = loaded {
-        // A cache, as on the journaled path.
-        let _span = crate::perf::span("materialize.change_index");
-        index.resolve(context.before);
-        for path in paths {
-            index.remove_path(path);
-        }
-        for (path, entry) in proven {
-            index.insert(path, entry);
-        }
-        index.bind(context.projection, context.after);
-        if let Some(step) = context.target_step {
-            index.set_base_step(step);
-        }
-        if index.save(context.store_root).is_err() {
-            crate::perf::count("materialize.change_index_unsaved", 1);
-        }
     }
     Ok(outcome)
 }
@@ -373,8 +409,8 @@ fn put_back(
 fn remove_emptied_folders(
     checkout: &PinnedDirectory,
     paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    prior: &ByPath<'_>,
+    next: &ByPath<'_>,
 ) {
     let mut folders = std::collections::BTreeSet::new();
     for path in paths {
@@ -399,7 +435,7 @@ fn remove_emptied_folders(
     for folder in folders {
         let prefix = format!("{folder}/");
         let tracked = next
-            .range(prefix.as_str()..)
+            .range_from(prefix.as_str())
             .next()
             .is_some_and(|(path, _)| path.starts_with(&prefix));
         if tracked {

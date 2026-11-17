@@ -21,6 +21,101 @@ mod direct;
 mod fresh;
 mod lease;
 mod sources;
+
+/// A projection's contents by path, searched in place: its paths, sorted
+/// and unique, beside their contents (a map of every path cost a transition
+/// of 99,000 files two tree builds and a sort of both key sets).
+#[derive(Default)]
+struct ByPath<'a> {
+    paths: Vec<&'a str>,
+    contents: Vec<&'a CheckoutProjectionContent>,
+}
+
+impl<'a> ByPath<'a> {
+    /// `entries` by path (a projection is sorted already; else sorted
+    /// here). A path given twice is refused.
+    fn new(entries: &'a [CheckoutProjectionEntry]) -> io::Result<Self> {
+        Self::from_pairs(
+            entries
+                .iter()
+                .map(|entry| (entry.path.as_str(), &entry.content)),
+        )
+    }
+
+    fn from_pairs(
+        pairs: impl IntoIterator<Item = (&'a str, &'a CheckoutProjectionContent)>,
+    ) -> io::Result<Self> {
+        let mut pairs: Vec<_> = pairs.into_iter().collect();
+        if !pairs.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            pairs.sort_by(|left, right| left.0.cmp(right.0));
+            if pairs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(error("a checkout projection holds a path twice"));
+            }
+        }
+        let (paths, contents) = pairs.into_iter().unzip();
+        Ok(Self { paths, contents })
+    }
+
+    fn get(&self, path: &str) -> Option<&&'a CheckoutProjectionContent> {
+        self.paths
+            .binary_search(&path)
+            .ok()
+            .map(|index| &self.contents[index])
+    }
+
+    fn contains_key(&self, path: &str) -> bool {
+        self.paths.binary_search(&path).is_ok()
+    }
+
+    fn keys(&self) -> std::slice::Iter<'_, &'a str> {
+        self.paths.iter()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    /// The entries from `from` on, in path order (a map's `range(from..)`).
+    fn range_from(
+        &self,
+        from: &str,
+    ) -> impl Iterator<Item = (&&'a str, &&'a CheckoutProjectionContent)> + '_ {
+        let start = self.paths.partition_point(|path| *path < from);
+        self.paths[start..].iter().zip(&self.contents[start..])
+    }
+
+    /// Every path whose content differs between `self` and `other` (absent
+    /// on one side included), sorted: one merge of both.
+    fn changed_paths(&self, other: &Self) -> Vec<&'a str> {
+        let mut changed = Vec::new();
+        let (mut left, mut right) = (0, 0);
+        while left < self.paths.len() || right < other.paths.len() {
+            let order = match (self.paths.get(left), other.paths.get(right)) {
+                (Some(old), Some(new)) => old.cmp(new),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Greater,
+            };
+            match order {
+                std::cmp::Ordering::Less => {
+                    changed.push(self.paths[left]);
+                    left += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    changed.push(other.paths[right]);
+                    right += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if self.contents[left] != other.contents[right] {
+                        changed.push(self.paths[left]);
+                    }
+                    left += 1;
+                    right += 1;
+                }
+            }
+        }
+        changed
+    }
+}
 use lease::{LEASE_MS, LeaseKeeper};
 pub use sources::CheckoutSources;
 
@@ -61,11 +156,7 @@ const HELD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// capability through its phases (council s10, Q1): at most `HELD_MAX_PATHS`
 /// paths, regular files only, no file replaced by a directory or the
 /// reverse, and at most `HELD_MAX_BYTES` of originals and new files.
-fn held_scope(
-    paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
-) -> bool {
+fn held_scope(paths: &[&str], prior: &ByPath<'_>, next: &ByPath<'_>) -> bool {
     if paths.is_empty() || paths.len() > HELD_MAX_PATHS {
         return false;
     }
@@ -336,18 +427,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
             "checkout projection does not match prepared RepositoryView",
         ));
     }
-    let prior: BTreeMap<_, _> = before
-        .iter()
-        .map(|e| (e.path.as_str(), &e.content))
-        .collect();
-    let next: BTreeMap<_, _> = after
-        .iter()
-        .map(|e| (e.path.as_str(), &e.content))
-        .collect();
-    let mut paths: Vec<_> = prior.keys().chain(next.keys()).copied().collect();
-    paths.sort();
-    paths.dedup();
-    paths.retain(|p| prior.get(p) != next.get(p));
+    let prior = ByPath::new(before)?;
+    let next = ByPath::new(after)?;
+    let paths = prior.changed_paths(&next);
     let checkout = CheckoutReader::open(
         worktree.checkout_root(),
         Some(worktree.filesystem_identity()),
@@ -1454,8 +1536,8 @@ type Staged<'a> = (
 fn stage_all<'a>(
     backup: &PinnedDirectory,
     paths: &[&'a str],
-    prior: &BTreeMap<&'a str, &CheckoutProjectionContent>,
-    next: &BTreeMap<&'a str, &CheckoutProjectionContent>,
+    prior: &ByPath<'a>,
+    next: &ByPath<'a>,
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<Staged<'a>> {
     // Each staged file stays open until the commit (council s21 r2).
@@ -1534,7 +1616,7 @@ fn touched_paths_match(
     checkout: &PinnedDirectory,
     root: &Path,
     paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
+    prior: &ByPath<'_>,
 ) -> io::Result<bool> {
     // A fresh, empty checkout (worktree creation) has nothing to compare.
     if prior.is_empty() && fs::read_dir(root)?.next().is_none() {
@@ -1559,7 +1641,7 @@ fn touched_paths_match(
         let tracked_below = |directory: &str| {
             let prefix = format!("{directory}/");
             prior
-                .range::<&str, _>(prefix.as_str()..)
+                .range_from(prefix.as_str())
                 .next()
                 .is_some_and(|(p, _)| p.starts_with(&prefix))
         };
@@ -1598,12 +1680,12 @@ fn only_removed_tracked_below(
     root: &Path,
     directory: &str,
     paths: &[&str],
-    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
+    prior: &ByPath<'_>,
 ) -> io::Result<()> {
     let removed_below = |folder: &str| {
         let prefix = format!("{folder}/");
         prior
-            .range::<&str, _>(prefix.as_str()..)
+            .range_from(prefix.as_str())
             .take_while(|(path, _)| path.starts_with(&prefix))
             .any(|(path, _)| paths.binary_search(path).is_ok())
     };
@@ -1642,7 +1724,7 @@ fn touched_paths_installed(
     checkout: &PinnedDirectory,
     root: &Path,
     paths: &[&str],
-    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    next: &ByPath<'_>,
     trust: &mut dyn FnMut(&str, &Path) -> Option<super::checkout::TrustedFile>,
     progress: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<bool> {
@@ -2348,15 +2430,12 @@ mod held_scope_tests {
                 .collect::<Vec<_>>()
         };
         let map = |count: usize, content: &'static CheckoutProjectionContent| {
-            names[..count]
-                .iter()
-                .map(|name| (name.as_str(), content))
-                .collect::<BTreeMap<_, _>>()
+            ByPath::from_pairs(names[..count].iter().map(|name| (name.as_str(), content))).unwrap()
         };
         let small: &'static CheckoutProjectionContent = Box::leak(Box::new(small));
         assert!(held_scope(&paths(64), &map(64, small), &map(64, small)));
         assert!(!held_scope(&paths(65), &map(65, small), &map(65, small)));
-        assert!(!held_scope(&[], &BTreeMap::new(), &BTreeMap::new()));
+        assert!(!held_scope(&[], &ByPath::default(), &ByPath::default()));
         // 16 MiB together is in; one byte more is out.
         let half: &'static CheckoutProjectionContent = Box::leak(Box::new(file(8 * 1024 * 1024)));
         let over: &'static CheckoutProjectionContent =
@@ -2364,8 +2443,8 @@ mod held_scope_tests {
         assert!(held_scope(&paths(1), &map(1, half), &map(1, half)));
         assert!(!held_scope(&paths(1), &map(1, half), &map(1, over)));
         // A file replaced by a directory (or the reverse) is out.
-        let prior = BTreeMap::from([("d", small)]);
-        let next = BTreeMap::from([("d/a", small)]);
+        let prior = ByPath::from_pairs([("d", small)]).unwrap();
+        let next = ByPath::from_pairs([("d/a", small)]).unwrap();
         assert!(!held_scope(&["d", "d/a"], &prior, &next));
         // A symlink is out.
         let link: &'static CheckoutProjectionContent =
@@ -2374,8 +2453,8 @@ mod held_scope_tests {
             }));
         assert!(!held_scope(
             &["l"],
-            &BTreeMap::from([("l", link)]),
-            &BTreeMap::new()
+            &ByPath::from_pairs([("l", link)]).unwrap(),
+            &ByPath::default()
         ));
     }
 }

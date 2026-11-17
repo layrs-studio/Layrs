@@ -319,16 +319,18 @@ impl NativeWorkspace {
                     .cloned()
                     .collect(),
             )?;
+            // The change index the transition records is read meanwhile.
+            scm_v1::change_index::ChangeIndex::prefetch(self.store_root(), self.worktree_id());
             // Both projections at once: the base's and the target's.
             let span = layrs_store_local::perf::span("ff.read_projections");
             let (before, after) = std::thread::scope(|scope| {
                 let before = scope.spawn(|| {
                     let _span = layrs_store_local::perf::span("ff.read_before");
-                    self.read_step_projection_in(source.space.id(), expected_head)
+                    self.read_step_projection_once_in(source.space.id(), expected_head)
                 });
                 let after = {
                     let _span = layrs_store_local::perf::span("ff.read_after");
-                    self.read_step_projection_in(source.space.id(), step)
+                    self.read_step_projection_once_in(source.space.id(), step)
                 };
                 let before = before
                     .join()
@@ -696,7 +698,18 @@ impl NativeWorkspace {
         batch: &WriteBatch,
         faults: &dyn MaterializationFaults,
     ) -> Result<()> {
-        let files: BTreeMap<_, _> = after.iter().map(|e| (e.path.as_str(), e)).collect();
+        // `after` by path: searched in place when sorted (a projection is),
+        // else through a map.
+        let sorted = after.windows(2).all(|pair| pair[0].path < pair[1].path);
+        let map: Option<BTreeMap<_, _>> =
+            (!sorted).then(|| after.iter().map(|e| (e.path.as_str(), e)).collect());
+        let find = |path: &str| match &map {
+            Some(map) => map.get(path).copied(),
+            None => after
+                .binary_search_by(|entry| entry.path.as_str().cmp(path))
+                .ok()
+                .map(|index| &after[index]),
+        };
         // Staging holds the checkout lease but no exclusive Store handle. One
         // shared capability serves the whole (concurrent) staging phase and
         // `end_staging` releases it: never retained across journal/commit
@@ -705,9 +718,8 @@ impl NativeWorkspace {
         let staging_store = restore_projection::SharedStagingStore::new(|| self.open_store());
         let mut end_staging = || staging_store.end();
         let write_shared = |path: &str, output: &mut dyn std::io::Write| {
-            let entry = files
-                .get(path)
-                .ok_or_else(|| std::io::Error::other("prepared restore file absent"))?;
+            let entry =
+                find(path).ok_or_else(|| std::io::Error::other("prepared restore file absent"))?;
             staging_store.with_reader(|reader| {
                 restore_projection::write_file(reader, batch.canonical_objects(), entry, output)
             })

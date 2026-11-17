@@ -33,6 +33,36 @@ impl NativeWorkspace {
         self.read_step_projection_with(&store, space, step)
     }
 
+    /// `read_step_projection_in` for a projection read once (a fast-forward's
+    /// base and target): not kept in this process's memo, whose copy of
+    /// every entry costs more than it saves there.
+    pub(super) fn read_step_projection_once_in(
+        &self,
+        space: &SpaceId,
+        step: &StepId,
+    ) -> Result<Vec<CheckoutProjectionEntry>> {
+        if let Some(cached) = self.memoized_projection(space, step) {
+            return Ok(cached);
+        }
+        let store = self.session_store()?;
+        self.read_step_projection_once_with(&store, space, step)
+    }
+
+    /// `read_step_projection_with`, not kept in the memo (see
+    /// `read_step_projection_once_in`).
+    pub(super) fn read_step_projection_once_with(
+        &self,
+        store: &layrs_store_local::scm_v1::NativeStoreOpen,
+        space: &SpaceId,
+        step: &StepId,
+    ) -> Result<Vec<CheckoutProjectionEntry>> {
+        if let Some(cached) = self.memoized_projection(space, step) {
+            return Ok(cached);
+        }
+        let reader = NativeScmReader::new(store)?;
+        read_admitted_step_projection(&reader, space, step, Some(store.layout().root()))
+    }
+
     fn memoized_projection(
         &self,
         space: &SpaceId,

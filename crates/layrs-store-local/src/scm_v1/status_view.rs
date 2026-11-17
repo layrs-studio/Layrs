@@ -88,24 +88,35 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 /// The sections of a view (without its header): for each folder of
-/// `projection`, its entries. `proof` answers for each file path.
+/// `projection`, its entries. `proof` answers for each file path. Each
+/// folder's section stands alone (its deltas start again), so large views
+/// encode their folders on a few threads, then join them in folder order.
 pub(crate) fn encode_sections(
     projection: &[CheckoutProjectionEntry],
     margin_nanos: i64,
-    proof: &mut dyn FnMut(usize, u64) -> Proof,
+    proof: &(dyn Fn(usize, u64) -> Proof + Sync),
 ) -> Vec<u8> {
     let _span = crate::perf::span("status_view.encode");
     // Folder path -> entries (name, kind and data), names in byte order.
-    type Child<'a> = (&'a str, Option<(usize, &'a CheckoutProjectionEntry)>);
     let mut folders: BTreeMap<&str, Vec<Child<'_>>> = BTreeMap::new();
     folders.insert("", Vec::new());
     let mut known = std::collections::HashSet::new();
+    // The entries of one folder mostly follow each other: they are gathered
+    // until the folder changes, then filed under it.
+    let mut run: Option<(&str, Vec<Child<'_>>)> = None;
     for (position, entry) in projection.iter().enumerate() {
         let (folder, name) = entry.path.rsplit_once('/').unwrap_or(("", &entry.path));
-        folders
-            .entry(folder)
-            .or_default()
-            .push((name, Some((position, entry))));
+        match &mut run {
+            Some((current, children)) if *current == folder => {
+                children.push((name, Some((position, entry))));
+                continue;
+            }
+            _ => {}
+        }
+        if let Some((current, children)) = run.take() {
+            folders.entry(current).or_default().extend(children);
+        }
+        run = Some((folder, vec![(name, Some((position, entry)))]));
         // Every ancestor folder is an entry of its parent (once).
         let mut child = folder;
         while !child.is_empty() && known.insert(child) {
@@ -115,77 +126,141 @@ pub(crate) fn encode_sections(
             child = parent;
         }
     }
+    if let Some((current, children)) = run.take() {
+        folders.entry(current).or_default().extend(children);
+    }
     let mut out = Vec::with_capacity(projection.len() * 24 + 64);
     put_varint(&mut out, folders.len() as u64);
-    for (folder, mut entries) in folders {
-        // Already in name order unless a subfolder sorts after a file whose
-        // name extends it (`a/b-c` before `a/b/...`).
-        if !entries.is_sorted_by(|a, b| a.0.as_bytes() <= b.0.as_bytes()) {
-            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let folders: Vec<(&str, Vec<Child<'_>>)> = folders.into_iter().collect();
+    const PER_THREAD: usize = 8_192;
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(projection.len().div_ceil(PER_THREAD));
+    if threads <= 1 {
+        for (folder, entries) in folders {
+            encode_folder(&mut out, folder, entries, margin_nanos, proof);
         }
-        put_bytes(&mut out, folder.as_bytes());
-        put_varint(&mut out, entries.len() as u64);
-        let mut previous: &str = "";
-        let (mut last_modified, mut last_verified) = (0_i64, 0_i64);
-        for (name, entry) in entries {
-            let shared = previous
-                .bytes()
-                .zip(name.bytes())
-                .take_while(|(a, b)| a == b)
-                .count();
-            put_varint(&mut out, shared as u64);
-            put_bytes(&mut out, &name.as_bytes()[shared..]);
-            previous = name;
-            match entry.map(|(position, entry)| (position, &entry.content)) {
-                None => out.push(TAG_FOLDER),
-                Some((_, CheckoutProjectionContent::Symlink { target })) => {
-                    out.push(TAG_SYMLINK);
-                    put_bytes(&mut out, target.as_bytes());
-                }
-                Some((
-                    position,
-                    CheckoutProjectionContent::File {
-                        file_id,
-                        byte_length,
-                        executable,
-                    },
-                )) => {
-                    // A proof taken too soon after the file's last write
-                    // never becomes trusted: the file is unproven.
-                    let proof = match proof(position, *byte_length) {
-                        Proof::Base(stat, verified_at) | Proof::Other(stat, verified_at)
-                            if stat
-                                .modified
-                                .checked_add(margin_nanos)
-                                .is_none_or(|limit| limit >= verified_at) =>
-                        {
-                            Proof::None
-                        }
-                        proof => proof,
-                    };
-                    out.push(match proof {
-                        Proof::None => TAG_FILE,
-                        Proof::Base(..) => TAG_FILE_EQUAL,
-                        Proof::Other(..) => TAG_FILE_OTHER,
-                    });
-                    put_varint(&mut out, *byte_length);
-                    out.push(u8::from(*executable));
-                    // An unproven file (a few: those changed just before
-                    // they were proven) keeps its FileId, to be hashed.
-                    if proof == Proof::None {
-                        out.extend_from_slice(&file_id.digest_bytes());
+        return out;
+    }
+    // Consecutive folders in groups of about the same entry count.
+    let target = projection.len().div_ceil(threads).max(1);
+    let mut groups: Vec<Vec<(&str, Vec<Child<'_>>)>> = vec![Vec::new()];
+    let mut filled = 0;
+    for folder in folders {
+        if filled >= target {
+            groups.push(Vec::new());
+            filled = 0;
+        }
+        filled += folder.1.len();
+        if let Some(group) = groups.last_mut() {
+            group.push(folder);
+        }
+    }
+    let parts: Vec<Vec<u8>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = groups
+            .into_iter()
+            .map(|group| {
+                scope.spawn(move || {
+                    let mut part = Vec::new();
+                    for (folder, entries) in group {
+                        encode_folder(&mut part, folder, entries, margin_nanos, proof);
                     }
-                    if let Proof::Base(stat, verified_at) | Proof::Other(stat, verified_at) = proof
+                    part
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(part) => part,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    for part in parts {
+        out.extend_from_slice(&part);
+    }
+    out
+}
+
+/// A folder's child: its name, and its entry (with its position in the
+/// projection), or `None` for a subfolder.
+type Child<'a> = (&'a str, Option<(usize, &'a CheckoutProjectionEntry)>);
+
+/// One folder's section of a view.
+fn encode_folder(
+    out: &mut Vec<u8>,
+    folder: &str,
+    mut entries: Vec<Child<'_>>,
+    margin_nanos: i64,
+    proof: &(dyn Fn(usize, u64) -> Proof + Sync),
+) {
+    // Already in name order unless a subfolder sorts after a file whose
+    // name extends it (`a/b-c` before `a/b/...`).
+    if !entries.is_sorted_by(|a, b| a.0.as_bytes() <= b.0.as_bytes()) {
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    }
+    put_bytes(out, folder.as_bytes());
+    put_varint(out, entries.len() as u64);
+    let mut previous: &str = "";
+    let (mut last_modified, mut last_verified) = (0_i64, 0_i64);
+    for (name, entry) in entries {
+        let shared = previous
+            .bytes()
+            .zip(name.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        put_varint(out, shared as u64);
+        put_bytes(out, &name.as_bytes()[shared..]);
+        previous = name;
+        match entry.map(|(position, entry)| (position, &entry.content)) {
+            None => out.push(TAG_FOLDER),
+            Some((_, CheckoutProjectionContent::Symlink { target })) => {
+                out.push(TAG_SYMLINK);
+                put_bytes(out, target.as_bytes());
+            }
+            Some((
+                position,
+                CheckoutProjectionContent::File {
+                    file_id,
+                    byte_length,
+                    executable,
+                },
+            )) => {
+                // A proof taken too soon after the file's last write
+                // never becomes trusted: the file is unproven.
+                let proof = match proof(position, *byte_length) {
+                    Proof::Base(stat, verified_at) | Proof::Other(stat, verified_at)
+                        if stat
+                            .modified
+                            .checked_add(margin_nanos)
+                            .is_none_or(|limit| limit >= verified_at) =>
                     {
-                        put_stat(&mut out, &stat, &mut last_modified);
-                        put_signed(&mut out, verified_at.wrapping_sub(last_verified));
-                        last_verified = verified_at;
+                        Proof::None
                     }
+                    proof => proof,
+                };
+                out.push(match proof {
+                    Proof::None => TAG_FILE,
+                    Proof::Base(..) => TAG_FILE_EQUAL,
+                    Proof::Other(..) => TAG_FILE_OTHER,
+                });
+                put_varint(out, *byte_length);
+                out.push(u8::from(*executable));
+                // An unproven file (a few: those changed just before
+                // they were proven) keeps its FileId, to be hashed.
+                if proof == Proof::None {
+                    out.extend_from_slice(&file_id.digest_bytes());
+                }
+                if let Proof::Base(stat, verified_at) | Proof::Other(stat, verified_at) = proof {
+                    put_stat(out, &stat, &mut last_modified);
+                    put_signed(out, verified_at.wrapping_sub(last_verified));
+                    last_verified = verified_at;
                 }
             }
         }
     }
-    out
 }
 
 fn put_stat(out: &mut Vec<u8>, stat: &StatKey, last_modified: &mut i64) {
@@ -999,8 +1074,7 @@ mod tests {
             },
             file("z.txt", 7),
         ];
-        let sections = encode_sections(&projection, 100, &mut |position, _| match projection
-            [position]
+        let sections = encode_sections(&projection, 100, &|position, _| match projection[position]
             .path
             .as_str()
         {

@@ -38,6 +38,56 @@ impl From<&CheckoutEntry> for CheckoutProjectionEntry {
     }
 }
 
+/// The paths a scan treats as tracked (those of the base projection): kept
+/// even where ignore rules would skip them.
+pub trait Tracked: Sync {
+    fn contains(&self, path: &str) -> bool;
+    /// Whether some tracked path is below `folder/` (`below` ends with `/`).
+    fn holds_below(&self, below: &str) -> bool;
+}
+
+impl Tracked for std::collections::BTreeSet<String> {
+    fn contains(&self, path: &str) -> bool {
+        std::collections::BTreeSet::contains(self, path)
+    }
+
+    fn holds_below(&self, below: &str) -> bool {
+        self.range::<str, _>((std::ops::Bound::Included(below), std::ops::Bound::Unbounded))
+            .next()
+            .is_some_and(|path| path.starts_with(below))
+    }
+}
+
+/// A projection's paths, strictly sorted by bytes (checked when made),
+/// answered by binary search: no copy of every path.
+#[derive(Clone, Copy)]
+pub struct SortedPaths<'a>(&'a [CheckoutProjectionEntry]);
+
+impl<'a> SortedPaths<'a> {
+    /// `entries`' paths, if strictly sorted.
+    pub fn new(entries: &'a [CheckoutProjectionEntry]) -> Option<Self> {
+        entries
+            .windows(2)
+            .all(|pair| pair[0].path < pair[1].path)
+            .then_some(Self(entries))
+    }
+}
+
+impl Tracked for SortedPaths<'_> {
+    fn contains(&self, path: &str) -> bool {
+        self.0
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .is_ok()
+    }
+
+    fn holds_below(&self, below: &str) -> bool {
+        let first = self.0.partition_point(|entry| entry.path.as_str() < below);
+        self.0
+            .get(first)
+            .is_some_and(|entry| entry.path.starts_with(below))
+    }
+}
+
 pub fn validate_streaming_projection(entries: &[CheckoutProjectionEntry]) -> io::Result<()> {
     // Path validation is content-independent; do not allocate placeholder file
     // buffers or duplicate the platform's case/device-name rules.
@@ -75,15 +125,109 @@ pub fn validate_observed_projection(entries: &[CheckoutProjectionEntry]) -> io::
     Ok(())
 }
 
+/// `validate_observed_projection(entries)` when `valid` passed it (a
+/// projection read from an admitted Step, as the scan trusts when it finds
+/// one unchanged): only what `entries` adds or changes is checked, against
+/// all of `entries` (`checkout_paths::validate_added_paths`). Both are
+/// sorted by path; a `valid` that is not is checked in full.
+pub fn validate_observed_projection_beside(
+    entries: &[CheckoutProjectionEntry],
+    valid: &[CheckoutProjectionEntry],
+) -> io::Result<()> {
+    if valid.windows(2).any(|pair| pair[0].path >= pair[1].path) {
+        return validate_observed_projection(entries);
+    }
+    if entries.len() > layrs_core::scm::MAX_CHECKOUT_ENTRIES {
+        return Err(invalid("checkout entry limit exceeded"));
+    }
+    let mut added = Vec::new();
+    let mut total = 0u64;
+    let mut position = 0;
+    for entry in entries {
+        while valid
+            .get(position)
+            .is_some_and(|old| old.path.as_str() < entry.path.as_str())
+        {
+            position += 1;
+        }
+        let old = valid.get(position).filter(|old| old.path == entry.path);
+        if old.is_none() {
+            if entry.path.split('/').count() > 128 {
+                return Err(invalid("invalid checkout projection path"));
+            }
+            added.push(entry.path.as_str());
+        }
+        let length = match &entry.content {
+            CheckoutProjectionContent::File { byte_length, .. } => *byte_length,
+            CheckoutProjectionContent::Symlink { target } => {
+                if old.is_none_or(|old| old.content != entry.content) {
+                    Symlink::new(target).map_err(|e| invalid(&e.to_string()))?;
+                }
+                target.len() as u64
+            }
+        };
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| invalid("checkout size overflow"))?;
+    }
+    let current: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+    let valid: Vec<&str> = valid.iter().map(|entry| entry.path.as_str()).collect();
+    super::super::checkout_paths::validate_added_paths(&current, &valid, &added, cfg!(windows))
+}
+
 /// Content fingerprint of a projection (every path, kind, id, flag and
 /// length, unambiguously framed): the key of `projection_tree_id`'s memo.
+/// Fixed slices of entries are hashed on a few threads, then their digests
+/// in order (the value depends on the entries only, not on the threads).
 fn projection_fingerprint(entries: &[CheckoutProjectionEntry]) -> [u8; 32] {
-    // The same byte stream, hashed in large blocks: one `update` per tiny
-    // field costs more than hashing the whole stream.
+    const SLICE: usize = 8_192;
+    let slices: Vec<&[CheckoutProjectionEntry]> = entries.chunks(SLICE).collect();
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(slices.len());
+    let digests: Vec<[u8; 32]> = if threads <= 1 {
+        slices
+            .iter()
+            .map(|slice| slice_fingerprint(slice))
+            .collect()
+    } else {
+        let per_thread = slices.len().div_ceil(threads);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = slices
+                .chunks(per_thread)
+                .map(|group| {
+                    scope.spawn(move || {
+                        group
+                            .iter()
+                            .map(|slice| slice_fingerprint(slice))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| match handle.join() {
+                    Ok(digests) => digests,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                })
+                .collect()
+        })
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(entries.len() as u64).to_le_bytes());
+    for digest in &digests {
+        hasher.update(digest);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// One slice's framed stream, hashed in large blocks: one `update` per tiny
+/// field costs more than hashing the whole stream.
+fn slice_fingerprint(entries: &[CheckoutProjectionEntry]) -> [u8; 32] {
     const BLOCK: usize = 64 * 1024;
     let mut hasher = blake3::Hasher::new();
     let mut stream = Vec::with_capacity(BLOCK + 512);
-    stream.extend_from_slice(&(entries.len() as u64).to_le_bytes());
     for entry in entries {
         stream.extend_from_slice(&(entry.path.len() as u64).to_le_bytes());
         stream.extend_from_slice(entry.path.as_bytes());

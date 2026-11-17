@@ -1913,6 +1913,7 @@ impl<'store> NativeCasWriter<'store> {
                                     reason: "not installed after an earlier install failed".into(),
                                 })
                             } else {
+                                let _span = crate::perf::span("cas.put_in_batch");
                                 let result = cas.put_in_batch(item.object());
                                 if result.is_err() {
                                     failed.store(true, Ordering::Release);
@@ -1936,7 +1937,10 @@ impl<'store> NativeCasWriter<'store> {
             let mut submitted = 0usize;
             let mut source_error = None;
             while !failed.load(Ordering::Acquire) {
-                match source() {
+                let source_span = crate::perf::span("cas.put_source");
+                let next = source();
+                drop(source_span);
+                match next {
                     None => break,
                     Some(Ok(item)) => {
                         let size = item.owned_bytes();

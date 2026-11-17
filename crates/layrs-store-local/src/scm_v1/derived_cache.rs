@@ -564,10 +564,20 @@ pub(crate) fn change_index_put(store_root: &Path, worktree: &str, bytes: &[u8]) 
 /// `change_index_put` of several values in one transaction (one opening,
 /// one commit).
 pub(crate) fn change_index_put_all(store_root: &Path, values: &[(&str, &[u8])]) -> io::Result<()> {
-    let values = values
-        .iter()
-        .map(|(key, bytes)| Ok((*key, compress(bytes)?)))
-        .collect::<io::Result<Vec<_>>>()?;
+    // Each value compressed on its own thread.
+    let values = std::thread::scope(|scope| {
+        let handles: Vec<_> = values
+            .iter()
+            .map(|(key, bytes)| (*key, scope.spawn(move || compress(bytes))))
+            .collect();
+        handles
+            .into_iter()
+            .map(|(key, handle)| match handle.join() {
+                Ok(compressed) => Ok((key, compressed?)),
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect::<io::Result<Vec<_>>>()
+    })?;
     let put = || -> Result<(), Option<rusqlite::Error>> {
         let mut connection = open(store_root, Access::Create).map_err(|_| None)?;
         let transaction = connection.transaction().map_err(Some)?;

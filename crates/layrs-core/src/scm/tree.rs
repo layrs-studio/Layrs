@@ -270,6 +270,20 @@ impl Tree {
         tree_payload(&self.entries)
     }
 
+    /// The canonical (JCS) JSON of this Tree as it serializes (entries,
+    /// schemaVersion, treeId), written directly: byte for byte
+    /// `canonical_json(self)` without a JSON value per entry (pinned in
+    /// `tree_payload_matches_the_general_encoder`).
+    pub fn canonical_json(&self) -> Result<Vec<u8>> {
+        let mut out = tree_payload(&self.entries)?;
+        // `tree_payload` ends with the closing brace; `treeId` sorts last.
+        out.pop();
+        out.extend_from_slice(b",\"treeId\":");
+        serde_json::to_writer(&mut out, self.id.as_str())?;
+        out.push(b'}');
+        Ok(out)
+    }
+
     pub fn identity_bytes(&self) -> Result<Vec<u8>> {
         Ok(domain_separated_bytes(
             TREE_DOMAIN,
@@ -543,6 +557,10 @@ mod payload_tests {
             .unwrap();
             assert_eq!(tree_payload(&slice).unwrap(), general);
             let tree = Tree::new(slice.clone()).unwrap();
+            assert_eq!(
+                tree.canonical_json().unwrap(),
+                canonical_json(&tree).unwrap()
+            );
             assert_eq!(
                 tree.id(),
                 &TreeId::from_digest(blake3::hash(&domain_separated_bytes(TREE_DOMAIN, &general)))

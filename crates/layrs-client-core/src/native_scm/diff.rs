@@ -268,7 +268,8 @@ impl NativeWorkspace {
             max_total_bytes: usize::MAX,
         };
         let span = layrs_store_local::perf::span("status.tracked");
-        let tracked = before.iter().map(|e| e.path.clone()).collect();
+        let tracked: std::collections::BTreeSet<String> =
+            before.iter().map(|e| e.path.clone()).collect();
         drop(span);
         // A clean checkout (equal to its base) is accepted after one pass. A
         // Worktree with a change index (ADR 0025) reads only the files whose

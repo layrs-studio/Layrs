@@ -175,6 +175,14 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             return location(None, action, true);
         }
     }
+    // A merge or a step reads projections: the Store's catalog loads while
+    // the Room is discovered.
+    if matches!(
+        command,
+        RoomCommand::Merge { .. } | RoomCommand::Step { .. }
+    ) {
+        layrs_store_local::scm_v1::request_catalog_warmup();
+    }
     let span = layrs_store_local::perf::span("room.context");
     let context = context(cli)?;
     drop(span);

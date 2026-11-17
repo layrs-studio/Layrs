@@ -1,6 +1,5 @@
 use super::*;
 use layrs_core::scm::{Chunk, FileManifest, FileManifestBuilder};
-use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Vouches for a regular file from its listing metadata alone (a change
@@ -138,7 +137,7 @@ impl CheckoutReader {
     pub fn capture_streaming(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Vec<CheckoutProjectionEntry>, Vec<FileManifest>)> {
@@ -152,7 +151,7 @@ impl CheckoutReader {
     pub fn capture_streaming_expecting(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: Option<&[CheckoutProjectionEntry]>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
@@ -190,7 +189,7 @@ impl CheckoutReader {
     pub fn capture_streaming_trusting(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: Option<&[CheckoutProjectionEntry]>,
         trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
@@ -228,7 +227,7 @@ impl CheckoutReader {
     pub fn capture_streaming_trusting_single_pass(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: Option<&[CheckoutProjectionEntry]>,
         trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
@@ -258,7 +257,7 @@ impl CheckoutReader {
     pub fn observe_streaming_trusting(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: Option<&[CheckoutProjectionEntry]>,
         trust: &Trust<'_>,
     ) -> io::Result<TrustedCapture> {
@@ -280,7 +279,7 @@ impl CheckoutReader {
     fn capture_trusting_passes(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: Option<&[CheckoutProjectionEntry]>,
         trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
@@ -338,7 +337,7 @@ impl CheckoutReader {
     pub fn matches_projection(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: &[CheckoutProjectionEntry],
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
@@ -355,7 +354,7 @@ impl CheckoutReader {
     pub fn matches_projection_trusting(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         expected: &[CheckoutProjectionEntry],
         trust: Option<&Trust<'_>>,
         progress: &mut dyn FnMut() -> io::Result<()>,
@@ -385,7 +384,7 @@ impl CheckoutReader {
     fn scan_streaming(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         trust: Option<&Trust<'_>>,
         expected: Option<&[CheckoutProjectionEntry]>,
@@ -400,7 +399,7 @@ impl CheckoutReader {
     fn scan_streaming_listed(
         &self,
         limits: CheckoutLimits,
-        tracked: &BTreeSet<String>,
+        tracked: &dyn Tracked,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         trust: Option<&Trust<'_>>,
         expected: Option<&[CheckoutProjectionEntry]>,
@@ -446,17 +445,25 @@ impl CheckoutReader {
         scan.walk_subtrees(subtrees)?;
         scan.complete_root();
         scan.flush()?;
+        let sort_span = crate::perf::span("scan.sort");
         scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
         scan.manifests.sort_by(|a, b| a.id().cmp(b.id()));
         scan.manifests.dedup_by(|a, b| a.id() == b.id());
+        drop(sort_span);
+        let _validate_span = crate::perf::span("scan.validate");
         // A pass equal to the expected projection (read from an admitted Step,
         // where it was validated) is representable; any other is validated:
-        // its paths, lengths and symlink targets here. No Tree is built: a
-        // capture that records (`init`, a step) builds and checks every Tree
-        // itself (its snapshot) before recording anything, so building them
-        // here too cost a second whole-checkout pass (council s20).
-        if expected != Some(scan.entries.as_slice()) {
-            super::validate_observed_projection(&scan.entries)?;
+        // its paths, lengths and symlink targets here, only what it adds to
+        // the expected one when there is one. No Tree is built: a capture
+        // that records (`init`, a step) builds and checks every Tree itself
+        // (its snapshot) before recording anything, so building them here
+        // too cost a second whole-checkout pass (council s20).
+        match expected {
+            Some(expected) if expected == scan.entries.as_slice() => {}
+            Some(expected) => {
+                super::projection::validate_observed_projection_beside(&scan.entries, expected)?
+            }
+            None => super::validate_observed_projection(&scan.entries)?,
         }
         self.directory.verify_path_identity()?;
         Ok(TrustedCapture {
@@ -505,7 +512,7 @@ pub struct TrustedCapture {
 #[allow(clippy::type_complexity)]
 struct StreamScan<'a> {
     limits: CheckoutLimits,
-    tracked: &'a BTreeSet<String>,
+    tracked: &'a dyn Tracked,
     observe: &'a mut dyn FnMut(&Chunk) -> io::Result<()>,
     trust: Option<&'a Trust<'a>>,
     progress: &'a mut dyn FnMut() -> io::Result<()>,
@@ -629,7 +636,7 @@ impl StreamScan<'_> {
             };
             // A tracked path is a path of the validated base projection, so
             // already canonical; any other is validated here.
-            let exact = self.tracked.contains(&path);
+            let exact = self.tracked.contains(path.as_str());
             if !exact {
                 let canonical =
                     layrs_core::scm::RepoPath::parse(&path).map_err(|e| invalid(&e.to_string()))?;
@@ -638,14 +645,8 @@ impl StreamScan<'_> {
                 }
             }
             // Only a directory can hold tracked descendants.
-            let tracked = exact
-                || (metadata.is_dir() && {
-                    let prefix = format!("{path}/");
-                    self.tracked
-                        .range(prefix.clone()..)
-                        .next()
-                        .is_some_and(|p| p.starts_with(&prefix))
-                });
+            let tracked =
+                exact || (metadata.is_dir() && self.tracked.holds_below(&format!("{path}/")));
             if !tracked
                 && self.ignored.ignores(&path, metadata.is_dir())
                 && !(metadata.is_dir() && self.ignored.has_exceptions)

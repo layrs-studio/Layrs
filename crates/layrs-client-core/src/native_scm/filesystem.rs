@@ -263,7 +263,17 @@ impl super::NativeWorkspace {
             reader.admitted_chunk_ids_of_files(state.space.id(), selected.iter(), 1_000_000)?
         };
         let tracked_span = layrs_store_local::perf::span("capture.tracked");
-        let tracked = base.iter().map(|e| e.path.clone()).collect();
+        // The base's own paths, searched in place when sorted (a projection
+        // is); else copied into a set.
+        let sorted = scm_v1::checkout::SortedPaths::new(&base);
+        let copied: std::collections::BTreeSet<String>;
+        let tracked: &dyn scm_v1::checkout::Tracked = match &sorted {
+            Some(sorted) => sorted,
+            None => {
+                copied = base.iter().map(|e| e.path.clone()).collect();
+                &copied
+            }
+        };
         drop(tracked_span);
         let checkout = CheckoutReader::open(
             Path::new(state.worktree.checkout_root()),
@@ -298,7 +308,7 @@ impl super::NativeWorkspace {
                 max_file_bytes: limits.max_file_bytes,
                 max_total_bytes: limits.max_total_bytes,
             },
-            &tracked,
+            tracked,
             Some(&base),
             &trust,
             &mut |chunk| {
@@ -394,8 +404,6 @@ impl super::NativeWorkspace {
                 limits,
             )?,
         };
-        // Built from these very entries: the Tree of their projection.
-        scm_v1::checkout::remember_projection_tree_id(&captured.entries, snapshot.root_tree_id());
         // `next` is bound by the caller to `pending`'s projection, the Tree
         // this capture builds (council s3, D1), while it accepts the capture.
         let pending = PendingProjection {
@@ -501,6 +509,9 @@ impl PendingProjection {
     }
 
     pub(super) fn save(&self, store_root: &Path) {
+        // Built from these very entries: the Tree of their projection,
+        // remembered for this process (off the capture's critical path).
+        scm_v1::checkout::remember_projection_tree_id(&self.entries, &self.root);
         scm_v1::projection_cache::save(
             store_root,
             &self.root,
