@@ -237,6 +237,9 @@ impl NativeFsck {
         if !context.has_required_tables() {
             return Ok(context.finish());
         }
+        if audit.bitmap_admissions() {
+            context.project_bitmap_admissions()?;
+        }
         context.check_work_budget()?;
         if context.work_truncated {
             return Ok(context.finish());
@@ -893,6 +896,28 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
 pub(super) fn query_gc_expected(
     connection: &Connection,
 ) -> rusqlite::Result<Vec<(String, String, String)>> {
+    query_gc_expected_with(connection, true)
+}
+
+/// `query_gc_expected`, without the Product roots unless `products` (a
+/// format 8 writer cannot read Product admissions in SQL).
+pub(super) fn query_gc_expected_with(
+    connection: &Connection,
+    products: bool,
+) -> rusqlite::Result<Vec<(String, String, String)>> {
+    let mut roots = query_gc_expected_except_products(connection)?;
+    if products {
+        roots.extend(query_triples(
+            connection,
+            "SELECT 'product',p.product_object_id,p.product_object_id FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id",
+        )?);
+    }
+    Ok(roots)
+}
+
+fn query_gc_expected_except_products(
+    connection: &Connection,
+) -> rusqlite::Result<Vec<(String, String, String)>> {
     query_triples(
         connection,
         "SELECT 'current_view', space_id, repository_view_id FROM current_repository_views
@@ -929,7 +954,7 @@ pub(super) fn query_gc_expected(
          UNION ALL
          SELECT 'observation', observation_id, step_id FROM step_observations
          UNION ALL
-         SELECT 'pin', pin_id, object_id FROM object_pins UNION ALL SELECT 'product',p.product_object_id,p.product_object_id FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id",
+         SELECT 'pin', pin_id, object_id FROM object_pins",
     )
 }
 

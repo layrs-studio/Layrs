@@ -60,8 +60,13 @@ pub const COMPACT_FORMAT_VERSION: u32 = 6;
 /// chunk named by its FileId (council s13 Q5): packs v2 of version 2.
 /// Opt-in with `LAYRS_STORE_FORMAT=7`. A reader of format 6 refuses it.
 pub const WHOLE_FILES_FORMAT_VERSION: u32 = 7;
+/// Format 7 whose history leaves SQLite (council s24, s25), in drafts until
+/// it is frozen: draft 1 admits every object kind by the pack bitmaps
+/// (schema v4 draft 1). Opt-in with `LAYRS_STORE_FORMAT=8`; a Store of an
+/// earlier draft, or a reader of format 7, refuses it.
+pub const HISTORY_FORMAT_VERSION: u32 = 8;
 /// The newest complete-Store format this reader understands.
-pub const NEWEST_FORMAT_VERSION: u32 = WHOLE_FILES_FORMAT_VERSION;
+pub const NEWEST_FORMAT_VERSION: u32 = HISTORY_FORMAT_VERSION;
 pub const MAX_FORMAT_BYTES: u64 = 64 * 1024;
 
 /// The format `init` creates: packed (5), unless `LAYRS_STORE_FORMAT` asks
@@ -72,6 +77,7 @@ pub fn creation_format_version() -> u32 {
         Ok("2") => FORMAT_VERSION,
         Ok("6") => COMPACT_FORMAT_VERSION,
         Ok("7") => WHOLE_FILES_FORMAT_VERSION,
+        Ok("8") => HISTORY_FORMAT_VERSION,
         _ => PACKED_FORMAT_VERSION,
     }
 }
@@ -84,6 +90,13 @@ pub fn supported_format(version: u64) -> bool {
         || version == u64::from(PACKED_FORMAT_VERSION)
         || version == u64::from(COMPACT_FORMAT_VERSION)
         || version == u64::from(WHOLE_FILES_FORMAT_VERSION)
+        || version == u64::from(HISTORY_FORMAT_VERSION)
+}
+
+/// Whether a Store of `version` keeps small files as `whole` records
+/// (formats 7 and 8).
+pub fn keeps_whole_files(version: u32) -> bool {
+    version == WHOLE_FILES_FORMAT_VERSION || version == HISTORY_FORMAT_VERSION
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

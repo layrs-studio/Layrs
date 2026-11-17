@@ -637,7 +637,7 @@ impl NativeScmRepository {
         #[cfg(debug_assertions)]
         let roots_complete = {
             let guard = connection.lock().map_err(|_| poisoned())?;
-            gc_roots_complete(&guard)?
+            gc_roots_complete(&guard, cas.reader().bitmap_admissions())?
         };
         #[cfg(not(debug_assertions))]
         let roots_complete = false;
@@ -701,7 +701,7 @@ impl NativeScmRepository {
         if publication.is_some() {
             let catalog =
                 super::cas::RegisteredCatalog::load(&guard, cas.reader()).map_err(cas_backend)?;
-            insert_admissions_compact(&guard, batch, &catalog)?;
+            insert_admissions_compact(&guard, batch, &catalog, cas.reader().bitmap_admissions())?;
         } else {
             insert_admissions(&guard, batch)?;
         }
@@ -709,7 +709,12 @@ impl NativeScmRepository {
         apply_mutations(&guard, batch, self)?;
         drop(rows);
         let gc_roots = crate::perf::span("batch.update_gc_roots");
-        update_gc_roots(&guard, batch, roots_complete)?;
+        update_gc_roots(
+            &guard,
+            batch,
+            roots_complete,
+            cas.reader().bitmap_admissions(),
+        )?;
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
@@ -1437,6 +1442,7 @@ fn insert_admissions_compact(
     c: &Connection,
     b: &WriteBatch,
     catalog: &super::cas::RegisteredCatalog,
+    all_kinds: bool,
 ) -> Result<()> {
     let entries: std::collections::HashMap<i64, u64> = catalog
         .packs()
@@ -1446,7 +1452,8 @@ fn insert_admissions_compact(
     let mut bitmaps: std::collections::BTreeMap<(String, i64), Vec<u8>> = Default::default();
     for a in b.admissions() {
         let object = a.object_id();
-        if !super::cas::is_content(object.kind()) {
+        // Format 8: every kind by the bitmaps.
+        if !all_kinds && !super::cas::is_content(object.kind()) {
             c.execute("INSERT OR IGNORE INTO space_object_admissions(space_id,object_id,admitted_by_operation_id,admitted_at_ms) VALUES(?1,?2,NULL,CAST(unixepoch('subsec')*1000 AS INTEGER))",params![a.space_id().as_str(),object.as_str()]).map_err(sql_backend)?;
             continue;
         }
@@ -1598,7 +1605,12 @@ fn apply_mutations(c: &Connection, b: &WriteBatch, repo: &NativeScmRepository) -
 /// records (retained Operations and their rewrites, observations, markers,
 /// releases, admitted Products) never change once written: only this
 /// batch's are added. `fsck` checks the result against the full projection.
-fn update_gc_roots(c: &Connection, batch: &WriteBatch, complete_before: bool) -> Result<()> {
+fn update_gc_roots(
+    c: &Connection,
+    batch: &WriteBatch,
+    complete_before: bool,
+    bitmap_admissions: bool,
+) -> Result<()> {
     c.execute_batch(
         "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','worktree','pin');
          INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
@@ -1677,7 +1689,27 @@ fn update_gc_roots(c: &Connection, batch: &WriteBatch, complete_before: bool) ->
                 }),
         )
         .collect();
+    // Format 8 admits by the bitmaps: a Product is rooted when this batch
+    // admits it (one carried again was rooted when it was admitted).
+    let admitted_here: std::collections::BTreeSet<&str> = batch
+        .admissions()
+        .iter()
+        .filter_map(|admission| match admission.object_id() {
+            StoreObjectId::Product(id) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
     for product in products {
+        if bitmap_admissions {
+            if admitted_here.contains(product) {
+                c.prepare_cached(&format!(
+                    "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) SELECT 'product',p.product_object_id,p.product_object_id,{now} FROM products p WHERE p.product_object_id=?1"
+                ))
+                .and_then(|mut statement| statement.execute(params![product]))
+                .map_err(sql_backend)?;
+            }
+            continue;
+        }
         c.prepare_cached(&format!(
             "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) SELECT 'product',p.product_object_id,p.product_object_id,{now} FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id WHERE p.product_object_id=?1"
         ))
@@ -1690,7 +1722,7 @@ fn update_gc_roots(c: &Connection, batch: &WriteBatch, complete_before: bool) ->
     #[cfg(debug_assertions)]
     if complete_before {
         assert!(
-            gc_roots_complete(c)?,
+            gc_roots_complete(c, bitmap_admissions)?,
             "incremental GC roots differ from the full projection"
         );
     }
@@ -1701,19 +1733,26 @@ fn update_gc_roots(c: &Connection, batch: &WriteBatch, complete_before: bool) ->
 
 /// Whether `gc_roots` holds exactly the full projection `fsck` expects.
 #[cfg(debug_assertions)]
-fn gc_roots_complete(c: &Connection) -> Result<bool> {
+/// Whether `gc_roots` is the full projection fsck expects. Format 8
+/// admits Products by the bitmaps, which SQL cannot read here: its Product
+/// roots are left out of the comparison (fsck checks them).
+fn gc_roots_complete(c: &Connection, bitmap_admissions: bool) -> Result<bool> {
     let mut statement = c
         .prepare("SELECT root_kind, root_id, object_id FROM gc_roots")
         .map_err(sql_backend)?;
     let actual: std::collections::BTreeSet<(String, String, String)> = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .map_err(sql_backend)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(sql_backend)?;
-    let expected: std::collections::BTreeSet<_> = super::fsck::query_gc_expected(c)
+        .collect::<rusqlite::Result<std::collections::BTreeSet<(String, String, String)>>>()
         .map_err(sql_backend)?
         .into_iter()
+        .filter(|(kind, ..)| !bitmap_admissions || kind != "product")
         .collect();
+    let expected: std::collections::BTreeSet<_> =
+        super::fsck::query_gc_expected_with(c, !bitmap_admissions)
+            .map_err(sql_backend)?
+            .into_iter()
+            .collect();
     Ok(actual == expected)
 }
 

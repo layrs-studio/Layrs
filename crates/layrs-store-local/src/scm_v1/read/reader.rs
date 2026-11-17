@@ -3,6 +3,32 @@ use super::*;
 impl ScmReader for NativeScmReader<'_> {
     fn products_in_space(&self, space: &SpaceId) -> Result<Vec<layrs_core::scm::ObjectId>> {
         let connection = self.connection()?;
+        // Format 8 admits Products by the bitmaps: every Product, then
+        // those admitted to `space`.
+        if self.cas.bitmap_admissions() {
+            let mut query = connection
+                .prepare("SELECT product_object_id FROM products ORDER BY product_object_id")
+                .map_err(sqlite_backend)?;
+            let all = query
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(sqlite_backend)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(sqlite_backend)?;
+            drop(query);
+            drop(connection);
+            let mut ids = Vec::new();
+            for id in all {
+                let id =
+                    layrs_core::scm::ObjectId::parse(id).map_err(|e| corruption(e.to_string()))?;
+                if self.content_admitted_compact(&StoreObjectId::Product(id.clone()), space)? {
+                    ids.push(id);
+                    if ids.len() > 16384 {
+                        return Err(backend("Product listing limit exceeded"));
+                    }
+                }
+            }
+            return Ok(ids);
+        }
         let mut query=connection.prepare("SELECT p.product_object_id FROM products p JOIN space_object_admissions a ON a.object_id=p.product_object_id WHERE a.space_id=?1 ORDER BY p.product_object_id LIMIT 16385").map_err(sqlite_backend)?;
         let ids = query
             .query_map([space.as_str()], |row| row.get::<_, String>(0))
@@ -377,7 +403,7 @@ impl ScmReader for NativeScmReader<'_> {
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool> {
-        let admitted = if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
+        let admitted = if self.cas.bitmap_admitted(object_id.kind()) {
             self.content_admitted_compact(object_id, space_id)?
         } else if self.unproven_copy(object_id)? {
             false
@@ -477,7 +503,7 @@ impl ScmReader for NativeScmReader<'_> {
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool> {
-        if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
+        if self.cas.bitmap_admitted(object_id.kind()) {
             return self.content_admitted_compact(object_id, space_id);
         }
         // An admission row proves an object was admitted, not that a copy

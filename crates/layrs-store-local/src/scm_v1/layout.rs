@@ -393,11 +393,18 @@ impl NativeStoreOpen {
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
             || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+            || self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     /// Whether captures keep small files as `whole` records (format 7).
     pub fn whole_files(&self) -> bool {
-        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+        super::keeps_whole_files(self.format_version)
+    }
+
+    /// Whether every object kind is admitted by the pack bitmaps (format 8:
+    /// no `space_object_admissions`).
+    pub fn bitmap_admissions(&self) -> bool {
+        self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -529,11 +536,18 @@ impl NativeStoreAudit {
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
             || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+            || self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     /// Whether captures keep small files as `whole` records (format 7).
     pub fn whole_files(&self) -> bool {
-        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+        super::keeps_whole_files(self.format_version)
+    }
+
+    /// Whether every object kind is admitted by the pack bitmaps (format 8:
+    /// no `space_object_admissions`).
+    pub fn bitmap_admissions(&self) -> bool {
+        self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -596,11 +610,18 @@ impl NativeStoreExclusive {
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
             || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+            || self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     /// Whether captures keep small files as `whole` records (format 7).
     pub fn whole_files(&self) -> bool {
-        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+        super::keeps_whole_files(self.format_version)
+    }
+
+    /// Whether every object kind is admitted by the pack bitmaps (format 8:
+    /// no `space_object_admissions`).
+    pub fn bitmap_admissions(&self) -> bool {
+        self.format_version == super::HISTORY_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {

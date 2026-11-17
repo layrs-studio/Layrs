@@ -9,6 +9,46 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 impl Context<'_> {
+    /// Format 8 keeps no `space_object_admissions`: its admissions of
+    /// objects that are not content are rebuilt from the bitmaps into a
+    /// temporary table of this connection, so every check that reads them
+    /// runs unchanged (council s25: fsck derives what the Store no longer
+    /// stores).
+    pub(super) fn project_bitmap_admissions(&mut self) -> Result<(), FsckError> {
+        let sql = |error: rusqlite::Error| FsckError::Native(error.to_string());
+        self.connection
+            .execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS space_object_admissions (
+                    space_id TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    admitted_by_operation_id TEXT,
+                    admitted_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (space_id, object_id)
+                ) WITHOUT ROWID",
+            )
+            .map_err(sql)?;
+        let Some((_, catalog)) = self.compact_catalog() else {
+            return Ok(());
+        };
+        let admitted = catalog
+            .non_content_admissions(self.connection)
+            .map_err(|error| FsckError::Native(error.to_string()))?;
+        let mut insert = self
+            .connection
+            .prepare(
+                "INSERT OR IGNORE INTO temp.space_object_admissions
+                 (space_id, object_id, admitted_by_operation_id, admitted_at_ms)
+                 VALUES (?1, ?2, NULL, 0)",
+            )
+            .map_err(sql)?;
+        for (space, object) in admitted {
+            insert
+                .execute(rusqlite::params![space, object.as_str()])
+                .map_err(sql)?;
+        }
+        Ok(())
+    }
+
     /// The audit CAS view and its registered catalog, loaded once per fsck
     /// run from the metadata on disk now (never the process cache) and
     /// reused by every check.

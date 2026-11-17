@@ -87,6 +87,22 @@ pub fn schema_v3_checksum() -> String {
     blake3::hash(SCHEMA_V3_SQL.as_bytes()).to_hex().to_string()
 }
 
+/// Store format 8 baseline, draft 1 (council s25, phase 2a): v3 without
+/// `space_object_admissions` (every object kind is admitted by the pack
+/// bitmaps or `space_loose_admissions`). Drafts change until format 8 is
+/// frozen; a Store of an earlier draft is refused.
+pub const SCHEMA_V4_VERSION: u32 = 4;
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft1";
+pub const SCHEMA_V4_CHECKSUM: &str =
+    "d8f6c15e4240ea00683874832fc4122e5df3b0b03983082f812bf115f5113303";
+pub const SCHEMA_V4_FINGERPRINT: &str =
+    "1242d84d9acd136661f1e8afe9aa2e91f053d28e972c9353d548dbc2d11fc51c";
+pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
+
+pub fn schema_v4_checksum() -> String {
+    blake3::hash(SCHEMA_V4_SQL.as_bytes()).to_hex().to_string()
+}
+
 pub const REQUIRED_TABLES_V3: &[&str] = &[
     "meta",
     "migrations",
@@ -167,6 +183,67 @@ pub const BASELINE_V2: Baseline = Baseline {
     auto_vacuum: false,
 };
 
+/// The v3 tables but `space_object_admissions`.
+pub const REQUIRED_TABLES_V4: &[&str] = &[
+    "meta",
+    "migrations",
+    "applied_transactions",
+    "stores",
+    "spaces",
+    "layers",
+    "layer_parents",
+    "objects",
+    "products",
+    "object_edges",
+    "cas_packs",
+    "cas_pack_inline",
+    "cas_pack_keys",
+    "space_pack_admissions",
+    "loose_objects",
+    "space_loose_admissions",
+    "pending_objects",
+    "pending_admissions",
+    "steps",
+    "step_parents",
+    "repository_views",
+    "repository_view_layer_heads",
+    "repository_view_markers",
+    "repository_view_releases",
+    "repository_view_worktrees",
+    "step_observations",
+    "operations",
+    "operation_parents",
+    "operation_rewrites",
+    "operation_rewrite_targets",
+    "worktrees",
+    "markers",
+    "marker_proofs",
+    "releases",
+    "release_proofs",
+    "release_publications",
+    "current_repository_views",
+    "operation_heads",
+    "recovery_operations",
+    "recovery_paths",
+    "materialization_leases",
+    "pending_steps",
+    "pending_ref_updates",
+    "sync_cursors",
+    "object_pins",
+    "gc_roots",
+];
+
+pub const BASELINE_V4: Baseline = Baseline {
+    version: SCHEMA_V4_VERSION,
+    name: BASELINE_V4_NAME,
+    sql: SCHEMA_V4_SQL,
+    checksum: SCHEMA_V4_CHECKSUM,
+    fingerprint: SCHEMA_V4_FINGERPRINT,
+    required_tables: REQUIRED_TABLES_V4,
+    page_size: Some(1024),
+    auto_vacuum: true,
+};
+
 pub const BASELINE_V3: Baseline = Baseline {
     version: SCHEMA_V3_VERSION,
     name: BASELINE_V3_NAME,
@@ -178,9 +255,12 @@ pub const BASELINE_V3: Baseline = Baseline {
     auto_vacuum: true,
 };
 
-/// The baseline of a Store of `format_version` (formats 6 and 7: v3; else
-/// v2).
+/// The baseline of a Store of `format_version` (formats 6 and 7: v3;
+/// format 8: v4; else v2).
 pub fn baseline_for_format(format_version: u32) -> &'static Baseline {
+    if format_version == super::format::HISTORY_FORMAT_VERSION {
+        return &BASELINE_V4;
+    }
     if format_version == super::format::COMPACT_FORMAT_VERSION
         || format_version == super::format::WHOLE_FILES_FORMAT_VERSION
     {
@@ -201,6 +281,18 @@ mod baseline_identity_tests {
         assert_eq!(
             (checksum.as_str(), fingerprint.as_str()),
             (super::SCHEMA_CHECKSUM, super::SCHEMA_FINGERPRINT)
+        );
+    }
+
+    #[test]
+    fn v4_baseline_identity_is_pinned() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(super::SCHEMA_V4_SQL).unwrap();
+        let fingerprint = super::super::sqlite::schema_fingerprint(&connection).unwrap();
+        let checksum = super::schema_v4_checksum();
+        assert_eq!(
+            (checksum.as_str(), fingerprint.as_str()),
+            (super::SCHEMA_V4_CHECKSUM, super::SCHEMA_V4_FINGERPRINT)
         );
     }
 

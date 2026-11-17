@@ -2171,6 +2171,8 @@ impl RegisteredCatalog {
             let byte_length = u64::try_from(byte_length).map_err(|_| invalid())?;
             match (kind, file_id, file_length) {
                 (1, None, None) => {}
+                // Format 8 registers loose objects of every kind.
+                (3..=9, None, None) if cas.bitmap_admissions => {}
                 (2, Some(file_id), Some(file_length)) => {
                     let file_id: [u8; 32] = file_id.try_into().map_err(|_| invalid())?;
                     let file_length = u64::try_from(file_length).map_err(|_| invalid())?;
@@ -2829,6 +2831,80 @@ impl RegisteredCatalog {
         Some((self.packs[pack].seq, ordinal))
     }
 
+    /// Every admission of an object that is not content (Trees, Steps,
+    /// Views, ...), from the bitmaps and loose admissions: what format 8
+    /// keeps instead of `space_object_admissions` (fsck rebuilds that table
+    /// from it). Bits of a pack this catalog cannot read are left out (the
+    /// catalog reports the pack).
+    pub(crate) fn non_content_admissions(
+        &self,
+        connection: &Connection,
+    ) -> CasResult<Vec<(String, StoreObjectId)>> {
+        let mut admitted = Vec::new();
+        let mut statement = connection
+            .prepare("SELECT space_id, pack_seq, bitmap FROM space_pack_admissions")
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        for (space, seq, bitmap) in rows {
+            let Some(registered) = self.packs.iter().find(|pack| pack.seq == seq) else {
+                continue;
+            };
+            let index = &registered.pack.index;
+            for ordinal in 0..index.explicit_count() {
+                if !bit(&bitmap, ordinal as u64) {
+                    continue;
+                }
+                let Some((code, digest, _)) = index.explicit(ordinal) else {
+                    continue;
+                };
+                let Some(kind) = pack2::kind_of_code(code) else {
+                    continue;
+                };
+                if super::is_content(kind) {
+                    continue;
+                }
+                admitted.push((space.clone(), pack2::object_id_of(kind, digest)?));
+            }
+        }
+        let mut statement = connection
+            .prepare("SELECT space_id, object_id FROM space_loose_admissions")
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        for (space, digest) in rows {
+            let Ok(digest) = <[u8; 32]>::try_from(digest) else {
+                continue;
+            };
+            let Some(kind) = self
+                .loose
+                .get(&digest)
+                .and_then(|entry| pack2::kind_of_code(entry.kind))
+            else {
+                continue;
+            };
+            if super::is_content(kind) {
+                continue;
+            }
+            admitted.push((space, pack2::object_id_of(kind, &digest)?));
+        }
+        Ok(admitted)
+    }
+
     /// Content admissions of `space` in this snapshot, read once.
     pub(crate) fn space_admissions(
         &self,
@@ -3467,10 +3543,14 @@ impl NativeCas {
                     self.install(prepared)?
                 }
             };
-            if matches!(
-                object_id.kind(),
-                StoreObjectKind::ChunkRaw | StoreObjectKind::FileManifest
-            ) {
+            // Format 8 admits every kind by the catalog: a loose object of
+            // any kind is registered.
+            if self.bitmap_admissions
+                || matches!(
+                    object_id.kind(),
+                    StoreObjectKind::ChunkRaw | StoreObjectKind::FileManifest
+                )
+            {
                 let file = match object {
                     CanonicalObject::FileManifest(manifest) => {
                         Some((manifest.file_id().clone(), manifest.byte_length()))
