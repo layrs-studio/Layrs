@@ -76,7 +76,7 @@ const REMEMBERED_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// records), so a projection holds a few bytes per File instead of its
 /// 32-byte FileId. Without them, values that use positions are not read
 /// (`load` answers `None` and keeps them).
-pub trait FileRefs {
+pub trait FileRefs: Sync {
     /// A position naming `file_id` (whose length is `length`), if any.
     fn reference(&self, file_id: &FileId, length: u64) -> Option<([u8; 32], u32)>;
     /// The FileId and length a position names, while its pack is registered.
@@ -374,7 +374,10 @@ fn parse(
     })
 }
 
-/// Sorted, prefix-shared entries; `removals` admits kind 0 (`None`).
+/// Sorted, prefix-shared entries; `removals` admits kind 0 (`None`). Read
+/// in two passes: the bytes in order (each path rebuilt from the previous
+/// one, its order checked), then the paths and contents built (UTF-8,
+/// FileIds, file records resolved), on a few threads for a large value.
 fn read_entries(
     reader: &mut Reader<'_>,
     removals: bool,
@@ -385,7 +388,10 @@ fn read_entries(
     if count > MAX_ENTRIES {
         return None;
     }
-    let mut entries = Vec::with_capacity(count);
+    let read_span = crate::perf::span("projection_cache.read_raw");
+    // Every path's bytes, one after another, and each entry's raw content.
+    let mut paths: Vec<u8> = Vec::new();
+    let mut raw: Vec<(std::ops::Range<usize>, RawContent<'_>)> = Vec::with_capacity(count);
     let mut previous: Vec<u8> = Vec::new();
     for index in 0..count {
         let shared = usize::try_from(reader.varint()?).ok()?;
@@ -400,39 +406,113 @@ fn read_entries(
         }
         previous.truncate(shared);
         previous.extend_from_slice(tail);
-        let path = std::str::from_utf8(&previous).ok()?.to_owned();
+        let at = paths.len();
+        paths.extend_from_slice(&previous);
         let content = match reader.u8()? {
             kind @ (KIND_FILE | KIND_EXECUTABLE) => {
                 let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
-                Some(CheckoutProjectionContent::File {
-                    file_id: FileId::from_digest_bytes(&digest),
+                RawContent::File {
+                    digest,
                     byte_length: reader.varint()?,
                     executable: kind == KIND_EXECUTABLE,
-                })
+                }
             }
             kind @ (KIND_FILE_REF | KIND_EXECUTABLE_REF) => {
                 let pack = packs.get(usize::try_from(reader.varint()?).ok()?)?;
                 let ordinal = u32::try_from(reader.varint()?).ok()?;
-                let Some(refs) = decoding.refs else {
+                if decoding.refs.is_none() {
                     decoding.needs_refs.set(true);
                     return None;
-                };
-                let (file_id, byte_length) = refs.resolve(pack, ordinal)?;
+                }
+                RawContent::Record {
+                    pack,
+                    ordinal,
+                    executable: kind == KIND_EXECUTABLE_REF,
+                }
+            }
+            KIND_SYMLINK => RawContent::Symlink(reader.string()?),
+            KIND_REMOVED if removals => RawContent::Removed,
+            _ => return None,
+        };
+        raw.push((at..paths.len(), content));
+    }
+    drop(read_span);
+    let _build_span = crate::perf::span("projection_cache.build");
+    let refs = decoding.refs;
+    let build = |(range, content): &(std::ops::Range<usize>, RawContent<'_>)| {
+        let path = std::str::from_utf8(&paths[range.clone()]).ok()?.to_owned();
+        let content = match content {
+            RawContent::File {
+                digest,
+                byte_length,
+                executable,
+            } => Some(CheckoutProjectionContent::File {
+                file_id: FileId::from_digest_bytes(digest),
+                byte_length: *byte_length,
+                executable: *executable,
+            }),
+            RawContent::Record {
+                pack,
+                ordinal,
+                executable,
+            } => {
+                let (file_id, byte_length) = refs?.resolve(pack, *ordinal)?;
                 Some(CheckoutProjectionContent::File {
                     file_id,
                     byte_length,
-                    executable: kind == KIND_EXECUTABLE_REF,
+                    executable: *executable,
                 })
             }
-            KIND_SYMLINK => Some(CheckoutProjectionContent::Symlink {
-                target: reader.string()?.to_owned(),
+            RawContent::Symlink(target) => Some(CheckoutProjectionContent::Symlink {
+                target: (*target).to_owned(),
             }),
-            KIND_REMOVED if removals => None,
-            _ => return None,
+            RawContent::Removed => None,
         };
-        entries.push((path, content));
+        Some((path, content))
+    };
+    const PER_THREAD: usize = 16_384;
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(count.div_ceil(PER_THREAD));
+    if threads <= 1 {
+        return raw.iter().map(build).collect();
+    }
+    let size = count.div_ceil(threads);
+    let parts: Vec<Option<Vec<_>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = raw
+            .chunks(size)
+            .map(|part| {
+                let build = &build;
+                scope.spawn(move || part.iter().map(build).collect::<Option<Vec<_>>>())
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().ok().flatten())
+            .collect()
+    });
+    let mut entries = Vec::with_capacity(count);
+    for part in parts {
+        entries.extend(part?);
     }
     Some(entries)
+}
+
+/// An entry's content as read, before it is built (`read_entries`).
+enum RawContent<'a> {
+    File {
+        digest: [u8; 32],
+        byte_length: u64,
+        executable: bool,
+    },
+    Record {
+        pack: &'a [u8; 32],
+        ordinal: u32,
+        executable: bool,
+    },
+    Symlink(&'a str),
+    Removed,
 }
 
 /// `base` with every change applied (both sorted by path); a removal of an
@@ -810,7 +890,39 @@ pub fn remove(store_root: &Path, root_tree: &TreeId) {
 /// components, strictly sorted (hence unique), and no path both a leaf and a
 /// directory prefix of another leaf.
 fn well_formed(entries: &[CheckoutProjectionEntry]) -> bool {
-    let mut previous: Option<&str> = None;
+    // Slices checked on a few threads, each against its predecessor's last
+    // path (the order across slices) and the whole projection (leaves).
+    const SLICE: usize = 16_384;
+    if entries.len() <= SLICE {
+        return well_formed_slice(entries, entries, None);
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8);
+    let size = entries.len().div_ceil(threads).max(SLICE);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = entries
+            .chunks(size)
+            .enumerate()
+            .map(|(index, slice)| {
+                let before = (index > 0).then(|| entries[index * size - 1].path.as_str());
+                scope.spawn(move || well_formed_slice(entries, slice, before))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .all(|handle| handle.join().unwrap_or(false))
+    })
+}
+
+/// `well_formed` of `slice`, a part of `entries` that follows the path
+/// `before` (if any).
+fn well_formed_slice(
+    entries: &[CheckoutProjectionEntry],
+    slice: &[CheckoutProjectionEntry],
+    before: Option<&str>,
+) -> bool {
+    let mut previous: Option<&str> = before;
     // Strictly sorted (checked below), so a leaf is found by bisection.
     let is_leaf = |candidate: &str| {
         entries
@@ -820,7 +932,7 @@ fn well_formed(entries: &[CheckoutProjectionEntry]) -> bool {
     // The directory of the previous entry, already proven to hold no leaf
     // among its ancestors: most entries share it.
     let mut checked_directory: Option<&str> = None;
-    for entry in entries {
+    for entry in slice {
         let path = entry.path.as_str();
         if path.is_empty()
             || path.starts_with('/')
@@ -923,6 +1035,46 @@ mod tests {
                 },
             },
         ]
+    }
+
+    /// A value large enough to be read and checked on several threads
+    /// reads back exactly; a leaf used as a folder far from the first slice
+    /// is still found.
+    #[test]
+    fn a_large_projection_reads_back_on_several_threads() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-large-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let mut large: Vec<CheckoutProjectionEntry> = (0..40_000)
+            .map(|i| CheckoutProjectionEntry {
+                path: format!("d{}/f{i:05}.txt", i % 7),
+                content: CheckoutProjectionContent::File {
+                    file_id: FileId::from_bytes(format!("{i}").as_bytes()),
+                    byte_length: i as u64,
+                    executable: i % 11 == 0,
+                },
+            })
+            .collect();
+        large.sort_by(|a, b| a.path.cmp(&b.path));
+        let tree = TreeId::parse(format!("blake3:{}", blake3::hash(b"large"))).unwrap();
+        save(&root, &tree, &tree, &large, None);
+        assert_eq!(load(&root, &tree, None), Some(large.clone()));
+        assert!(well_formed(&large));
+        // `d6/f39999.txt` as a file and as a folder, in the last slice.
+        let mut malformed = large.clone();
+        let last = malformed.last().unwrap().clone();
+        malformed.push(CheckoutProjectionEntry {
+            path: format!("{}/inner", last.path),
+            ..last
+        });
+        assert!(!well_formed(&malformed));
+        // Out of order across slices.
+        let mut unsorted = large;
+        unsorted.swap(0, 30_000);
+        assert!(!well_formed(&unsorted));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1067,7 +1219,7 @@ mod tests {
     /// FileId of `files`, while `alive`.
     struct Positions {
         files: Vec<(FileId, u64)>,
-        alive: std::cell::Cell<bool>,
+        alive: std::sync::atomic::AtomicBool,
     }
 
     impl FileRefs for Positions {
@@ -1080,7 +1232,7 @@ mod tests {
         }
 
         fn resolve(&self, pack: &[u8; 32], ordinal: u32) -> Option<(FileId, u64)> {
-            (self.alive.get() && pack == &[7; 32])
+            (self.alive.load(std::sync::atomic::Ordering::Relaxed) && pack == &[7; 32])
                 .then(|| self.files.get(ordinal as usize).cloned())
                 .flatten()
         }
@@ -1108,7 +1260,7 @@ mod tests {
             .collect();
         let positions = Positions {
             files,
-            alive: std::cell::Cell::new(true),
+            alive: std::sync::atomic::AtomicBool::new(true),
         };
         // Complete forms both: without the positions, the first is no base.
         save(&root, &tree(1), &tree(1), &projection, Some(&positions));
@@ -1124,7 +1276,9 @@ mod tests {
         assert_eq!(load(&root, &tree(1), None), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_some());
         // A position whose pack is gone: unreadable, and removed.
-        positions.alive.set(false);
+        positions
+            .alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(load(&root, &tree(1), Some(&positions)), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
         // Values without positions read as before, with or without them.

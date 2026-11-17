@@ -11,8 +11,8 @@ use layrs_core::scm::{
     validate_file_manifest_admission, validate_layer_admission, validate_marker_admission,
     validate_operation_admission, validate_release_admission,
     validate_release_publication_admission, validate_repository_view_admission,
-    validate_step_admission, validate_step_observation_admission, validate_tree_admission,
-    validate_worktree_admission,
+    validate_repository_view_admission_beside, validate_step_admission,
+    validate_step_observation_admission, validate_tree_admission, validate_worktree_admission,
 };
 use layrs_graph::scm::{OperationDag, StepDag};
 use layrs_store::scm::{
@@ -457,7 +457,12 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 }
                 CanonicalObject::RepositoryView(value) => {
                     let _span = crate::perf::span("validate.object.view");
-                    validate_repository_view_admission(value, self)
+                    match self.replaced_view(value)? {
+                        Some(previous) => {
+                            validate_repository_view_admission_beside(value, &previous, self)
+                        }
+                        None => validate_repository_view_admission(value, self),
+                    }
                 }
                 CanonicalObject::ChunkRaw(_)
                 | CanonicalObject::Symlink(_)
@@ -1241,6 +1246,42 @@ impl<'a> CompositeAdmissionResolver<'a> {
             cache.insert(key, value);
         }
         Ok(value)
+    }
+
+    /// The durably admitted View that `view` replaces, in bounded mode: the
+    /// expected View of the batch's compare-and-swap that publishes `view`
+    /// in its Space, read from the Store. Its unchanged parts need no check
+    /// again (`validate_repository_view_admission_beside`). The complete
+    /// resolver checks every part.
+    fn replaced_view(&self, view: &RepositoryView) -> Result<Option<RepositoryView>> {
+        if !self.bounded {
+            return Ok(None);
+        }
+        let Some(previous) = self
+            .batch
+            .mutations()
+            .iter()
+            .find_map(|mutation| match mutation {
+                StoreMutation::RepositoryView(cas)
+                    if cas.new_view_id() == view.id() && cas.space_id() == view.space_id() =>
+                {
+                    cas.expected_view_id().cloned()
+                }
+                _ => None,
+            })
+        else {
+            return Ok(None);
+        };
+        let id = StoreObjectId::RepositoryView(previous.clone());
+        if self.overlay_object(&id).is_some()
+            || !self.reader.object_admitted_metadata(&id, view.space_id())?
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .reader
+            .get_repository_view(&previous)?
+            .filter(|previous| previous.space_id() == view.space_id()))
     }
 
     /// Ancestry without the Step DAG (council s23): a Step this batch

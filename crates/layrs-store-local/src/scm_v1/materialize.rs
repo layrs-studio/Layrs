@@ -392,6 +392,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // journal and backups, so a retry of the same immutable batch needs
     // fresh physical paths. The checkout lock serializes attempts; the
     // journal session counts again.
+    let session_span = crate::perf::span("materialize.session");
     let handed = sources
         .session
         .and_then(|slot| slot.lock().ok().and_then(|mut slot| slot.take()));
@@ -420,6 +421,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // Held through the precheck; never past it unless the direct path hands
     // it to the staging (`CheckoutSources::session`).
     let mut session = Some(session);
+    drop(session_span);
+    let paths_span = crate::perf::span("materialize.paths");
     super::checkout::projection_tree_id(before)?;
     let projection = super::checkout::projection_tree_id(after)?;
     super::repository::streaming_preflight(batch, sources.chunks).map_err(error)?;
@@ -439,6 +442,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
     let prior = ByPath::new(before)?;
     let next = ByPath::new(after)?;
     let paths = prior.changed_paths(&next);
+    drop(paths_span);
     let checkout = CheckoutReader::open(
         worktree.checkout_root(),
         Some(worktree.filesystem_identity()),

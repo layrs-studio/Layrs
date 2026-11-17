@@ -20,8 +20,8 @@ pub use admission::{
     AdmissionResolver, validate_file_manifest_admission, validate_layer_admission,
     validate_marker_admission, validate_operation_admission, validate_release_admission,
     validate_release_publication_admission, validate_repository_view_admission,
-    validate_step_admission, validate_step_observation_admission, validate_tree_admission,
-    validate_worktree_admission,
+    validate_repository_view_admission_beside, validate_step_admission,
+    validate_step_observation_admission, validate_tree_admission, validate_worktree_admission,
 };
 pub use canonical::{canonical_json, domain_separated_bytes};
 pub use content::{

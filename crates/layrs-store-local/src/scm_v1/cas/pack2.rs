@@ -621,16 +621,54 @@ fn decode(
     if &footer[64..72] != FOOTER_MAGIC {
         return Err(pack2_corruption(path, "pack footer magic is missing"));
     }
-    let index_offset = le_u64(&footer[0..8]);
-    let explicit_count = le_u64(&footer[16..24]);
-    let file_count = le_u64(&footer[24..32]);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(header);
-    hasher.update(metadata);
-    let digest = *hasher.finalize().as_bytes();
+    // The checksum is computed while the metadata is decoded (a large
+    // pack's index is megabytes); a mismatch wins over whatever the decoding
+    // found, as when it was checked first.
+    let (digest, decoded) = std::thread::scope(|scope| {
+        let hashing = (metadata.len() >= 256 * 1024).then(|| {
+            scope.spawn(|| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(header);
+                hasher.update(metadata);
+                *hasher.finalize().as_bytes()
+            })
+        });
+        let decoded =
+            (hashing.is_some()).then(|| decode_checked(path, file_len, version, footer, metadata));
+        let digest = match hashing {
+            Some(hashing) => hashing.join().unwrap_or([0; 32]),
+            None => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(header);
+                hasher.update(metadata);
+                *hasher.finalize().as_bytes()
+            }
+        };
+        (digest, decoded)
+    });
     if digest[..] != footer[32..64] {
         return Err(pack2_corruption(path, "pack metadata checksum differs"));
     }
+    match decoded {
+        Some(decoded) => decoded,
+        None => decode_checked(path, file_len, version, footer, metadata),
+    }
+}
+
+/// `decode` after the header, footer magic and (by the caller) checksum.
+fn decode_checked(
+    path: &Path,
+    file_len: u64,
+    version: u32,
+    footer: &[u8],
+    metadata: &[u8],
+) -> CasResult<Pack2Index> {
+    let index_offset = le_u64(&footer[0..8]);
+    let explicit_count = le_u64(&footer[16..24]);
+    let file_count = le_u64(&footer[24..32]);
+    let digest: [u8; 32] = footer[32..64]
+        .try_into()
+        .map_err(|_| pack2_corruption(path, "pack footer is out of bounds"))?;
     let mut reader = Reader {
         bytes: metadata,
         at: 0,

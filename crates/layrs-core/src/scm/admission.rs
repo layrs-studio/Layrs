@@ -211,11 +211,41 @@ pub fn validate_repository_view_admission(
     view: &RepositoryView,
     resolver: &impl AdmissionResolver,
 ) -> Result<()> {
+    validate_view(view, None, resolver)
+}
+
+/// `validate_repository_view_admission` for a View of the same Space as
+/// `previous`, a View the resolver vouches is durably admitted to that
+/// Space (the current View a batch replaces): what `view` keeps of
+/// `previous` unchanged (a Layer's head set, a Worktree's state, a Marker, a
+/// Release) was checked when `previous` was admitted and is still true, as
+/// none of the facts checked is ever withdrawn (a Layer, Worktree, Marker or
+/// Release keeps its Space; an admitted Step or Tree stays admitted; Step
+/// ancestry never changes). Only the rest is checked.
+pub fn validate_repository_view_admission_beside(
+    view: &RepositoryView,
+    previous: &RepositoryView,
+    resolver: &impl AdmissionResolver,
+) -> Result<()> {
+    if previous.space_id() != view.space_id() {
+        return validate_view(view, None, resolver);
+    }
+    validate_view(view, Some(previous), resolver)
+}
+
+fn validate_view(
+    view: &RepositoryView,
+    previous: Option<&RepositoryView>,
+    resolver: &impl AdmissionResolver,
+) -> Result<()> {
     let space = view.space_id();
     if !resolver.space_exists(space) {
         return Err(cross_space("spaceId"));
     }
     for head_set in view.layer_heads() {
+        if previous.is_some_and(|previous| previous.layer_heads().contains(head_set)) {
+            continue;
+        }
         if !resolver.layer_in_space(head_set.layer_id(), space) {
             return Err(cross_space("layerHeads"));
         }
@@ -231,21 +261,22 @@ pub fn validate_repository_view_admission(
             }
         }
     }
-    if view
-        .marker_ids()
-        .iter()
-        .any(|id| !resolver.marker_in_space(id, space))
-    {
+    if view.marker_ids().iter().any(|id| {
+        !previous.is_some_and(|previous| previous.marker_ids().contains(id))
+            && !resolver.marker_in_space(id, space)
+    }) {
         return Err(cross_space("markerIds"));
     }
-    if view
-        .release_ids()
-        .iter()
-        .any(|id| !resolver.release_in_space(id, space))
-    {
+    if view.release_ids().iter().any(|id| {
+        !previous.is_some_and(|previous| previous.release_ids().contains(id))
+            && !resolver.release_in_space(id, space)
+    }) {
         return Err(cross_space("releaseIds"));
     }
     for state in view.worktrees() {
+        if previous.is_some_and(|previous| previous.worktrees().contains(state)) {
+            continue;
+        }
         if !resolver.worktree_in_space(state.worktree_id(), space) {
             return Err(cross_space("worktrees"));
         }

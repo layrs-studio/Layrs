@@ -411,6 +411,50 @@ fn repository_view_requires_materialized_tree_in_same_space() {
     assert!(validate_repository_view_admission(&view, &resolver).is_err());
 }
 
+/// What a View keeps of the admitted View it replaces is not checked again
+/// (its facts are never withdrawn); what it changes is.
+#[test]
+fn a_view_is_checked_beside_the_view_it_replaces_for_what_it_changes() {
+    let state = |tree: char| {
+        WorktreeViewState::new(
+            WorktreeId::parse("worktree:test").unwrap(),
+            None,
+            None,
+            Some(TreeId::parse(object_id(tree)).unwrap()),
+            WorktreeStatus::Ready,
+        )
+    };
+    let view = |tree: char| {
+        RepositoryView::new(
+            SpaceId::parse("space:test").unwrap(),
+            vec![],
+            vec![],
+            vec![],
+            vec![state(tree)],
+        )
+        .unwrap()
+    };
+    let resolver = Resolver {
+        denied: Some("tree_space"),
+        ..accepted_resolver()
+    };
+    let previous = view('a');
+    // Unchanged: vouched for by the admitted View.
+    assert!(validate_repository_view_admission_beside(&view('a'), &previous, &resolver).is_ok());
+    // Changed: checked, and refused here.
+    assert!(validate_repository_view_admission_beside(&view('b'), &previous, &resolver).is_err());
+    // A View of another Space vouches for nothing.
+    let elsewhere = RepositoryView::new(
+        SpaceId::parse("space:other").unwrap(),
+        vec![],
+        vec![],
+        vec![],
+        vec![state('a')],
+    )
+    .unwrap();
+    assert!(validate_repository_view_admission_beside(&view('a'), &elsewhere, &resolver).is_err());
+}
+
 #[test]
 fn operation_rewrite_steps_must_be_admitted_to_operation_space() {
     let rewrite = RewriteTarget::new(
