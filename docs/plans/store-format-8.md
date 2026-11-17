@@ -216,3 +216,69 @@ complete (Opus mapped every dropped key).
   holds (formats 6 and 7 keep their rows); noise, not wrong data.
 
 Council review of phase 2a is closed after three rounds (the chair's rule).
+
+## Phase 2b design draft (chair, 2026-11-18, for council s27)
+
+Goal: Operations and StepObservations leave SQLite (1,000 Steps: their rows
+1.6 MB of 4.7 MB, plus most of the 2.4 MB of indexes; `gc_roots` 0.28 MB of
+history roots). Measured target from s24proto: about 0.24 KiB per Step in
+packs. What follows is the chair's draft; each point is open to council.
+
+1. Records. Packs v4 (header version 4, format 8 only) add explicit record
+   kinds 11 (Operation) and 12 (StepObservation). Their 32-byte index key is
+   `blake3_derive("layrs history key v1", kind || id)`; the body is today's
+   canonical payload JSON (a binary codec can come later). Every read
+   decodes the body and checks the decoded id against the requested one.
+   Bitmaps never admit them.
+2. Sequence clock. Schema v4 draft 4 adds `history_clock(singleton,
+   next_sequence)`. The pack is sealed before `BEGIN IMMEDIATE`, under the
+   exclusive Store lock: the writer reads the clock there, gives the batch's
+   new history records consecutive sequences (Operations, then
+   observations, in batch order), and in the transaction moves the clock by
+   compare-and-set from the value it read. A record the Store already holds
+   with equal bytes is not new and gets no sequence (the CAS reuses it); a
+   different payload under an existing id is refused as today.
+3. Pack-local history section, after the FileId section, inside the index
+   (so the digest and the keys row commit to it): per history record, its
+   ordinal, sequence, Space (pack-local string table), and for an
+   observation its Step key, Operation key, actor and device (string
+   tables); for an Operation its kind flags (initializer), actor and device.
+   The keys digest adds each record's sequence and payload digest. The
+   catalog builds in memory, per loaded pack: by Space in sequence order, by
+   Step, and actor/device postings.
+4. Readers. `get_operation` and `get_step_observation` read the record
+   through the catalog (the durable horizon covers kinds 11 and 12);
+   `initializer_in_space`, `actor_exists`, `device_exists` and
+   `observation_projection` use the section maps; the observation snapshot's
+   watermark becomes the sequence (its digest hashes sequences, not rowids;
+   metadata compaction no longer invalidates it). Projection cross-checks
+   have nothing to compare.
+5. Writer. The batch's new Operations and observations go through
+   `put_ordered` into the batch's pack (or loose over 1 MiB). No SQL rows.
+   Retained-Operation and observation GC roots are no longer stored: fsck
+   and GC derive them (s25). Operation-head roots are computed in Rust from
+   the batch or the reader, as Worktree roots are in 2a.
+6. Schema v4 draft 4 drops `operations`, `operation_parents`,
+   `operation_rewrites`, `operation_rewrite_targets`, `step_observations`
+   and the foreign keys into them (`worktrees.active_operation_id`,
+   `operation_heads.operation_id`, `release_publications.operation_id`,
+   `recovery_operations.operation_id`). `references.rs` gains history
+   references (to an Operation: from a Worktree, a head, a publication, a
+   recovery, an observation, a parent Operation; recovery writers included),
+   checked by the writer and by fsck.
+7. fsck rebuilds the dropped tables as temporary tables from the records it
+   reads, with the writer's own row code, as in 2a; every check runs
+   unchanged; the dropped keys become explicit checks; history GC roots are
+   derived.
+8. Consolidation copies kinds 11 and 12 with their sections and sequences;
+   a duplicate key compares bytes (corruption if they differ); an
+   unreadable pack that may hold a key blocks a different payload under it.
+9. Tests: suites in 8, 7 and 5; lost-pack tests holding history records;
+   the horizon with a batch's own Operation; paging across consolidation.
+
+Open questions for council s27: (a) is the pre-`BEGIN` sequence assignment
+sound under the exclusive lock, including replay and a failed batch (the
+clock moves only on commit; a sealed but unregistered pack is an orphan)?
+(b) section in the index versus a separate per-pack history index; (c)
+whether actor/device postings belong in packs or in a small SQLite table;
+(d) anything in the client (paging, cursors) that this breaks.
