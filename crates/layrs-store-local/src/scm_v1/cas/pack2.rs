@@ -45,6 +45,20 @@ const PACK2_VERSION_WHOLE: u32 = 2;
 /// Packs Store format 7 writes now: version 2 with large Tree records
 /// (council s20).
 const PACK2_VERSION_LARGE_TREES: u32 = 3;
+/// Packs of Store format 8: version 3 plus history records (Operations,
+/// StepObservations) and their section (council s25, s27).
+pub(super) const PACK2_VERSION_HISTORY: u32 = 4;
+/// Kind code of an Operation record (packs v4).
+pub(crate) const OPERATION_KIND: u8 = 11;
+/// Kind code of a StepObservation record (packs v4).
+pub(crate) const OBSERVATION_KIND: u8 = 12;
+/// Longest Space id a history section names.
+const MAX_SPACE_ID_BYTES: u64 = 4096;
+
+/// Whether `code` is a history record's kind.
+pub(crate) fn is_history_code(code: u8) -> bool {
+    code == OPERATION_KIND || code == OBSERVATION_KIND
+}
 pub(super) const HEADER_LEN: u64 = 16;
 /// index offset, index length, explicit count, file count, digest, magic.
 const FOOTER_LEN: u64 = 8 + 8 + 8 + 8 + 32 + 8;
@@ -76,7 +90,9 @@ fn max_raw_block(version: u32) -> usize {
 
 /// The largest body of a record of kind `code` in a pack of `version`.
 fn max_record_body(version: u32, code: u8) -> usize {
-    if version >= PACK2_VERSION_LARGE_TREES && code == kind_code(StoreObjectKind::Tree) {
+    if version >= PACK2_VERSION_LARGE_TREES
+        && (code == kind_code(StoreObjectKind::Tree) || is_history_code(code))
+    {
         MAX_TREE_RECORD_BYTES
     } else {
         MAX_RECORD_BYTES
@@ -247,6 +263,19 @@ pub(super) struct Pack2Index {
     chunk_order: Vec<u32>,
     manifest_order: Vec<u32>,
     pub(super) fileid_section: Vec<FileIdEntry>,
+    /// Packs v4: one entry per history record, sorted by (Space, sequence).
+    pub(super) history: Vec<HistoryEntry>,
+    /// Packs v4: the Space ids the history section names, sorted.
+    pub(super) spaces: Vec<String>,
+}
+
+/// A history record's section entry: its explicit ordinal, its sequence in
+/// the Store's history clock, and its Space (an index into `spaces`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryEntry {
+    pub(crate) ordinal: u32,
+    pub(crate) sequence: u64,
+    pub(crate) space: Option<u32>,
 }
 
 fn fanout_of<'a>(ids: impl Iterator<Item = &'a [u8; 32]>) -> Box<[u32; 257]> {
@@ -270,6 +299,14 @@ fn search(ids: &[[u8; 32]], fanout: &[u32; 257], id: &[u8; 32]) -> Option<usize>
 }
 
 impl Pack2Index {
+    /// A history entry's Space id.
+    pub(crate) fn space_of(&self, entry: &HistoryEntry) -> Option<&str> {
+        entry
+            .space
+            .and_then(|index| self.spaces.get(index as usize))
+            .map(String::as_str)
+    }
+
     /// Explicit records (every kind but file records).
     pub(super) fn explicit_count(&self) -> usize {
         self.ids.len()
@@ -586,6 +623,16 @@ fn header_bytes(version: u32) -> [u8; HEADER_LEN as usize] {
     header
 }
 
+/// The pack version a Store writes: 4 in format 8 (`history`), 3 when it
+/// keeps `whole` records.
+pub(super) fn version_for_store(whole_files: bool, history: bool) -> u32 {
+    if history {
+        PACK2_VERSION_HISTORY
+    } else {
+        version_for(whole_files)
+    }
+}
+
 /// The pack version a Store writes: 3 when it keeps `whole` records.
 fn version_for(whole_files: bool) -> u32 {
     if whole_files {
@@ -614,6 +661,7 @@ fn decode(
         PACK2_VERSION,
         PACK2_VERSION_WHOLE,
         PACK2_VERSION_LARGE_TREES,
+        PACK2_VERSION_HISTORY,
     ]
     .into_iter()
     .find(|version| header == header_bytes(*version))
@@ -703,13 +751,15 @@ fn decode_checked(
             "pack blocks do not end where the metadata starts",
         ));
     }
-    let kind_count = reader.count(9)?;
+    let history_pack = version >= PACK2_VERSION_HISTORY;
+    let kind_count = reader.count(if history_pack { 11 } else { 9 })?;
     let mut runs: Vec<KindRun> = Vec::with_capacity(kind_count);
     let mut ids = Vec::new();
     let mut locations = Vec::new();
     for _ in 0..kind_count {
         let kind = reader.u8()?;
-        if kind_of_code(kind).is_none() || runs.last().is_some_and(|run| run.kind >= kind) {
+        let known = kind_of_code(kind).is_some() || (history_pack && is_history_code(kind));
+        if !known || runs.last().is_some_and(|run| run.kind >= kind) {
             return Err(pack2_corruption(path, "pack index kinds are invalid"));
         }
         let count = reader.count(MAX_PACK_ENTRIES)?;
@@ -870,6 +920,11 @@ fn decode_checked(
             byte_length,
         });
     }
+    let (history, spaces) = if history_pack {
+        decode_history(&mut reader, &runs)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
     if reader.at != metadata.len() {
         return Err(pack2_corruption(path, "pack metadata has trailing bytes"));
     }
@@ -887,7 +942,81 @@ fn decode_checked(
         chunk_order,
         manifest_order,
         fileid_section,
+        history,
+        spaces,
     })
+}
+
+/// Packs v4: the Space table, then one entry per history record (ordinal,
+/// sequence, Space), sorted by (Space, sequence). Every history record has
+/// exactly one entry, every entry names one, and sequences are positive and
+/// unique in the pack.
+fn decode_history(
+    reader: &mut Reader<'_>,
+    runs: &[KindRun],
+) -> CasResult<(Vec<HistoryEntry>, Vec<String>)> {
+    let path = reader.path;
+    let space_count = reader.count(MAX_PACK_ENTRIES)?;
+    let mut spaces: Vec<String> = Vec::with_capacity(space_count.min(1 << 12));
+    for _ in 0..space_count {
+        let length = reader.count(MAX_SPACE_ID_BYTES)?;
+        let bytes = reader.take(length)?;
+        let space = std::str::from_utf8(bytes)
+            .map_err(|_| pack2_corruption(path, "pack history Space is not UTF-8"))?;
+        if space.is_empty() || spaces.last().is_some_and(|last| last.as_str() >= space) {
+            return Err(pack2_corruption(path, "pack history Spaces are not sorted"));
+        }
+        spaces.push(space.to_owned());
+    }
+    let history_runs: Vec<&KindRun> = runs
+        .iter()
+        .filter(|run| is_history_code(run.kind))
+        .collect();
+    let records: usize = history_runs.iter().map(|run| run.end - run.start).sum();
+    let count = reader.count(MAX_PACK_ENTRIES)?;
+    if count != records {
+        return Err(pack2_corruption(
+            path,
+            "pack history section does not cover every history record",
+        ));
+    }
+    let explicit = runs.last().map_or(0, |run| run.end);
+    let mut seen = vec![false; explicit];
+    let mut sequences = std::collections::HashSet::with_capacity(count);
+    let mut history: Vec<HistoryEntry> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let ordinal = reader.varint(explicit.saturating_sub(1) as u64)? as u32;
+        let sequence = reader.varint(i64::MAX as u64)?;
+        let space = reader.varint(spaces.len() as u64)? as u32;
+        let space = space.checked_sub(1);
+        let is_history = history_runs
+            .iter()
+            .any(|run| (run.start..run.end).contains(&(ordinal as usize)));
+        if !is_history || std::mem::replace(&mut seen[ordinal as usize], true) {
+            return Err(pack2_corruption(
+                path,
+                "pack history entry names no history record or repeats one",
+            ));
+        }
+        if sequence == 0 || !sequences.insert(sequence) {
+            return Err(pack2_corruption(path, "pack history sequence is invalid"));
+        }
+        let key = (space.map_or(0, |space| u64::from(space) + 1), sequence);
+        if history.last().is_some_and(|last: &HistoryEntry| {
+            (
+                last.space.map_or(0, |space| u64::from(space) + 1),
+                last.sequence,
+            ) >= key
+        }) {
+            return Err(pack2_corruption(path, "pack history section is not sorted"));
+        }
+        history.push(HistoryEntry {
+            ordinal,
+            sequence,
+            space,
+        });
+    }
+    Ok((history, spaces))
 }
 
 /// A permutation of the records `ordered` marks (every record in version 1,
@@ -1164,6 +1293,8 @@ pub(super) struct Pack2Builder {
     explicit: Vec<(u8, [u8; 32], Location)>,
     files: Vec<(FileRecord, [u8; 32])>,
     fileid: Vec<([u8; 32], [u8; 32], u64)>,
+    /// History records: (kind code, key, sequence, Space).
+    history: Vec<(u8, [u8; 32], u64, Option<String>)>,
 }
 
 /// What `Pack2Builder::finish` wrote, for the reread check and registration.
@@ -1181,7 +1312,19 @@ pub(super) struct SealedPack2 {
 impl Pack2Builder {
     /// A pack of a Store that keeps `whole` records (format 7) or not.
     pub(super) fn start(out: &mut impl Write, whole_files: bool) -> io::Result<Self> {
-        let version = version_for(whole_files);
+        Self::start_version(out, version_for(whole_files))
+    }
+
+    /// A pack of a Store of format 8 (`history`: packs v4) or not.
+    pub(super) fn start_for(
+        out: &mut impl Write,
+        whole_files: bool,
+        history: bool,
+    ) -> io::Result<Self> {
+        Self::start_version(out, version_for_store(whole_files, history))
+    }
+
+    fn start_version(out: &mut impl Write, version: u32) -> io::Result<Self> {
         out.write_all(&header_bytes(version))?;
         Ok(Self {
             version,
@@ -1193,7 +1336,31 @@ impl Pack2Builder {
             explicit: Vec::new(),
             files: Vec::new(),
             fileid: Vec::new(),
+            history: Vec::new(),
         })
+    }
+
+    /// One history record (packs v4): an Operation or a StepObservation,
+    /// keyed by its derived key, with its sequence and Space.
+    pub(super) fn add_history_record(
+        &mut self,
+        out: &mut impl Write,
+        code: u8,
+        key: [u8; 32],
+        body: &[u8],
+        sequence: u64,
+        space: Option<String>,
+    ) -> io::Result<()> {
+        if self.version < PACK2_VERSION_HISTORY || !is_history_code(code) {
+            return Err(io::Error::other("a history record belongs in a pack v4"));
+        }
+        if sequence == 0 || sequence > i64::MAX as u64 {
+            return Err(io::Error::other("a history sequence is positive"));
+        }
+        let location = self.place(out, code, body, None)?;
+        self.explicit.push((code, key, location));
+        self.history.push((code, key, sequence, space));
+        Ok(())
     }
 
     fn append_block(&mut self, out: &mut impl Write, block: EncodedBlock) -> io::Result<u32> {
@@ -1460,7 +1627,24 @@ impl Pack2Builder {
             put_varint(&mut metadata, u64::from(*position));
             put_varint(&mut metadata, *length);
         }
-        let keys = self.keys(&section)?;
+        let history = self.history_entries()?;
+        if self.version >= PACK2_VERSION_HISTORY {
+            put_varint(&mut metadata, history.1.len() as u64);
+            for space in &history.1 {
+                put_varint(&mut metadata, space.len() as u64);
+                metadata.extend_from_slice(space.as_bytes());
+            }
+            put_varint(&mut metadata, history.0.len() as u64);
+            for entry in &history.0 {
+                put_varint(&mut metadata, u64::from(entry.ordinal));
+                put_varint(&mut metadata, entry.sequence);
+                put_varint(
+                    &mut metadata,
+                    entry.space.map_or(0, |space| u64::from(space) + 1),
+                );
+            }
+        }
+        let keys = self.keys(&section, &history.0, &history.1)?;
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(&header_bytes(self.version));
@@ -1485,21 +1669,88 @@ impl Pack2Builder {
         })
     }
 
+    /// The history section of the sealed pack (explicit records sorted):
+    /// its entries sorted by (Space, sequence), and its Space table.
+    fn history_entries(&self) -> io::Result<(Vec<HistoryEntry>, Vec<String>)> {
+        let invalid = |reason: &str| io::Error::other(reason.to_owned());
+        let mut spaces: Vec<String> = self
+            .history
+            .iter()
+            .filter_map(|record| record.3.clone())
+            .collect();
+        spaces.sort_unstable();
+        spaces.dedup();
+        let mut sequences = std::collections::HashSet::with_capacity(self.history.len());
+        let mut entries = Vec::with_capacity(self.history.len());
+        for (code, key, sequence, space) in &self.history {
+            let ordinal = self
+                .explicit
+                .binary_search_by(|entry| (entry.0, entry.1).cmp(&(*code, *key)))
+                .map_err(|_| invalid("a history record is not in the pack"))?;
+            if !sequences.insert(*sequence) {
+                return Err(invalid("two history records share a sequence"));
+            }
+            let space = match space {
+                Some(space) => Some(
+                    spaces
+                        .binary_search(space)
+                        .map_err(|_| invalid("a history Space is not in the table"))?
+                        as u32,
+                ),
+                None => None,
+            };
+            entries.push(HistoryEntry {
+                ordinal: ordinal as u32,
+                sequence: *sequence,
+                space,
+            });
+        }
+        entries.sort_unstable_by_key(|entry| {
+            (
+                entry.space.map_or(0, |space| u64::from(space) + 1),
+                entry.sequence,
+            )
+        });
+        Ok((entries, spaces))
+    }
+
     /// The keys row of the sealed pack, from its records in index order:
     /// explicit records sorted by kind and id, then file records by FileId,
     /// each with its chunk and manifest aliases (the ordinals of the
-    /// admission bitmaps), and the FileId section.
-    fn keys(&self, section: &[([u8; 32], u32, u64)]) -> io::Result<super::keys::PackKeys> {
+    /// admission bitmaps), the FileId section, and (packs v4) each history
+    /// record's sequence and Space, with one key per Space with history.
+    fn keys(
+        &self,
+        section: &[([u8; 32], u32, u64)],
+        history: &[HistoryEntry],
+        spaces: &[String],
+    ) -> io::Result<super::keys::PackKeys> {
         use super::keys::{self, Ordinal, SectionEntry};
+        let by_ordinal: std::collections::HashMap<u32, &HistoryEntry> =
+            history.iter().map(|entry| (entry.ordinal, entry)).collect();
         let mut ordinals = Vec::with_capacity(self.explicit.len() + 2 * self.files.len());
         let mut tagged =
             Vec::with_capacity(self.explicit.len() + 3 * self.files.len() + section.len());
-        for (code, id, _) in &self.explicit {
-            ordinals.push(Ordinal::Explicit {
-                kind_code: *code,
-                id,
-            });
+        for (ordinal, (code, id, _)) in self.explicit.iter().enumerate() {
+            match by_ordinal.get(&(ordinal as u32)) {
+                Some(entry) => ordinals.push(Ordinal::History {
+                    kind_code: *code,
+                    id,
+                    sequence: entry.sequence,
+                    space: entry
+                        .space
+                        .and_then(|space| spaces.get(space as usize))
+                        .map(String::as_str),
+                }),
+                None => ordinals.push(Ordinal::Explicit {
+                    kind_code: *code,
+                    id,
+                }),
+            }
             tagged.push(keys::explicit_key(*code, id));
+        }
+        for space in spaces {
+            tagged.push(keys::space_history_key(space));
         }
         for (file, manifest_id) in &self.files {
             ordinals.push(Ordinal::ChunkAlias {
@@ -1643,6 +1894,92 @@ mod tests {
 
     fn chunk(text: &str) -> Chunk {
         Chunk::new(text.as_bytes().to_vec()).unwrap()
+    }
+
+    /// Packs v4 hold history records with their section: one entry per
+    /// record, sorted by (Space, sequence), Spaces in a sorted table; a pack
+    /// of another version refuses them (council s27).
+    #[test]
+    fn history_records_round_trip_with_their_section() {
+        let path = temp_path("history");
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut builder = Pack2Builder::start_for(&mut file, true, true).unwrap();
+        let tree = CanonicalObject::Tree(Tree::new(vec![]).unwrap());
+        let tree_id = id_of(&tree.object_id());
+        builder
+            .add_record(
+                &mut file,
+                StoreObjectKind::Tree,
+                tree_id,
+                &encode_object(&tree).unwrap(),
+                None,
+            )
+            .unwrap();
+        let records = [
+            (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
+            (OBSERVATION_KIND, [3_u8; 32], 6, None),
+            (OPERATION_KIND, [1_u8; 32], 9, Some("space:a")),
+            (OBSERVATION_KIND, [9_u8; 32], 2, Some("space:b")),
+        ];
+        for (code, key, sequence, space) in records {
+            builder
+                .add_history_record(
+                    &mut file,
+                    code,
+                    key,
+                    format!("body {sequence}").as_bytes(),
+                    sequence,
+                    space.map(str::to_owned),
+                )
+                .unwrap();
+        }
+        builder.finish(&mut file).unwrap();
+        file.sync_all().unwrap();
+        let index = load(&file, &path).unwrap();
+        assert_eq!(index.version, PACK2_VERSION_HISTORY);
+        assert_eq!(index.spaces, ["space:a", "space:b"]);
+        let listed: Vec<(u8, [u8; 32], u64, Option<&str>)> = index
+            .history
+            .iter()
+            .map(|entry| {
+                let (code, key, _) = index.explicit(entry.ordinal as usize).unwrap();
+                (code, *key, entry.sequence, index.space_of(entry))
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (OBSERVATION_KIND, [3_u8; 32], 6, None),
+                (OPERATION_KIND, [1_u8; 32], 9, Some("space:a")),
+                (OBSERVATION_KIND, [9_u8; 32], 2, Some("space:b")),
+                (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
+            ]
+        );
+        let _ = fs::remove_file(&path);
+
+        // A pack v3 refuses a history record; two records may not share a
+        // sequence.
+        let mut sink = Vec::new();
+        let mut older = Pack2Builder::start_for(&mut sink, true, false).unwrap();
+        assert!(
+            older
+                .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"x", 1, None)
+                .is_err()
+        );
+        let mut sink = Vec::new();
+        let mut twice = Pack2Builder::start_for(&mut sink, true, true).unwrap();
+        twice
+            .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"x", 4, None)
+            .unwrap();
+        twice
+            .add_history_record(&mut sink, OBSERVATION_KIND, [2; 32], b"y", 4, None)
+            .unwrap();
+        assert!(twice.finish(&mut sink).is_err());
     }
 
     fn id_of(object: &StoreObjectId) -> [u8; 32] {

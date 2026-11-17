@@ -275,6 +275,13 @@ impl NativeCas {
                 "a pack of Store format 7 in an older Store",
             ));
         }
+        // Packs v4 if and only if format 8 (council s27).
+        if (index.version == pack2::PACK2_VERSION_HISTORY) != self.bitmap_admissions {
+            return Err(pack2::pack2_corruption(
+                path,
+                "a pack of another Store format than this Store's",
+            ));
+        }
         Ok(())
     }
 
@@ -1003,12 +1010,28 @@ impl LoadedPack {
             .collect::<CasResult<_>>()?;
         let mut ordinals = Vec::with_capacity(explicit.len() + 2 * index.files.len());
         let mut tagged = Vec::with_capacity(explicit.len() + 3 * index.files.len());
-        for (code, id) in &explicit {
-            ordinals.push(Ordinal::Explicit {
-                kind_code: *code,
-                id,
-            });
+        let history: std::collections::HashMap<u32, &pack2::HistoryEntry> = index
+            .history
+            .iter()
+            .map(|entry| (entry.ordinal, entry))
+            .collect();
+        for (ordinal, (code, id)) in explicit.iter().enumerate() {
+            match history.get(&(ordinal as u32)) {
+                Some(entry) => ordinals.push(Ordinal::History {
+                    kind_code: *code,
+                    id,
+                    sequence: entry.sequence,
+                    space: index.space_of(entry),
+                }),
+                None => ordinals.push(Ordinal::Explicit {
+                    kind_code: *code,
+                    id,
+                }),
+            }
             tagged.push(keys::explicit_key(*code, id));
+        }
+        for space in &index.spaces {
+            tagged.push(keys::space_history_key(space));
         }
         for (record, manifest_id) in index.files.iter().zip(&manifests) {
             ordinals.push(Ordinal::ChunkAlias {
@@ -1507,8 +1530,12 @@ impl NativeCas {
                 Ok(file) => {
                     let path = packs_path.join(&name);
                     let mut sink = PackSink::File { file, _lease: None };
-                    let builder = Pack2Builder::start(&mut sink, self.whole_files)
-                        .map_err(|error| io_error("write CAS pack", &path, error))?;
+                    let builder = Pack2Builder::start_for(
+                        &mut sink,
+                        self.whole_files,
+                        self.bitmap_admissions,
+                    )
+                    .map_err(|error| io_error("write CAS pack", &path, error))?;
                     return Ok(OpenPack {
                         sink,
                         path,
@@ -3909,8 +3936,9 @@ impl NativeCas {
         if inline_limit > 0 {
             let mut sink = PackSink::Memory(Vec::new());
             let path = self.staging_dir.join("inline-pack");
-            let builder = Pack2Builder::start(&mut sink, self.whole_files)
-                .map_err(|error| io_error("write CAS pack", &path, error))?;
+            let builder =
+                Pack2Builder::start_for(&mut sink, self.whole_files, self.bitmap_admissions)
+                    .map_err(|error| io_error("write CAS pack", &path, error))?;
             return Ok(OpenPack {
                 sink,
                 path,
@@ -3921,7 +3949,13 @@ impl NativeCas {
         }
         let lease = StagingLease::shared(&self.staging_lease_path)?;
         let staging = self.pinned_staging()?;
-        open_pack(&staging, &self.staging_dir, lease, self.whole_files)
+        open_pack(
+            &staging,
+            &self.staging_dir,
+            lease,
+            self.whole_files,
+            self.bitmap_admissions,
+        )
     }
 
     /// Moves a pack kept in memory to a staging file once it outgrows the
@@ -4522,13 +4556,14 @@ fn open_pack(
     staging_dir: &Path,
     lease: StagingLease,
     whole_files: bool,
+    history: bool,
 ) -> CasResult<OpenPack> {
     let (file, path) = create_staging_pack(staging, staging_dir)?;
     let mut sink = PackSink::File {
         file,
         _lease: Some(lease),
     };
-    let builder = Pack2Builder::start(&mut sink, whole_files)
+    let builder = Pack2Builder::start_for(&mut sink, whole_files, history)
         .map_err(|error| io_error("write CAS pack", &path, error))?;
     Ok(OpenPack {
         sink,

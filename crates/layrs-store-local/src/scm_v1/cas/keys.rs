@@ -26,6 +26,9 @@ pub(crate) const CHUNK_ALIAS_TAG: u8 = 0x01;
 pub(crate) const MANIFEST_ALIAS_TAG: u8 = 0x02;
 pub(crate) const FILEID_SECTION_TAG: u8 = 0x03;
 pub(crate) const FILE_RECORD_TAG: u8 = 0x04;
+/// A Space with history records in the pack (packs v4): a Space query
+/// beside an unreadable pack that may hold one fails closed (council s27).
+pub(crate) const SPACE_HISTORY_TAG: u8 = 0x05;
 
 /// The parameter new rows use: about 21.5 bits per key, one false "may
 /// include" in about a million keys asked.
@@ -41,6 +44,14 @@ pub(crate) fn key(tag: u8, id: &[u8; 32]) -> Key {
     key[0] = tag;
     key[1..].copy_from_slice(id);
     key
+}
+
+/// The key of a Space with history in a pack.
+pub(crate) fn space_history_key(space: &str) -> Key {
+    key(
+        SPACE_HISTORY_TAG,
+        &blake3::derive_key("layrs history space v1", space.as_bytes()),
+    )
 }
 
 /// An explicit record's key: its kind code in the tag.
@@ -63,6 +74,13 @@ pub(crate) enum Ordinal<'a> {
     ManifestAlias {
         file_id: &'a [u8; 32],
         manifest_id: &'a [u8; 32],
+    },
+    /// A history record (packs v4): its key, sequence and Space.
+    History {
+        kind_code: u8,
+        id: &'a [u8; 32],
+        sequence: u64,
+        space: Option<&'a str>,
     },
 }
 
@@ -92,6 +110,24 @@ impl Ordinal<'_> {
                 out.push(3);
                 out.extend_from_slice(*file_id);
                 out.extend_from_slice(*manifest_id);
+            }
+            Self::History {
+                kind_code,
+                id,
+                sequence,
+                space,
+            } => {
+                out.extend_from_slice(&[4, *kind_code]);
+                out.extend_from_slice(*id);
+                out.extend_from_slice(&sequence.to_le_bytes());
+                match space {
+                    Some(space) => {
+                        out.push(1);
+                        out.extend_from_slice(&(space.len() as u64).to_le_bytes());
+                        out.extend_from_slice(space.as_bytes());
+                    }
+                    None => out.push(0),
+                }
             }
         }
     }
