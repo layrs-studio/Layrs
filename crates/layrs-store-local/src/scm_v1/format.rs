@@ -61,9 +61,10 @@ pub const COMPACT_FORMAT_VERSION: u32 = 6;
 /// Opt-in with `LAYRS_STORE_FORMAT=7`. A reader of format 6 refuses it.
 pub const WHOLE_FILES_FORMAT_VERSION: u32 = 7;
 /// Format 7 whose history leaves SQLite (council s24, s25), in drafts until
-/// it is frozen: draft 1 admits every object kind by the pack bitmaps
-/// (schema v4 draft 1). Opt-in with `LAYRS_STORE_FORMAT=8`; a Store of an
-/// earlier draft, or a reader of format 7, refuses it.
+/// it is frozen: draft 2 admits every object kind by the pack bitmaps and
+/// keeps no object projections (schema v4 draft 2). Opt-in with
+/// `LAYRS_STORE_FORMAT=8`; a Store of an earlier draft, or a reader of
+/// format 7, refuses it.
 pub const HISTORY_FORMAT_VERSION: u32 = 8;
 /// The newest complete-Store format this reader understands.
 pub const NEWEST_FORMAT_VERSION: u32 = HISTORY_FORMAT_VERSION;

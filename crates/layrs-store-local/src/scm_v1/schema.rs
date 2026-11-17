@@ -87,16 +87,18 @@ pub fn schema_v3_checksum() -> String {
     blake3::hash(SCHEMA_V3_SQL.as_bytes()).to_hex().to_string()
 }
 
-/// Store format 8 baseline, draft 1 (council s25, phase 2a): v3 without
+/// Store format 8 baseline, draft 2 (council s25, phase 2a): v3 without
 /// `space_object_admissions` (every object kind is admitted by the pack
-/// bitmaps or `space_loose_admissions`). Drafts change until format 8 is
-/// frozen; a Store of an earlier draft is refused.
+/// bitmaps or `space_loose_admissions`), without the object projections
+/// (the canonical records are the only source) and without the unused
+/// `pending_*` tables. Drafts change until format 8 is frozen; a Store of an
+/// earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft1";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft2";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "d8f6c15e4240ea00683874832fc4122e5df3b0b03983082f812bf115f5113303";
+    "a13ad03b16e1cc0e4254bbb745f217d9de0e5f537758dc46cdf353a3af8bf0b5";
 pub const SCHEMA_V4_FINGERPRINT: &str =
-    "1242d84d9acd136661f1e8afe9aa2e91f053d28e972c9353d548dbc2d11fc51c";
+    "8a7d85cfa95719f7f1bfa345d0f2f6a62f7d4a71b5ab2b3907e5e20b7184b6b9";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
 
 pub fn schema_v4_checksum() -> String {
@@ -183,7 +185,9 @@ pub const BASELINE_V2: Baseline = Baseline {
     auto_vacuum: false,
 };
 
-/// The v3 tables but `space_object_admissions`.
+/// The v3 tables but `space_object_admissions`, the object projections
+/// (`objects`, `object_edges`, `steps`, `step_parents`, `repository_views`
+/// and its child tables) and the unused `pending_*` tables.
 pub const REQUIRED_TABLES_V4: &[&str] = &[
     "meta",
     "migrations",
@@ -192,24 +196,13 @@ pub const REQUIRED_TABLES_V4: &[&str] = &[
     "spaces",
     "layers",
     "layer_parents",
-    "objects",
     "products",
-    "object_edges",
     "cas_packs",
     "cas_pack_inline",
     "cas_pack_keys",
     "space_pack_admissions",
     "loose_objects",
     "space_loose_admissions",
-    "pending_objects",
-    "pending_admissions",
-    "steps",
-    "step_parents",
-    "repository_views",
-    "repository_view_layer_heads",
-    "repository_view_markers",
-    "repository_view_releases",
-    "repository_view_worktrees",
     "step_observations",
     "operations",
     "operation_parents",
@@ -226,8 +219,6 @@ pub const REQUIRED_TABLES_V4: &[&str] = &[
     "recovery_operations",
     "recovery_paths",
     "materialization_leases",
-    "pending_steps",
-    "pending_ref_updates",
     "sync_cursors",
     "object_pins",
     "gc_roots",

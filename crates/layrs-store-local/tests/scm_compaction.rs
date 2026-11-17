@@ -29,16 +29,16 @@ impl Fixture {
     fn inflate(&self) {
         let _guard = scm_v1::open_exclusive(&self.0).unwrap();
         let db = rusqlite::Connection::open(self.database()).unwrap();
+        // Free pages from a table that exists only meanwhile: every schema
+        // (format 8 has no `pending_*` tables) ends up as it was.
+        db.execute_batch("CREATE TABLE fixture_inflate(bytes TEXT NOT NULL)")
+            .unwrap();
         db.execute(
-            "INSERT INTO pending_objects VALUES ('fixture','fixture','chunk_raw',?1,'abandoned',0)",
+            "INSERT INTO fixture_inflate VALUES (?1)",
             ["x".repeat(2 * 1024 * 1024)],
         )
         .unwrap();
-        db.execute(
-            "DELETE FROM pending_objects WHERE transaction_id='fixture'",
-            [],
-        )
-        .unwrap();
+        db.execute_batch("DROP TABLE fixture_inflate").unwrap();
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
     }
 }
@@ -64,13 +64,23 @@ impl CompactionFaults for Stop {
 fn physical_compaction_reclaims_pages_without_changing_rows_and_retains_backup() {
     let f = Fixture::new();
     f.inflate();
+    // Formats 6 to 8 return free pages at each commit (`auto_vacuum =
+    // FULL`): only fragmentation is left to reclaim, and none may be.
+    let auto_vacuum: i64 = rusqlite::Connection::open(f.database())
+        .unwrap()
+        .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+        .unwrap();
     let before = fs::read(f.database()).unwrap();
     let report = compact_metadata(&f.0).unwrap();
     println!(
         "physical SQLite compaction: {} -> {} bytes; {} rows retained",
         report.before_bytes, report.after_bytes, report.retained_rows
     );
-    assert!(report.after_bytes < report.before_bytes);
+    if auto_vacuum == 0 {
+        assert!(report.after_bytes < report.before_bytes);
+    } else {
+        assert!(report.after_bytes <= report.before_bytes);
+    }
     assert_eq!(
         fs::read(report.backup_directory.join("before.sqlite3")).unwrap(),
         before
@@ -132,7 +142,24 @@ fn reads_writes_and_pending_mutations_refuse_compaction_without_mutation() {
     drop(write);
     assert_eq!(fs::read(f.database()).unwrap(), before);
     let db = rusqlite::Connection::open(f.database()).unwrap();
-    db.execute("INSERT INTO pending_objects VALUES ('fixture','fixture','chunk_raw','staging/fixture','staged',0)",[]).unwrap();
+    // Format 8 has no `pending_*` tables: an unreleased lease refuses.
+    let pending: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='pending_objects')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    if pending {
+        db.execute("INSERT INTO pending_objects VALUES ('fixture','fixture','chunk_raw','staging/fixture','staged',0)",[]).unwrap();
+    } else {
+        db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        db.execute(
+            "INSERT INTO materialization_leases(worktree_id,resource_key,recovery_operation_id,owner_token,generation,acquired_at_ms,heartbeat_at_ms,expires_at_ms,released_at_ms) VALUES('worktree:fixture','fixture','recovery:fixture','owner',1,0,1,2,NULL)",
+            [],
+        )
+        .unwrap();
+    }
     drop(db);
     let before = fs::read(f.database()).unwrap();
     assert!(compact_metadata(&f.0).is_err());

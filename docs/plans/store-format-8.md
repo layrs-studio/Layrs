@@ -87,3 +87,34 @@ pass git.
    Stores refused).
 4. 2d: `layrs store convert` from 5, 6 and 7.
 5. 2e: default 8.
+
+## Phase 2a progress (2026-11-17)
+
+- Draft 1 (`c56d89e`): every object kind admitted by the pack bitmaps; schema
+  v4 draft 1 drops `space_object_admissions`; fsck rebuilds it into a
+  temporary table from the bitmaps. `684adee`: the v4 fixture is kept LF
+  (its pinned checksum broke every Store creation on CRLF checkouts).
+- Draft 2 (schema v4 draft 2, `native_scm_v4_history_out_draft2`): drops
+  `objects`, `object_edges`, `steps`, `step_parents`, `repository_views` and
+  its four child tables, and the four `pending_*` tables.
+  - Writer: no projection rows (a Product keeps its `products` row). The
+    roots of a Worktree follow its active Operation alone (Operations and
+    Views never change), so format 8 replaces them only for the Worktrees a
+    batch moves, resolved in Rust while the validation reader exists
+    (Operation, then View, from the batch or the reader). The debug
+    comparison of `gc_roots` with the full projection is skipped in format
+    8: fsck checks it.
+  - Readers: records that are not content are read through the catalog, as
+    content is; projection cross-checks have nothing to compare.
+  - Durable horizon (Opus, s25): the batch's pack is registered before
+    validation, and without `objects` rows its own Steps would look durable
+    (`new_batch_steps` skips a Step `get_step` finds). The validating reader
+    of a format 8 batch reads records that are not content only from the
+    packs and loose objects registered before the batch
+    (`DurableHorizon`). Test: `a_new_step_is_never_read_back_from_its_own_batch`
+    (formats 7 and 8; without the horizon format 8 refuses through a later
+    check, `AdmissionRejected`, instead of `not_found`).
+  - fsck: every registered record is read (`history_objects`), then its
+    projection rows are written into temporary tables by the writer's own
+    code (`insert_history_projection`); every check runs unchanged.
+  - Metadata compaction skips the `pending_*` tables a schema lacks.

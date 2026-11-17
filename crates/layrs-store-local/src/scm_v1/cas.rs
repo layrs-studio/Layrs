@@ -527,6 +527,12 @@ impl NativeCas {
         self.bitmap_admissions
     }
 
+    /// Whether this Store keeps object projections (`objects`, edges,
+    /// Steps, Views): every format but 8.
+    pub(crate) fn object_projections(&self) -> bool {
+        !self.bitmap_admissions
+    }
+
     /// Whether `kind`'s admissions are bitmaps here: content in formats 6
     /// to 8, every kind in format 8.
     pub(crate) fn bitmap_admitted(&self, kind: StoreObjectKind) -> bool {
@@ -2104,7 +2110,7 @@ mod packs;
 mod paths;
 use codec::*;
 pub(crate) use compact::{
-    AuditEvent, CompactPublication, FileManifestEntry, FileRecordPlan, Placement,
+    AuditEvent, CompactPublication, DurableHorizon, FileManifestEntry, FileRecordPlan, Placement,
     RegisteredCatalog, SpaceAdmissions, check_bitmap, set_bit,
 };
 

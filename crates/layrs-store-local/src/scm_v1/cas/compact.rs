@@ -1709,6 +1709,19 @@ fn sql_error(error: rusqlite::Error) -> CasError {
 /// A decompressed block a catalog keeps: ((pack, block), raw bytes).
 type RecentBlock = ((usize, u32), Arc<Vec<u8>>);
 
+/// What a format 8 batch registered before its validation. Its validating
+/// reader reads records that are not content only from earlier
+/// registrations: without `objects` rows, the batch's own Steps and Views
+/// would otherwise look durable (council s25, the durable horizon).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DurableHorizon {
+    /// The batch's pack: its records, and those of any later pack, are not
+    /// durable.
+    pub(crate) pack_seq: Option<i64>,
+    /// The loose objects the batch registered.
+    pub(crate) loose: HashSet<StoreObjectId>,
+}
+
 /// One copy of an object in a registered catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
@@ -2386,6 +2399,49 @@ impl RegisteredCatalog {
     }
 
     /// `contains`, `positive` as in `settle`.
+    /// `placements`, but the copies `horizon` excludes.
+    fn durable_placements(
+        &self,
+        id: &StoreObjectId,
+        horizon: &DurableHorizon,
+    ) -> CasResult<Vec<Placement>> {
+        let mut placements = self.placements(id)?;
+        placements.retain(|placement| match placement {
+            Placement::Record { pack, .. }
+            | Placement::Chunk { pack, .. }
+            | Placement::Manifest { pack, .. } => horizon
+                .pack_seq
+                .is_none_or(|seq| self.packs[*pack].seq < seq),
+            Placement::Loose => !horizon.loose.contains(id),
+        });
+        Ok(placements)
+    }
+
+    /// `contains_with`, from the registrations before `horizon`.
+    pub(crate) fn contains_before(
+        &self,
+        id: &StoreObjectId,
+        positive: bool,
+        horizon: &DurableHorizon,
+    ) -> CasResult<bool> {
+        if self.durable_placements(id, horizon)?.is_empty() {
+            return self.settle(positive, || object_keys(id), false);
+        }
+        Ok(true)
+    }
+
+    /// `read_with`, from the registrations before `horizon`.
+    pub(crate) fn read_before(
+        &self,
+        cas: &NativeCas,
+        id: &StoreObjectId,
+        positive: bool,
+        horizon: &DurableHorizon,
+    ) -> CasResult<Option<CanonicalObject>> {
+        let placements = self.durable_placements(id, horizon)?;
+        self.read_placements(cas, id, positive, placements)
+    }
+
     pub(crate) fn contains_with(&self, id: &StoreObjectId, positive: bool) -> CasResult<bool> {
         if self.placements(id)?.is_empty() {
             return self.settle(positive, || object_keys(id), false);
@@ -2527,6 +2583,16 @@ impl RegisteredCatalog {
         positive: bool,
     ) -> CasResult<Option<CanonicalObject>> {
         let placements = self.placements(id)?;
+        self.read_placements(cas, id, positive, placements)
+    }
+
+    fn read_placements(
+        &self,
+        cas: &NativeCas,
+        id: &StoreObjectId,
+        positive: bool,
+        placements: Vec<Placement>,
+    ) -> CasResult<Option<CanonicalObject>> {
         if placements.is_empty() {
             return self.settle(positive, || object_keys(id), None);
         }
@@ -2758,6 +2824,33 @@ impl RegisteredCatalog {
     /// Every registered content object: explicit content records, the chunk
     /// and the manifest each file record stands for, and loose content.
     /// Records whose identity cannot be rebuilt are returned as errors.
+    /// Every registered pack record that is not content (Trees, Steps,
+    /// Views, ...): format 8's audit reads them where formats 6 and 7 read
+    /// `objects` rows. Loose objects of every kind are in `content_objects`.
+    pub(crate) fn history_objects(&self) -> (Vec<StoreObjectId>, Vec<CasError>) {
+        let mut ids = Vec::new();
+        let mut errors = Vec::new();
+        for registered in &self.packs {
+            let index = &registered.pack.index;
+            for ordinal in 0..index.explicit_count() {
+                let Some((code, digest, _)) = index.explicit(ordinal) else {
+                    continue;
+                };
+                match pack2::kind_of_code(code) {
+                    Some(kind) if !super::is_content(kind) => {
+                        match pack2::object_id_of(kind, digest) {
+                            Ok(id) => ids.push(id),
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                    Some(_) => {}
+                    None => errors.push(pack2::pack2_corruption(&self_path(), "pack record kind")),
+                }
+            }
+        }
+        (ids, errors)
+    }
+
     pub(crate) fn content_objects(&self) -> (Vec<StoreObjectId>, Vec<CasError>) {
         let mut ids = Vec::new();
         let mut errors = Vec::new();

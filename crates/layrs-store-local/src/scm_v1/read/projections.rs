@@ -6,6 +6,11 @@ impl NativeScmReader<'_> {
         source: &StoreObjectId,
         expected: Vec<(String, u64, String)>,
     ) -> Result<()> {
+        // Format 8 keeps no object projections: the record read was
+        // verified against its id, and is the only source (council s25).
+        if !self.cas.object_projections() {
+            return Ok(());
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
@@ -113,6 +118,11 @@ impl NativeScmReader<'_> {
     }
 
     pub(super) fn validate_tree_projection(&self, tree: &Tree) -> Result<()> {
+        // Format 8 keeps no object projections: the record read was
+        // verified against its id, and is the only source (council s25).
+        if !self.cas.object_projections() {
+            return Ok(());
+        }
         let edges = tree
             .entries()
             .iter()
@@ -132,6 +142,11 @@ impl NativeScmReader<'_> {
     }
 
     pub(super) fn validate_step_projection(&self, step: &Step) -> Result<()> {
+        // Format 8 keeps no object projections: the record read was
+        // verified against its id, and is the only source (council s25).
+        if !self.cas.object_projections() {
+            return Ok(());
+        }
         let connection = self.connection()?;
         let row: Option<(String, u64)> = connection
             .query_row(
@@ -177,6 +192,11 @@ impl NativeScmReader<'_> {
     }
 
     pub(super) fn validate_view_projection(&self, view: &RepositoryView) -> Result<()> {
+        // Format 8 keeps no object projections: the record read was
+        // verified against its id, and is the only source (council s25).
+        if !self.cas.object_projections() {
+            return Ok(());
+        }
         let connection = self.connection()?;
         let space: Option<String> = connection
             .query_row(

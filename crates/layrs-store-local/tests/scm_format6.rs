@@ -974,6 +974,50 @@ fn a_store_before_format_7_refuses_to_stage_a_whole_object() {
 /// A step carrying the manifest of its new content still proves its other
 /// Files closed by existence (council s14 r2): only a manifest a batch
 /// admits without carrying it sends the batch's Files to the exact path.
+/// The durable horizon (council s25): a batch's pack is registered before
+/// the batch is validated, and format 8 keeps no `objects` rows to tell its
+/// records from durable ones. A new Step whose parent is missing must still
+/// be refused, not found in its own pack and taken as durable.
+#[test]
+fn a_new_step_is_never_read_back_from_its_own_batch() {
+    for format in ["7", "8"] {
+        let root = TestRoot::new("horizon");
+        create(&root.0, "horizon", format);
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (lane, batch) = Lane::begin("horizon", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let tree = Tree::new(vec![]).unwrap();
+        let missing = layrs_core::scm::StepId::parse(format!("blake3:{}", "e".repeat(64))).unwrap();
+        let orphan = Step::new(vec![missing], tree.id().clone()).unwrap();
+        let objects = vec![
+            CanonicalObject::Tree(tree),
+            CanonicalObject::Step(orphan.clone()),
+        ];
+        let admissions = objects
+            .iter()
+            .map(|object| SpaceObjectAdmission::new(lane.space.id().clone(), object.object_id()))
+            .collect();
+        let orphan_batch = WriteBatch::new(
+            TransactionId::new("transaction:horizon-orphan").unwrap(),
+            objects,
+            vec![],
+            admissions,
+            vec![],
+        )
+        .unwrap();
+        let error = repository.apply_batch(&orphan_batch).unwrap_err();
+        assert_eq!(error.code(), "not_found", "format {format}: {error:?}");
+        assert_eq!(
+            repository.get_step(orphan.id()).unwrap(),
+            None,
+            "format {format}"
+        );
+        drop(repository);
+        assert_fsck_clean(&root.0);
+    }
+}
+
 #[test]
 fn a_step_with_new_content_proves_its_other_files_by_existence() {
     let root = TestRoot::new("existence-step");

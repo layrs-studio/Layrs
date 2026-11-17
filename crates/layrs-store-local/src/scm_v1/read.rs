@@ -45,6 +45,9 @@ pub struct NativeScmReader<'store> {
     transaction_catalog: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
     /// A writer's reader (`with_positive_evidence`).
     positive: bool,
+    /// Format 8, a batch's validating reader: what the batch registered
+    /// (`with_durable_horizon`).
+    horizon: Option<super::cas::DurableHorizon>,
 }
 
 enum SqlReadSource<'source> {
@@ -107,6 +110,13 @@ impl<'transaction> NativeTransactionalScmReader<'transaction> {
         self
     }
 
+    /// Format 8: records that are not content are read only from what was
+    /// registered before the batch being validated (council s25).
+    pub(crate) fn with_durable_horizon(mut self, horizon: super::cas::DurableHorizon) -> Self {
+        self.reader.horizon = Some(horizon);
+        self
+    }
+
     /// Returns the shared implementation only after proving that the write
     /// transaction is still active. Every `ScmReader` entry point delegates
     /// through this gate, including methods whose implementation can return
@@ -154,6 +164,7 @@ impl NativeStoreReading {
             cas: CasReadSource::Transaction(&self.cas),
             transaction_catalog: std::sync::OnceLock::new(),
             positive: false,
+            horizon: None,
         }
     }
 }
@@ -170,6 +181,7 @@ impl<'store> NativeScmReader<'store> {
             cas: CasReadSource::Owned(cas),
             transaction_catalog: std::sync::OnceLock::new(),
             positive: false,
+            horizon: None,
         })
     }
 
@@ -221,6 +233,7 @@ impl<'store> NativeScmReader<'store> {
             cas: CasReadSource::Transaction(cas.reader()),
             transaction_catalog: std::sync::OnceLock::new(),
             positive: false,
+            horizon: None,
         })
     }
 

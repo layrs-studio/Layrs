@@ -634,8 +634,10 @@ impl NativeScmRepository {
         precheck_mutations(connection, batch)?;
         // Debug builds: whether the GC roots match the full projection
         // before this batch changes anything (council s23 review r1).
+        // Format 8 keeps no View projections for SQL to compare against:
+        // fsck checks its roots.
         #[cfg(debug_assertions)]
-        let roots_complete = {
+        let roots_complete = cas.reader().object_projections() && {
             let guard = connection.lock().map_err(|_| poisoned())?;
             gc_roots_complete(&guard, cas.reader().bitmap_admissions())?
         };
@@ -644,12 +646,13 @@ impl NativeScmRepository {
         // These rows are visible only inside this transaction. The admission
         // resolver can read and rehash streamed chunks without retaining their
         // bytes in WriteBatch; any later failure rolls back all these rows.
+        let mut horizon = None;
         if let Some(publication) = publication {
             // Format 6: the batch's pack and loose objects are registered
             // (present) before validation, as format 5 inserts the object
             // rows of streamed chunks; admission bits come after it.
             let guard = connection.lock().map_err(|_| poisoned())?;
-            register_compact(&guard, publication)?;
+            horizon = Some(register_compact(&guard, publication)?);
         } else if external_chunks != 0 {
             let guard = connection.lock().map_err(|_| poisoned())?;
             insert_object_rows(&guard, store_root, &installed[..external_chunks])?;
@@ -657,7 +660,15 @@ impl NativeScmRepository {
         let validation = crate::perf::span("batch.validate");
         // A writer's reads: positive evidence only (council s17, B1a).
         let immutables = crate::perf::span("batch.immutables");
-        let reader = NativeTransactionalScmReader::new(connection, cas)?.with_positive_evidence();
+        let mut reader =
+            NativeTransactionalScmReader::new(connection, cas)?.with_positive_evidence();
+        // Format 8 keeps no `objects` rows to tell the batch's own records
+        // from durable ones: they are read from earlier registrations only.
+        if !cas.reader().object_projections() {
+            if let Some(horizon) = horizon {
+                reader = reader.with_durable_horizon(horizon);
+            }
+        }
         if publication.is_some() {
             // Objects this batch just wrote (`existed == false`) had no
             // registered copy to disagree with; rereading them from the new
@@ -682,21 +693,30 @@ impl NativeScmRepository {
             };
             resolver.validate_batch()?;
         }
+        // Format 8 keeps no View projections: the roots of the Worktrees
+        // this batch moves are resolved while the validation reader exists.
+        let moved_worktrees = if cas.reader().object_projections() {
+            None
+        } else {
+            Some(moved_worktree_roots(&reader, batch)?)
+        };
         drop(reader);
         drop(validation);
         self.hit(RepositoryFaultPoint::AfterValidation)?;
 
         let rows = crate::perf::span("batch.insert_rows");
+        // Format 8 keeps no object projections (council s25).
+        let projections = cas.reader().object_projections();
         let guard = connection.lock().map_err(|_| poisoned())?;
         if publication.is_some() {
-            insert_object_rows_compact(&guard, installed)?;
+            insert_object_rows_compact(&guard, installed, projections)?;
         } else {
             insert_object_rows(&guard, store_root, installed)?;
         }
-        insert_object_projections_first(&guard, batch, publication.is_some())?;
+        insert_object_projections_first(&guard, batch, publication.is_some(), projections)?;
         self.hit(RepositoryFaultPoint::AfterObjects)?;
-        insert_entities(&guard, batch)?;
-        insert_object_projections_views(&guard, batch)?;
+        insert_entities(&guard, batch, projections)?;
+        insert_object_projections_views(&guard, batch, projections)?;
         self.hit(RepositoryFaultPoint::AfterEntitiesAndProjections)?;
         if publication.is_some() {
             let catalog =
@@ -714,6 +734,7 @@ impl NativeScmRepository {
             batch,
             roots_complete,
             cas.reader().bitmap_admissions(),
+            moved_worktrees.as_deref(),
         )?;
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
@@ -1042,22 +1063,33 @@ fn insert_object_projections_first(
     connection: &Connection,
     batch: &WriteBatch,
     compact: bool,
+    projections: bool,
 ) -> Result<()> {
     for object in batch.canonical_objects() {
+        insert_object_projection(connection, object, compact, projections)?;
+    }
+    Ok(())
+}
+
+/// One object's projection rows (and, for a View, see
+/// `insert_view_projection`). Without `projections` (format 8) only a
+/// Product's `products` row: the canonical record is the only source of the
+/// rest, which fsck rebuilds into temporary tables from the same function.
+pub(super) fn insert_object_projection(
+    connection: &Connection,
+    object: &CanonicalObject,
+    compact: bool,
+    projections: bool,
+) -> Result<()> {
+    {
         match object {
             // Format 6: no file_* projections and no manifest_chunk edges;
             // the FileId section and the manifest itself answer them.
             CanonicalObject::FileManifest(_) if compact => {}
             CanonicalObject::Product(value) => {
                 connection.execute("INSERT OR IGNORE INTO products(product_object_id,product_id) VALUES(?1,?2)",params![value.id().as_str(),value.envelope().logical_id()]).map_err(sql_backend)?;
-                for (index, dependency) in value.direct_dependencies().iter().enumerate() {
-                    edge(
-                        connection,
-                        value.id().as_str(),
-                        "product_dependency",
-                        index,
-                        dependency.as_str(),
-                    )?;
+                if projections {
+                    insert_product_edges(connection, value)?;
                 }
             }
             CanonicalObject::FileManifest(v) => {
@@ -1074,6 +1106,7 @@ fn insert_object_projections_first(
                     )?;
                 }
             }
+            _ if !projections => {}
             CanonicalObject::Tree(v) => {
                 for (i, e) in v.entries().iter().enumerate() {
                     let target = e.target();
@@ -1108,7 +1141,50 @@ fn insert_object_projections_first(
     Ok(())
 }
 
-fn insert_entities(connection: &Connection, batch: &WriteBatch) -> Result<()> {
+fn insert_product_edges(
+    connection: &Connection,
+    value: &layrs_store::scm::CanonicalProduct,
+) -> Result<()> {
+    for (index, dependency) in value.direct_dependencies().iter().enumerate() {
+        edge(
+            connection,
+            value.id().as_str(),
+            "product_dependency",
+            index,
+            dependency.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_view_row(connection: &Connection, v: &RepositoryView) -> Result<()> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO repository_views(repository_view_id,space_id) VALUES(?1,?2)",
+            params![v.id().as_str(), v.space_id().as_str()],
+        )
+        .map_err(sql_backend)?;
+    Ok(())
+}
+
+/// Format 8's fsck: the projection rows formats 5 to 7 keep for `object`,
+/// rebuilt into the audit's temporary tables by the writer's own code
+/// (council s25). A Product's `products` row is kept by the Store itself.
+pub(super) fn insert_history_projection(
+    connection: &Connection,
+    object: &CanonicalObject,
+) -> Result<()> {
+    match object {
+        CanonicalObject::Product(value) => insert_product_edges(connection, value),
+        CanonicalObject::RepositoryView(view) => {
+            insert_view_row(connection, view)?;
+            insert_view_projection(connection, view)
+        }
+        _ => insert_object_projection(connection, object, true, true),
+    }
+}
+
+fn insert_entities(connection: &Connection, batch: &WriteBatch, projections: bool) -> Result<()> {
     for e in batch
         .entity_records()
         .iter()
@@ -1125,7 +1201,9 @@ fn insert_entities(connection: &Connection, batch: &WriteBatch) -> Result<()> {
     }
     for object in batch.canonical_objects() {
         if let CanonicalObject::RepositoryView(v) = object {
-            connection.execute("INSERT OR IGNORE INTO repository_views(repository_view_id,space_id) VALUES(?1,?2)",params![v.id().as_str(),v.space_id().as_str()]).map_err(sql_backend)?;
+            if projections {
+                insert_view_row(connection, v)?;
+            }
         }
     }
     for kind in 0..6 {
@@ -1201,9 +1279,30 @@ fn insert_entity(c: &Connection, e: &EntityRecord) -> Result<()> {
     Ok(())
 }
 
-fn insert_object_projections_views(c: &Connection, b: &WriteBatch) -> Result<()> {
+fn insert_object_projections_views(
+    c: &Connection,
+    b: &WriteBatch,
+    projections: bool,
+) -> Result<()> {
+    if !projections {
+        return Ok(());
+    }
     for o in b.canonical_objects() {
         if let CanonicalObject::RepositoryView(v) = o {
+            insert_view_projection(c, v)?;
+        }
+    }
+    Ok(())
+}
+
+/// A View's projection rows (formats 5 to 7; fsck's temporary tables in
+/// format 8).
+pub(super) fn insert_view_projection(
+    c: &Connection,
+    v: &layrs_core::scm::RepositoryView,
+) -> Result<()> {
+    {
+        {
             let mut edge_ordinal = 0_usize;
             for h in v.layer_heads() {
                 for (i, s) in h.step_ids().iter().enumerate() {
@@ -1324,7 +1423,11 @@ fn plan_file_records(
 /// be and is removed. Anything that would register a pack another session
 /// published (consolidation, receiving packs) must keep that rule, or give
 /// orphan collection a grace period first.
-fn register_compact(c: &Connection, publication: &super::cas::CompactPublication) -> Result<()> {
+fn register_compact(
+    c: &Connection,
+    publication: &super::cas::CompactPublication,
+) -> Result<super::cas::DurableHorizon> {
+    let mut horizon = super::cas::DurableHorizon::default();
     if let Some((name, digest, entries)) = &publication.pack {
         let name = name
             .to_str()
@@ -1340,6 +1443,7 @@ fn register_compact(c: &Connection, publication: &super::cas::CompactPublication
         )
         .map_err(sql_backend)?;
         let seq = c.last_insert_rowid();
+        horizon.pack_seq = Some(seq);
         // A small pack's image commits with its registration (council s7
         // Q1): durable with the batch, no file.
         if let Some(image) = &publication.inline {
@@ -1392,16 +1496,23 @@ fn register_compact(c: &Connection, publication: &super::cas::CompactPublication
                     ),
                 });
             }
+        } else {
+            horizon.loose.insert(loose.object_id.clone());
         }
     }
-    Ok(())
+    Ok(horizon)
 }
 
 /// Format 6: `objects` rows of the kinds that keep one (never content).
 fn insert_object_rows_compact(
     connection: &Connection,
     installed: &[super::InstallOutcome],
+    projections: bool,
 ) -> Result<()> {
+    // Format 8: no `objects` rows; a registered record is its own proof.
+    if !projections {
+        return Ok(());
+    }
     for outcome in installed {
         let kind = outcome.object_id.kind();
         if super::cas::is_content(kind) {
@@ -1610,7 +1721,110 @@ fn update_gc_roots(
     batch: &WriteBatch,
     complete_before: bool,
     bitmap_admissions: bool,
+    moved_worktrees: Option<&[MovedWorktree]>,
 ) -> Result<()> {
+    if let Some(moved) = moved_worktrees {
+        update_mutable_roots_without_views(c, moved)?;
+    } else {
+        update_mutable_roots(c)?;
+    }
+    update_immutable_roots(c, batch, bitmap_admissions)?;
+    // Debug builds check the result against the full projection, when the
+    // roots were complete before the batch (a test may seed rows without
+    // them).
+    #[cfg(debug_assertions)]
+    if complete_before {
+        assert!(
+            gc_roots_complete(c, bitmap_admissions)?,
+            "incremental GC roots differ from the full projection"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = complete_before;
+    Ok(())
+}
+
+/// A Worktree whose active Operation this batch sets, with the roots that
+/// Operation gives it: its resulting View, then the base Step and the
+/// materialized Tree that View records for the Worktree.
+pub(super) struct MovedWorktree {
+    worktree: String,
+    operation: String,
+    roots: Vec<String>,
+}
+
+/// The Worktrees `batch` moves (an active Operation compare-and-swap, or a
+/// new Worktree record), with their roots read from the batch or `reader`.
+fn moved_worktree_roots(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<Vec<MovedWorktree>> {
+    let mut moved: Vec<(&WorktreeId, &OperationId)> = Vec::new();
+    for mutation in batch.mutations() {
+        if let StoreMutation::WorktreeActiveOperation(change) = mutation {
+            moved.push((change.worktree_id(), change.new_operation_id()));
+        }
+    }
+    for record in batch.entity_records() {
+        if let EntityRecord::Worktree(value) = record {
+            moved.push((value.id(), value.active_operation_id()));
+        }
+    }
+    let mut roots = Vec::with_capacity(moved.len());
+    for (worktree, operation) in moved {
+        let carried = batch
+            .entity_records()
+            .iter()
+            .find_map(|record| match record {
+                EntityRecord::Operation(value) if value.id() == operation => {
+                    Some(value.resulting_view_id().clone())
+                }
+                _ => None,
+            });
+        let view_id = match carried {
+            Some(view) => view,
+            None => reader
+                .get_operation(operation)?
+                .ok_or_else(|| native_backend(format!("Operation {operation} is missing")))?
+                .resulting_view_id()
+                .clone(),
+        };
+        let carried = batch
+            .canonical_objects()
+            .iter()
+            .find_map(|object| match object {
+                CanonicalObject::RepositoryView(value) if value.id() == &view_id => {
+                    Some(value.clone())
+                }
+                _ => None,
+            });
+        let view = match carried {
+            Some(view) => view,
+            None => reader
+                .get_repository_view(&view_id)?
+                .ok_or_else(|| native_backend(format!("View {view_id} is missing")))?,
+        };
+        let mut objects = vec![view_id.as_str().to_owned()];
+        if let Some(state) = view
+            .worktrees()
+            .iter()
+            .find(|state| state.worktree_id() == worktree)
+        {
+            objects.extend(state.base_step_id().map(|id| id.as_str().to_owned()));
+            objects.extend(
+                state
+                    .materialized_tree_id()
+                    .map(|id| id.as_str().to_owned()),
+            );
+        }
+        roots.push(MovedWorktree {
+            worktree: worktree.as_str().to_owned(),
+            operation: operation.as_str().to_owned(),
+            roots: objects,
+        });
+    }
+    Ok(roots)
+}
+
+/// Formats 5 to 7: every root of mutable state, rebuilt from SQL.
+fn update_mutable_roots(c: &Connection) -> Result<()> {
     c.execute_batch(
         "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','worktree','pin');
          INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
@@ -1633,6 +1847,58 @@ fn update_gc_roots(
            SELECT 'pin',pin_id,object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM object_pins;",
     )
     .map_err(sql_backend)?;
+    Ok(())
+}
+
+/// Format 8: the roots of current Views, Operation heads and pins rebuilt
+/// from SQL; a Worktree's roots replaced only when this batch moved it (a
+/// Worktree's roots follow its active Operation alone, and Operations and
+/// Views never change).
+fn update_mutable_roots_without_views(c: &Connection, moved: &[MovedWorktree]) -> Result<()> {
+    c.execute_batch(
+        "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','pin');
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'current_view',space_id,repository_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM current_repository_views;
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'operation_head',operation_id,resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_heads JOIN operations USING(operation_id);
+         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
+           SELECT 'pin',pin_id,object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM object_pins;",
+    )
+    .map_err(sql_backend)?;
+    for worktree in moved {
+        // A Worktree record carried again does not replace the stored one:
+        // its roots are those of the Operation it is now on.
+        let active: Option<String> = c
+            .prepare_cached("SELECT active_operation_id FROM worktrees WHERE worktree_id=?1")
+            .and_then(|mut statement| {
+                statement
+                    .query_row(params![worktree.worktree], |row| row.get(0))
+                    .optional()
+            })
+            .map_err(sql_backend)?;
+        if active.as_deref() != Some(worktree.operation.as_str()) {
+            continue;
+        }
+        c.prepare_cached("DELETE FROM gc_roots WHERE root_kind='worktree' AND root_id=?1")
+            .and_then(|mut statement| statement.execute(params![worktree.worktree]))
+            .map_err(sql_backend)?;
+        for object in &worktree.roots {
+            c.prepare_cached(
+                "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) VALUES('worktree',?1,?2,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            )
+            .and_then(|mut statement| statement.execute(params![worktree.worktree, object]))
+            .map_err(sql_backend)?;
+        }
+    }
+    Ok(())
+}
+
+/// Roots of immutable records: only this batch's are added.
+fn update_immutable_roots(
+    c: &Connection,
+    batch: &WriteBatch,
+    bitmap_admissions: bool,
+) -> Result<()> {
     let now = "CAST(unixepoch('subsec')*1000 AS INTEGER)";
     for record in batch.entity_records() {
         let (statements, id): (&[&str], &str) = match record {
@@ -1716,18 +1982,6 @@ fn update_gc_roots(
         .and_then(|mut statement| statement.execute(params![product]))
         .map_err(sql_backend)?;
     }
-    // Debug builds check the result against the full projection, when the
-    // roots were complete before the batch (a test may seed rows without
-    // them).
-    #[cfg(debug_assertions)]
-    if complete_before {
-        assert!(
-            gc_roots_complete(c, bitmap_admissions)?,
-            "incremental GC roots differ from the full projection"
-        );
-    }
-    #[cfg(not(debug_assertions))]
-    let _ = complete_before;
     Ok(())
 }
 
@@ -1801,7 +2055,7 @@ fn enum_name<T: Serialize>(v: T) -> Result<String> {
             message: "enum did not serialize as string".into(),
         })
 }
-fn kind_name(k: layrs_store::scm::StoreObjectKind) -> &'static str {
+pub(super) fn kind_name(k: layrs_store::scm::StoreObjectKind) -> &'static str {
     match k {
         layrs_store::scm::StoreObjectKind::ChunkRaw => "chunk_raw",
         layrs_store::scm::StoreObjectKind::FileManifest => "file_manifest",

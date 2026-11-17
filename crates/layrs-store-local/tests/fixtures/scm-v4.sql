@@ -66,35 +66,6 @@ CREATE TABLE layer_parents (
 CREATE INDEX layer_parents_parent_idx ON layer_parents(parent_layer_id);
 
 -- Store format 6: content (chunk_raw, file_manifest) never has a row here;
--- it lives in registered packs (cas_packs) or loose_objects. The storage
--- path of the other kinds is derived from the id.
-CREATE TABLE objects (
-    object_id TEXT PRIMARY KEY CHECK (length(object_id) > 0 AND instr(object_id, char(0)) = 0),
-    object_kind TEXT NOT NULL CHECK (object_kind IN (
-        'tree', 'symlink', 'tombstone', 'step', 'repository_view', 'conflict', 'product'
-    )),
-    byte_length INTEGER NOT NULL CHECK (byte_length > 0),
-    verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX objects_kind_idx ON objects(object_kind, object_id);
-
-CREATE TABLE object_edges (
-    source_object_id TEXT NOT NULL,
-    target_object_id TEXT NOT NULL,
-    edge_kind TEXT NOT NULL CHECK (edge_kind IN (
-        'tree_entry', 'step_parent', 'step_tree', 'view_step',
-        'view_marker', 'view_release', 'view_worktree', 'conflict_side', 'product_dependency'
-    )),
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (source_object_id, edge_kind, ordinal),
-    FOREIGN KEY (source_object_id) REFERENCES objects(object_id) ON DELETE CASCADE,
-    FOREIGN KEY (target_object_id) REFERENCES objects(object_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX object_edges_target_idx ON object_edges(target_object_id, edge_kind);
 
 -- Admissions of non-content objects only; content admission is a bit of
 -- space_pack_admissions or a space_loose_admissions row.
@@ -174,123 +145,6 @@ CREATE TABLE space_loose_admissions (
     FOREIGN KEY (object_id) REFERENCES loose_objects(object_id) ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE pending_objects (
-    transaction_id TEXT NOT NULL,
-    object_id TEXT NOT NULL,
-    object_kind TEXT NOT NULL CHECK (object_kind IN (
-        'chunk_raw', 'file_manifest', 'tree', 'symlink', 'tombstone',
-        'step', 'repository_view', 'conflict', 'product'
-    )),
-    staging_path TEXT NOT NULL CHECK (length(staging_path) > 0),
-    state TEXT NOT NULL CHECK (state IN ('staged', 'verified', 'installed', 'abandoned')),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
-    PRIMARY KEY (transaction_id, object_id)
-) STRICT;
-
-CREATE INDEX pending_objects_state_idx ON pending_objects(state, created_at_ms);
-
-CREATE TABLE pending_admissions (
-    transaction_id TEXT NOT NULL,
-    space_id TEXT NOT NULL,
-    object_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'validated', 'applied', 'rejected')),
-    PRIMARY KEY (transaction_id, space_id, object_id),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE steps (
-    step_id TEXT PRIMARY KEY,
-    root_tree_id TEXT NOT NULL,
-    parent_count INTEGER NOT NULL CHECK (parent_count >= 0),
-    FOREIGN KEY (step_id) REFERENCES objects(object_id) ON DELETE CASCADE,
-    FOREIGN KEY (root_tree_id) REFERENCES objects(object_id) ON DELETE RESTRICT
-) STRICT;
-
-CREATE INDEX steps_root_tree_idx ON steps(root_tree_id);
-
-CREATE TABLE step_parents (
-    step_id TEXT NOT NULL,
-    parent_step_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (step_id, ordinal),
-    UNIQUE (step_id, parent_step_id),
-    CHECK (step_id <> parent_step_id),
-    FOREIGN KEY (step_id) REFERENCES steps(step_id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE INDEX step_parents_parent_idx ON step_parents(parent_step_id);
-
-CREATE TABLE repository_views (
-    repository_view_id TEXT PRIMARY KEY,
-    space_id TEXT NOT NULL,
-    FOREIGN KEY (repository_view_id) REFERENCES objects(object_id) ON DELETE CASCADE,
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE INDEX repository_views_space_idx ON repository_views(space_id, repository_view_id);
-
-CREATE TABLE repository_view_layer_heads (
-    repository_view_id TEXT NOT NULL,
-    layer_id TEXT NOT NULL,
-    step_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (repository_view_id, layer_id, ordinal),
-    UNIQUE (repository_view_id, layer_id, step_id),
-    FOREIGN KEY (repository_view_id) REFERENCES repository_views(repository_view_id) ON DELETE CASCADE,
-    FOREIGN KEY (layer_id) REFERENCES layers(layer_id) ON DELETE RESTRICT,
-    FOREIGN KEY (step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
-) STRICT;
-
-CREATE INDEX repository_view_heads_step_idx ON repository_view_layer_heads(step_id);
-
-CREATE TABLE repository_view_markers (
-    repository_view_id TEXT NOT NULL,
-    marker_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (repository_view_id, ordinal),
-    UNIQUE (repository_view_id, marker_id),
-    FOREIGN KEY (repository_view_id) REFERENCES repository_views(repository_view_id) ON DELETE CASCADE,
-    FOREIGN KEY (marker_id) REFERENCES markers(marker_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE INDEX repository_view_markers_marker_idx ON repository_view_markers(marker_id);
-
-CREATE TABLE repository_view_releases (
-    repository_view_id TEXT NOT NULL,
-    release_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (repository_view_id, ordinal),
-    UNIQUE (repository_view_id, release_id),
-    FOREIGN KEY (repository_view_id) REFERENCES repository_views(repository_view_id) ON DELETE CASCADE,
-    FOREIGN KEY (release_id) REFERENCES releases(release_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE INDEX repository_view_releases_release_idx ON repository_view_releases(release_id);
-
-CREATE TABLE repository_view_worktrees (
-    repository_view_id TEXT NOT NULL,
-    worktree_id TEXT NOT NULL,
-    active_layer_id TEXT,
-    base_step_id TEXT,
-    materialized_tree_id TEXT,
-    status TEXT NOT NULL CHECK (status IN ('ready', 'conflicted', 'needs_repair', 'stale')),
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (repository_view_id, ordinal),
-    UNIQUE (repository_view_id, worktree_id),
-    FOREIGN KEY (repository_view_id) REFERENCES repository_views(repository_view_id) ON DELETE CASCADE,
-    FOREIGN KEY (worktree_id) REFERENCES worktrees(worktree_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (active_layer_id) REFERENCES layers(layer_id) ON DELETE RESTRICT,
-    FOREIGN KEY (base_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT,
-    FOREIGN KEY (materialized_tree_id) REFERENCES objects(object_id) ON DELETE RESTRICT
-) STRICT;
-
-CREATE INDEX repository_view_worktrees_worktree_idx ON repository_view_worktrees(worktree_id);
-
 CREATE TABLE step_observations (
     observation_id TEXT PRIMARY KEY CHECK (length(observation_id) > 0),
     step_id TEXT NOT NULL,
@@ -306,7 +160,6 @@ CREATE TABLE step_observations (
         'conflict_resolution', 'rewrite', 'received', 'automation'
     )),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-    FOREIGN KEY (step_id) REFERENCES steps(step_id) ON DELETE RESTRICT,
     FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
     FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE SET NULL
         DEFERRABLE INITIALLY DEFERRED,
@@ -343,8 +196,7 @@ CREATE TABLE operations (
         AND device_id IS json_extract(payload_json, '$.deviceId')
         AND created_at IS json_extract(payload_json, '$.createdAt')
     ),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (resulting_view_id) REFERENCES repository_views(repository_view_id) ON DELETE RESTRICT
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX operations_space_created_idx ON operations(space_id, created_at, operation_id);
@@ -394,8 +246,7 @@ CREATE TABLE operation_rewrites (
     ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
     PRIMARY KEY (operation_id, ordinal),
     UNIQUE (operation_id, old_step_id),
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE,
-    FOREIGN KEY (old_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
+    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE TABLE operation_rewrite_targets (
@@ -406,8 +257,7 @@ CREATE TABLE operation_rewrite_targets (
     PRIMARY KEY (operation_id, old_step_id, ordinal),
     UNIQUE (operation_id, old_step_id, new_step_id),
     FOREIGN KEY (operation_id, old_step_id)
-        REFERENCES operation_rewrites(operation_id, old_step_id) ON DELETE CASCADE,
-    FOREIGN KEY (new_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
+        REFERENCES operation_rewrites(operation_id, old_step_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE TABLE worktrees (
@@ -437,8 +287,7 @@ CREATE TABLE markers (
     )),
     created_at TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (target_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX markers_space_target_idx ON markers(space_id, target_step_id);
@@ -459,8 +308,7 @@ CREATE TABLE releases (
     version TEXT NOT NULL CHECK (length(version) > 0),
     created_at TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (target_step_id) REFERENCES steps(step_id) ON DELETE RESTRICT
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX releases_space_target_idx ON releases(space_id, target_step_id);
@@ -494,8 +342,7 @@ CREATE TABLE current_repository_views (
     generation INTEGER NOT NULL CHECK (generation >= 1),
     repository_view_id TEXT NOT NULL,
     updated_by_transaction_id TEXT NOT NULL,
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (repository_view_id) REFERENCES repository_views(repository_view_id) ON DELETE RESTRICT
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE TABLE operation_heads (
@@ -584,28 +431,6 @@ CREATE INDEX materialization_leases_expiry_idx ON materialization_leases(expires
 CREATE UNIQUE INDEX materialization_leases_owner_resource_idx
 ON materialization_leases(recovery_operation_id, owner_token, worktree_id, resource_key);
 
-CREATE TABLE pending_steps (
-    transaction_id TEXT NOT NULL,
-    step_id TEXT NOT NULL,
-    space_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'validated', 'admitted', 'rejected')),
-    PRIMARY KEY (transaction_id, step_id, space_id),
-    FOREIGN KEY (step_id) REFERENCES steps(step_id) ON DELETE CASCADE,
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE pending_ref_updates (
-    transaction_id TEXT NOT NULL,
-    target_kind TEXT NOT NULL CHECK (target_kind IN (
-        'repository_view', 'operation_heads', 'worktree_active_operation'
-    )),
-    target_id TEXT NOT NULL CHECK (length(target_id) > 0),
-    expected_json TEXT NOT NULL CHECK (json_valid(expected_json)),
-    new_json TEXT NOT NULL CHECK (json_valid(new_json)),
-    state TEXT NOT NULL CHECK (state IN ('pending', 'validated', 'applied', 'rejected')),
-    PRIMARY KEY (transaction_id, target_kind, target_id)
-) STRICT;
-
 CREATE TABLE sync_cursors (
     space_id TEXT NOT NULL,
     remote_id TEXT NOT NULL CHECK (length(remote_id) > 0),
@@ -644,7 +469,6 @@ CREATE INDEX gc_roots_object_idx ON gc_roots(object_id);
 
 CREATE TABLE products (
     product_object_id TEXT PRIMARY KEY,
-    product_id TEXT NOT NULL CHECK(length(product_id) > 0),
-    FOREIGN KEY(product_object_id) REFERENCES objects(object_id) ON DELETE CASCADE
+    product_id TEXT NOT NULL CHECK(length(product_id) > 0)
 ) STRICT;
 CREATE INDEX products_logical_id_idx ON products(product_id, product_object_id);

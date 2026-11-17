@@ -8,25 +8,91 @@ use crate::scm_v1::cas::{AuditEvent, RegisteredCatalog, is_content};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Format 8's derived tables: the format 7 projections it does not store,
+/// rebuilt per fsck run in this connection's temporary schema (no foreign
+/// keys: fsck reports what they would refuse).
+const DERIVED_TABLES: &str = "
+CREATE TEMP TABLE IF NOT EXISTS space_object_admissions (
+    space_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    admitted_by_operation_id TEXT,
+    admitted_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (space_id, object_id)
+) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS objects (
+    object_id TEXT PRIMARY KEY,
+    object_kind TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    verified INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS object_edges (
+    source_object_id TEXT NOT NULL,
+    target_object_id TEXT NOT NULL,
+    edge_kind TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (source_object_id, edge_kind, ordinal)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS temp.object_edges_target_idx ON object_edges(target_object_id, edge_kind);
+CREATE TEMP TABLE IF NOT EXISTS steps (
+    step_id TEXT PRIMARY KEY,
+    root_tree_id TEXT NOT NULL,
+    parent_count INTEGER NOT NULL
+);
+CREATE TEMP TABLE IF NOT EXISTS step_parents (
+    step_id TEXT NOT NULL,
+    parent_step_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (step_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS temp.step_parents_parent_idx ON step_parents(parent_step_id);
+CREATE TEMP TABLE IF NOT EXISTS repository_views (
+    repository_view_id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL
+);
+CREATE TEMP TABLE IF NOT EXISTS repository_view_layer_heads (
+    repository_view_id TEXT NOT NULL,
+    layer_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (repository_view_id, layer_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS repository_view_markers (
+    repository_view_id TEXT NOT NULL,
+    marker_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (repository_view_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS repository_view_releases (
+    repository_view_id TEXT NOT NULL,
+    release_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (repository_view_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS repository_view_worktrees (
+    repository_view_id TEXT NOT NULL,
+    worktree_id TEXT NOT NULL,
+    active_layer_id TEXT,
+    base_step_id TEXT,
+    materialized_tree_id TEXT,
+    status TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (repository_view_id, ordinal)
+);
+";
+
 impl Context<'_> {
     /// Format 8 keeps no `space_object_admissions`: its admissions of
     /// objects that are not content are rebuilt from the bitmaps into a
     /// temporary table of this connection, so every check that reads them
     /// runs unchanged (council s25: fsck derives what the Store no longer
     /// stores).
+    /// The other projections it no longer keeps (`objects`, edges, Steps,
+    /// Views) start empty here and are filled from the records the scan
+    /// reads (`project_history_records`).
     pub(super) fn project_bitmap_admissions(&mut self) -> Result<(), FsckError> {
         let sql = |error: rusqlite::Error| FsckError::Native(error.to_string());
-        self.connection
-            .execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS space_object_admissions (
-                    space_id TEXT NOT NULL,
-                    object_id TEXT NOT NULL,
-                    admitted_by_operation_id TEXT,
-                    admitted_at_ms INTEGER NOT NULL,
-                    PRIMARY KEY (space_id, object_id)
-                ) WITHOUT ROWID",
-            )
-            .map_err(sql)?;
+        self.connection.execute_batch(DERIVED_TABLES).map_err(sql)?;
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
@@ -45,6 +111,36 @@ impl Context<'_> {
             insert
                 .execute(rusqlite::params![space, object.as_str()])
                 .map_err(sql)?;
+        }
+        Ok(())
+    }
+
+    /// Format 8: the projection rows of every record the scan read, written
+    /// by the writer's own projection code into this run's temporary tables,
+    /// so the edge, graph, View and GC checks run as in formats 6 and 7.
+    pub(super) fn project_history_records(&mut self) -> Result<(), FsckError> {
+        let native = |error: layrs_store::scm::StoreError| FsckError::Native(error.to_string());
+        let mut row = self.connection.prepare(
+            "INSERT OR IGNORE INTO temp.objects
+             (object_id, object_kind, byte_length, verified, created_at_ms)
+             VALUES (?1, ?2, 1, 1, 0)",
+        )?;
+        for (id, object) in &self.objects {
+            if is_content(object.object_id().kind()) {
+                continue;
+            }
+            row.execute(rusqlite::params![
+                id,
+                crate::scm_v1::repository::kind_name(object.object_id().kind())
+            ])?;
+        }
+        drop(row);
+        for object in self.objects.values() {
+            if is_content(object.object_id().kind()) {
+                continue;
+            }
+            crate::scm_v1::repository::insert_history_projection(self.connection, object)
+                .map_err(native)?;
         }
         Ok(())
     }
@@ -317,7 +413,13 @@ impl Context<'_> {
         // Logical objects for closure and reachability. A chunk whose every
         // copy the audit verified is present without a second read; one with
         // a damaged copy is present only if another copy reads.
-        let (content, errors) = catalog.content_objects();
+        let (mut content, mut errors) = catalog.content_objects();
+        // Format 8 keeps no `objects` rows: every registered record is read.
+        if self.audit.bitmap_admissions() {
+            let (history, history_errors) = catalog.history_objects();
+            content.extend(history);
+            errors.extend(history_errors);
+        }
         for error in errors {
             self.finding(
                 FsckFindingCode::CasCorruption,

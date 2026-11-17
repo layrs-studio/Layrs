@@ -254,6 +254,9 @@ impl NativeFsck {
         if context.work_truncated {
             return Ok(context.finish());
         }
+        if audit.bitmap_admissions() {
+            context.project_history_records()?;
+        }
         if context.compact {
             context.check_manifest_projections_compact()?;
         } else {

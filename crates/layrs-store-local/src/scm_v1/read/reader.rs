@@ -437,6 +437,16 @@ impl ScmReader for NativeScmReader<'_> {
         if self.unproven_copy(&StoreObjectId::Tree(id.clone()))? {
             return Ok(false);
         }
+        // Format 8: a registered copy, as for content.
+        if !self.cas.object_projections() {
+            let id = StoreObjectId::Tree(id.clone());
+            let catalog = self.catalog()?;
+            return match &self.horizon {
+                Some(horizon) => catalog.contains_before(&id, self.positive, horizon),
+                None => catalog.contains_with(&id, self.positive),
+            }
+            .map_err(cas_read_error);
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare_cached(

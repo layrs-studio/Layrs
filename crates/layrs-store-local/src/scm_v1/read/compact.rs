@@ -125,10 +125,19 @@ impl NativeScmReader<'_> {
             }
         }
         let catalog = self.catalog()?;
+        // Format 8 keeps no `objects` rows: a registered copy is the proof,
+        // as for content.
         if crate::scm_v1::cas::is_content(id.kind()) {
             return catalog
                 .read_with(&self.cas, id, self.positive)
                 .map_err(cas_read_error);
+        }
+        if !self.cas.object_projections() {
+            return match &self.horizon {
+                Some(horizon) => catalog.read_before(&self.cas, id, self.positive, horizon),
+                None => catalog.read_with(&self.cas, id, self.positive),
+            }
+            .map_err(cas_read_error);
         }
         let connection = self.connection()?;
         let row: Option<(String, i64, i64)> = connection
@@ -195,6 +204,14 @@ impl NativeScmReader<'_> {
             return Ok(None);
         }
         let connection = self.connection()?;
+        // Format 8: no row to check; the record read is verified against
+        // its id, and a miss lets the whole catalog answer.
+        if !self.cas.object_projections() {
+            return Ok(
+                RegisteredCatalog::read_recent(&connection, &self.cas, id, RECENT_PACKS)
+                    .map(|(_, object)| object),
+            );
+        }
         let row: Option<(String, i64, i64)> = connection
             .prepare_cached(
                 "SELECT object_kind, byte_length, verified FROM objects WHERE object_id = ?1",
