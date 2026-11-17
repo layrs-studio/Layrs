@@ -282,3 +282,101 @@ clock moves only on commit; a sealed but unregistered pack is an orphan)?
 (b) section in the index versus a separate per-pack history index; (c)
 whether actor/device postings belong in packs or in a small SQLite table;
 (d) anything in the client (paging, cursors) that this breaks.
+
+## Council s27 r1 (design of 2b, 2026-11-18) and chair's decisions
+
+All three: the direction holds (records in the batch's pack, an SQLite
+clock, the section in the index); the draft needed the changes below before
+code. Opus scored the draft 6/10.
+
+Decided (all three agree):
+
+- History keys use complete semantics everywhere (admission, immutables,
+  `put_compact`): an equal registered copy is reused with its sequence; a
+  different payload is refused; a key an unreadable pack (or a damaged
+  block) may hold is refused as unknown. Invariant: one registered copy per
+  history key (fsck checks it). History ids are never repaired as content.
+- The durable horizon covers every history route: point reads, Space
+  enumeration, and the identity and initializer answers (served by tables
+  written after validation, below).
+- The sequence is assigned before `BEGIN`, under the exclusive lock, on the
+  writer's connection, to the batch's new history records in batch order
+  (Operations, then observations); the clock moves by compare-and-set
+  (exactly one row) in the transaction that registers the pack; ROLLBACK
+  leaves it. Sequences are dense: 1 to `next_sequence - 1`. An unregistered
+  pack's sequences may be reused, so no path may ever register a pack it did
+  not publish in the same transaction (tested with `AfterAllCas`).
+  Consolidation and maintenance copy sequences, never read or move the
+  clock.
+- Replay: when `precheck_new` finds the receipt, no history record is placed;
+  replay decides, independent of history pack readability.
+- The section lives in the index, sorted by (Space, sequence), trimmed to
+  sequence and Space (pack-local string table). The keys digest commits to
+  each record's sequence and payload digest, computed from the bodies when
+  the pack is built; fsck, which decodes every history record, rebuilds it
+  from them. The filter also gets one tagged key per Space with history in
+  the pack, so a Space query beside an unreadable pack fails closed, never
+  partial.
+- No loose history: packs v4 hold kinds 11 and 12 up to the batch bound, a
+  large one in a block of its own.
+- Consolidation proves the logical history inventory (kind, key, sequence,
+  payload digest, Space) of the new pack equals the candidates' before
+  retiring them; a duplicate with other bytes or sequence is source
+  corruption. History ordinals never carry an admission bit.
+- GC: reachability starts from the verified mutable roots plus the roots
+  derived from every retained history record (Views, rewrite endpoints,
+  observed Steps), and from Markers, Releases and admitted Products; a
+  missing pack, damaged block or spent budget forbids any deletion. Stored
+  `gc_roots` keep only mutable roots. Operation-head roots are replaced only
+  for the Spaces whose heads a batch changes, resolved in Rust.
+- References (writer and fsck, typed history references): Operation to its
+  Space; observation to its Space, Worktree and Operation; Worktree record,
+  `WorktreeActiveOperation` and `OperationHeads` new ids, release
+  publications and recovery plans to their Operation (recovery's
+  `insert_plan` checks it itself, complete semantics).
+- Packs v4 if and only if format 8 draft 4; kinds 11 and 12 only in v4.
+- Observation snapshots: the watermark is the sequence (0: none); the
+  digest domain becomes v2 and hashes sequence and canonical payload of the
+  deduplicated logical records; a format 8 metadata compaction keeps cursors
+  valid (`restart_history_traversal = false`). Operation paging still walks
+  the DAG.
+- fsck adds: index key equals the decoded id's key; section fields equal the
+  body; sequences unique, dense, below the clock; one copy per key; no bit
+  on a history ordinal; one Initialize per Space; the two tables below equal
+  the records; the dropped keys as explicit checks with per-record
+  uncertainty (history ids included); history work charged to the budget as
+  read.
+
+Chair's decisions where members differ:
+
+- Initializers and identities go to two small SQLite tables (Opus), not to
+  pack postings (Astra, Sol): `space_initializers(space_id PRIMARY KEY,
+  operation_id UNIQUE)` and `history_identities(kind, id, PRIMARY KEY(kind,
+  id)) WITHOUT ROWID`, written after validation in the batch transaction.
+  They grow with Spaces and identities, not with history; they give back the
+  uniqueness constraint, the horizon for free and complete answers beside a
+  lost pack. fsck checks that they equal the records. The existing identity
+  registry and the Marker, Release and publication witnesses stay.
+- No per-record payload digest stored in the index (Opus), the keys digest
+  being rebuilt from bodies by fsck.
+
+Implementation order (each step compiles, keeps formats 5 to 7 unchanged,
+and runs the format 8 suites):
+
+1. Packs v4: kinds 11 and 12, the history section, Space tags in the
+   filter, version gating; builder, decoder, keys; unit tests.
+2. Schema v4 draft 4: drop the five history tables and their keys; add
+   `history_clock`, `space_initializers`, `history_identities`.
+3. Writer: a typed history path into the batch's publication; sequence
+   assignment and clock; the two tables; references; replay rule.
+4. Readers: point reads, initializer and identity answers, observation
+   projection and snapshot v2.
+5. Complete semantics in admission, immutables and `put_compact`.
+6. GC roots: heads in Rust, history roots derived.
+7. fsck: temporary history tables and the new checks.
+8. Consolidation: history copy and inventory proof.
+9. Client and compaction cursor flags; tests listed by the council
+   (self-witnessed identities, passive Operation cycles, duplicate
+   initializer beside a lost pack, replay after a lost response, conflicting
+   duplicate sequences, history-only packs, corrupt blocks, budgets, paging
+   across append, consolidation and compaction); then council review.
