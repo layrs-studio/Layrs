@@ -378,7 +378,7 @@ impl NativeStoreOpen {
         &self.store_id
     }
 
-    /// The validated format version of this Store (2, 5, 6 or 7).
+    /// The validated format version of this Store (2, 5, 6, 7 or 8).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
@@ -521,7 +521,7 @@ impl NativeStoreAudit {
         }
     }
 
-    /// The validated format version of this Store (2, 5, 6 or 7).
+    /// The validated format version of this Store (2, 5, 6, 7 or 8).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
@@ -595,7 +595,7 @@ impl NativeStoreExclusive {
         }
     }
 
-    /// The validated format version of this Store (2, 5, 6 or 7).
+    /// The validated format version of this Store (2, 5, 6, 7 or 8).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }

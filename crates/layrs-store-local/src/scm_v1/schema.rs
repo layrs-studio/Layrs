@@ -96,7 +96,7 @@ pub fn schema_v3_checksum() -> String {
 pub const SCHEMA_V4_VERSION: u32 = 4;
 pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft2";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "a13ad03b16e1cc0e4254bbb745f217d9de0e5f537758dc46cdf353a3af8bf0b5";
+    "5b4baeb18f68852464a7c7cb7fe0604f5ecae04c3e207e3103d1f6f473365020";
 pub const SCHEMA_V4_FINGERPRINT: &str =
     "8a7d85cfa95719f7f1bfa345d0f2f6a62f7d4a71b5ab2b3907e5e20b7184b6b9";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");

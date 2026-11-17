@@ -971,51 +971,151 @@ fn a_store_before_format_7_refuses_to_stage_a_whole_object() {
     );
 }
 
-/// A step carrying the manifest of its new content still proves its other
-/// Files closed by existence (council s14 r2): only a manifest a batch
-/// admits without carrying it sends the batch's Files to the exact path.
+/// A batch carrying `objects`, admitted to `space` when `admit`.
+fn carrying(
+    label: &str,
+    space: &SpaceId,
+    objects: Vec<CanonicalObject>,
+    admit: bool,
+) -> WriteBatch {
+    let admissions = if admit {
+        objects
+            .iter()
+            .map(|object| SpaceObjectAdmission::new(space.clone(), object.object_id()))
+            .collect()
+    } else {
+        vec![]
+    };
+    WriteBatch::new(
+        TransactionId::new(format!("transaction:{label}")).unwrap(),
+        objects,
+        vec![],
+        admissions,
+        vec![],
+    )
+    .unwrap()
+}
+
 /// The durable horizon (council s25): a batch's pack is registered before
 /// the batch is validated, and format 8 keeps no `objects` rows to tell its
 /// records from durable ones. A new Step whose parent is missing must still
-/// be refused, not found in its own pack and taken as durable.
+/// be refused, not found in its own pack and taken as durable: admitted
+/// (the admission closure would refuse it too) or only carried (council
+/// s26 r1: then nothing but the Step's own validation looks at it).
 #[test]
 fn a_new_step_is_never_read_back_from_its_own_batch() {
     for format in ["7", "8"] {
-        let root = TestRoot::new("horizon");
-        create(&root.0, "horizon", format);
+        for admit in [true, false] {
+            let root = TestRoot::new("horizon");
+            create(&root.0, "horizon", format);
+            let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+            let (lane, batch) = Lane::begin("horizon", &files);
+            let mut repository = NativeScmRepository::new(&root.0);
+            repository.apply_batch(&batch).unwrap();
+            let tree = Tree::new(vec![]).unwrap();
+            let missing =
+                layrs_core::scm::StepId::parse(format!("blake3:{}", "e".repeat(64))).unwrap();
+            let orphan = Step::new(vec![missing], tree.id().clone()).unwrap();
+            let objects = vec![
+                CanonicalObject::Tree(tree),
+                CanonicalObject::Step(orphan.clone()),
+            ];
+            let error = repository
+                .apply_batch(&carrying("horizon-orphan", lane.space.id(), objects, admit))
+                .unwrap_err();
+            assert_eq!(
+                error.code(),
+                "not_found",
+                "format {format}, admitted {admit}: {error:?}"
+            );
+            assert_eq!(
+                repository.get_step(orphan.id()).unwrap(),
+                None,
+                "format {format}"
+            );
+            drop(repository);
+            assert_fsck_clean(&root.0);
+        }
+    }
+}
+
+/// fsck checks every reference those foreign keys guarded (council s26
+/// r1): a View naming a Layer whose row is gone is reported, in format 8
+/// as in format 7.
+#[test]
+fn fsck_reports_a_view_naming_a_missing_layer() {
+    for format in ["7", "8"] {
+        let root = TestRoot::new("missing-layer");
+        create(&root.0, "missing-layer", format);
         let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
-        let (lane, batch) = Lane::begin("horizon", &files);
+        let (lane, batch) = Lane::begin("missing-layer", &files);
         let mut repository = NativeScmRepository::new(&root.0);
         repository.apply_batch(&batch).unwrap();
-        let tree = Tree::new(vec![]).unwrap();
-        let missing = layrs_core::scm::StepId::parse(format!("blake3:{}", "e".repeat(64))).unwrap();
-        let orphan = Step::new(vec![missing], tree.id().clone()).unwrap();
-        let objects = vec![
-            CanonicalObject::Tree(tree),
-            CanonicalObject::Step(orphan.clone()),
-        ];
-        let admissions = objects
-            .iter()
-            .map(|object| SpaceObjectAdmission::new(lane.space.id().clone(), object.object_id()))
-            .collect();
-        let orphan_batch = WriteBatch::new(
-            TransactionId::new("transaction:horizon-orphan").unwrap(),
-            objects,
-            vec![],
-            admissions,
-            vec![],
-        )
-        .unwrap();
-        let error = repository.apply_batch(&orphan_batch).unwrap_err();
-        assert_eq!(error.code(), "not_found", "format {format}: {error:?}");
-        assert_eq!(
-            repository.get_step(orphan.id()).unwrap(),
-            None,
-            "format {format}"
-        );
         drop(repository);
         assert_fsck_clean(&root.0);
+        {
+            let connection = sql(&root.0);
+            connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+            connection
+                .execute(
+                    "DELETE FROM layers WHERE layer_id=?1",
+                    [lane.layer.id().as_str()],
+                )
+                .unwrap();
+        }
+        let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == FsckFindingCode::ForeignKeyViolation),
+            "format {format}: {:#?}",
+            report.findings
+        );
     }
+}
+
+/// Beside a lost pack, format 8 has no `objects` row to answer for a record
+/// whose only copy was there: a reader cannot tell it present (an error,
+/// never a guess) and a writer does not count it (council s26 r1, fail
+/// closed; format 7 still answers from its row).
+#[test]
+fn beside_a_lost_pack_format_8_does_not_answer_from_rows() {
+    let root = TestRoot::new("lost-rows");
+    create(&root.0, "lost-rows", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("lost-rows", &files);
+    let first_tree = tree_of(&files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let more = vec![files[0].clone(), file("b.txt", b"beta", Recipe::Fixed)];
+    let carried = file_objects(&more[1..]);
+    repository
+        .apply_batch(&lane.capture(&more, carried))
+        .unwrap();
+    drop(repository);
+    let lost = registered_packs(&root.0).remove(0);
+    fs::remove_file(root.0.join("objects/packs").join(lost)).unwrap();
+    forget_loaded_packs();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(reader.tree_present_metadata(first_tree.id()).is_err());
+    let writer = NativeScmReader::new(&store)
+        .unwrap()
+        .with_positive_evidence();
+    assert!(!writer.tree_present_metadata(first_tree.id()).unwrap());
+    drop(writer);
+    drop(reader);
+    drop(store);
+    // fsck names the lost pack, and reports nothing it only cannot know.
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    let codes: Vec<_> = report.findings.iter().map(|finding| finding.code).collect();
+    assert_eq!(
+        codes,
+        [FsckFindingCode::CasCorruption],
+        "{:#?}",
+        report.findings
+    );
 }
 
 #[test]
@@ -1675,8 +1775,15 @@ fn damaged_metadata_or_a_digest_mismatch_is_corruption_never_absence() {
 /// is still an error, and a row that does not check excludes nothing.
 #[test]
 fn keys_rows_answer_exactly_beside_a_lost_pack() {
+    // Format 8 too: its records have no `objects` rows (council s26 r1).
+    for format in ["7", "8"] {
+        keys_rows_answer_exactly_beside_a_lost_pack_in(format);
+    }
+}
+
+fn keys_rows_answer_exactly_beside_a_lost_pack_in(format: &str) {
     let root = TestRoot::new("keys");
-    create(&root.0, "keys", "7");
+    create(&root.0, "keys", format);
     let kept = vec![file("kept.txt", b"kept bytes", Recipe::Whole)];
     let (mut lane, batch) = Lane::begin("keys", &kept);
     let mut repository = NativeScmRepository::new(&root.0);
@@ -1852,8 +1959,15 @@ fn beside_a_lost_pack_a_writer_needs_readable_evidence() {
 /// File again.
 #[test]
 fn a_durable_tree_does_not_prove_content_lost_with_its_pack() {
+    // Format 8 too: its records have no `objects` rows (council s26 r1).
+    for format in ["7", "8"] {
+        a_durable_tree_does_not_prove_content_lost_with_its_pack_in(format);
+    }
+}
+
+fn a_durable_tree_does_not_prove_content_lost_with_its_pack_in(format: &str) {
     let root = TestRoot::new("induction");
-    create(&root.0, "induction", "7");
+    create(&root.0, "induction", format);
     let lost = file("lost.txt", b"content only in the lost pack", Recipe::Whole);
     let (lane, batch) = Lane::begin("induction", &[]);
     let mut repository = NativeScmRepository::new(&root.0);
@@ -1914,8 +2028,15 @@ fn a_durable_tree_does_not_prove_content_lost_with_its_pack() {
 /// only that pack held is accepted when everything it carries is provable.
 #[test]
 fn a_lost_content_only_pack_does_not_block_an_unrelated_step() {
+    // Format 8 too: its records have no `objects` rows (council s26 r1).
+    for format in ["7", "8"] {
+        a_lost_content_only_pack_does_not_block_an_unrelated_step_in(format);
+    }
+}
+
+fn a_lost_content_only_pack_does_not_block_an_unrelated_step_in(format: &str) {
     let root = TestRoot::new("history");
-    create(&root.0, "history", "7");
+    create(&root.0, "history", format);
     let old = file("old.txt", b"old content in a lost pack", Recipe::Whole);
     let (mut lane, batch) = Lane::begin("history", &[]);
     let mut repository = NativeScmRepository::new(&root.0);
@@ -1970,8 +2091,16 @@ fn a_lost_content_only_pack_does_not_block_an_unrelated_step() {
 /// consolidated by a batch (council s17, B2a), each of `files` captured in
 /// its own batch.
 fn store_of_unmerged_packs(label: &str, count: usize) -> (TestRoot, Lane, Vec<File>) {
+    store_of_unmerged_packs_in(label, count, "7")
+}
+
+fn store_of_unmerged_packs_in(
+    label: &str,
+    count: usize,
+    format: &str,
+) -> (TestRoot, Lane, Vec<File>) {
     let root = TestRoot::new(label);
-    create(&root.0, label, "7");
+    create(&root.0, label, format);
     set_consolidation_budget(&root.0, Some(1));
     let (mut lane, batch) = Lane::begin(label, &[]);
     let mut repository = NativeScmRepository::new(&root.0);
@@ -2065,7 +2194,13 @@ fn a_large_tree_stays_in_the_pack_in_format_7() {
 /// is clean, and a second pass has nothing to do.
 #[test]
 fn maintenance_consolidates_the_packs_batches_leave_out() {
-    let (root, lane, files) = store_of_unmerged_packs("maintenance", 7);
+    for format in ["7", "8"] {
+        maintenance_consolidates_the_packs_batches_leave_out_in(format);
+    }
+}
+
+fn maintenance_consolidates_the_packs_batches_leave_out_in(format: &str) {
+    let (root, lane, files) = store_of_unmerged_packs_in("maintenance", 7, format);
     let before = registered_packs(&root.0).len();
     let MaintenanceOutcome::Consolidated { packs } = maintain(&root.0).unwrap() else {
         panic!("nothing consolidated");
@@ -2305,7 +2440,13 @@ fn maintenance_waits_for_a_busy_store_to_publish() {
 /// pass is `Abandoned` and the next goes on).
 #[test]
 fn maintenance_goes_on_past_damaged_candidates() {
-    let (root, lane, files) = store_of_unmerged_packs("maintenance-damaged", 7);
+    for format in ["7", "8"] {
+        maintenance_goes_on_past_damaged_candidates_in(format);
+    }
+}
+
+fn maintenance_goes_on_past_damaged_candidates_in(format: &str) {
+    let (root, lane, files) = store_of_unmerged_packs_in("maintenance-damaged", 7, format);
     let rows: Vec<(i64, Vec<u8>)> = {
         let connection = sql(&root.0);
         let mut statement = connection

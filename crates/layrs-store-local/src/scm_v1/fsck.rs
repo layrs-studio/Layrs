@@ -256,6 +256,7 @@ impl NativeFsck {
         }
         if audit.bitmap_admissions() {
             context.project_history_records()?;
+            context.check_history_references()?;
         }
         if context.compact {
             context.check_manifest_projections_compact()?;

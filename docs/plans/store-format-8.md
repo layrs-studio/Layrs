@@ -118,3 +118,42 @@ pass git.
     projection rows are written into temporary tables by the writer's own
     code (`insert_history_projection`); every check runs unchanged.
   - Metadata compaction skips the `pending_*` tables a schema lacks.
+
+## Council s26 r1 (code review of phase 2a, 2026-11-17)
+
+| Member | Verdict | Score |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | ship after fixes | 6/10 |
+| GPT-6.1 Sol (max) | ship after fixes | 7/10 |
+| Claude Opus 5.5 (xhigh) | ship after fixes | 7/10 |
+
+- Confirmed, fixed (all three): format 8 lost the foreign keys of the
+  projection rows. `references.rs` lists, typed, every reference they
+  guarded (records: Tree entries, Step root and parents, View heads, base
+  Steps and materialized Trees, Product dependencies; rows: Spaces, Layers,
+  Markers, Releases, Worktrees; entities: an Operation's View and rewrites,
+  observations, Marker and Release targets, the current View). The writer
+  checks a batch's at the point formats 5 to 7 check deferred keys; fsck
+  checks the whole Store's, an id an unreadable pack may hold being unknown.
+  Regressions: a carried Weave Product naming a missing Conflict is refused
+  (client-core, every format; accepted by format 8 without the check); fsck
+  reports a View naming a deleted Layer (formats 7 and 8; clean in 8
+  without the check).
+- Confirmed, fixed (Opus P3): beside an unreadable pack, format 8's derived
+  tables miss what it holds; fsck no longer reports those as missing
+  (`history_incomplete`, `history_unknowable`). Test: the only finding beside
+  a lost pack is the pack (a GC root finding without the fix).
+- Confirmed, kept (Opus P3): a record whose only copy is in an unreadable
+  pack is not durable to a format 8 writer, and a reader answers unknown
+  (error) instead of present: fail closed, where format 7 answers from its
+  `objects` row. Pinned by `beside_a_lost_pack_format_8_does_not_answer_from_rows`;
+  the Worktree root resolution now reports corruption, not a backend error.
+- Fixed (Opus P3): the horizon test also runs a carried, not admitted Step;
+  the v4 draft checksum is checked only for a Store that uses it (a draft
+  can no longer stop formats 2 to 7); misplaced and stale comments. The
+  loose variant of the horizon test (a record over 1 MiB) is not written.
+- Lost-pack and consolidation tests of `scm_format6.rs` now also run in
+  format 8 (keys rows, durable Tree, content-only pack, maintenance).
+- Later (performance, not 2a): `products_in_space` scans every Product in
+  format 8; `project_bitmap_admissions` decodes every bitmap before fsck's
+  work budget.

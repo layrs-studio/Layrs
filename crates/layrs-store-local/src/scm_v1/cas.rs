@@ -521,7 +521,6 @@ impl NativeCas {
             .map(|catalog| PackFileHold(catalog.hold_pack_files()))
     }
 
-    /// Whether this view belongs to a format 6 Store.
     /// Whether every object kind is admitted by the bitmaps (format 8).
     pub(crate) fn bitmap_admissions(&self) -> bool {
         self.bitmap_admissions
@@ -539,6 +538,7 @@ impl NativeCas {
         self.compact_format && (is_content(kind) || self.bitmap_admissions)
     }
 
+    /// Whether this view belongs to a compact Store (formats 6 to 8).
     pub(crate) fn is_compact(&self) -> bool {
         self.compact_format
     }

@@ -239,6 +239,9 @@ pub fn create_fresh_baseline(
     baseline: &Baseline,
 ) -> Result<Connection> {
     validate_embedded_checksum()?;
+    if baseline.version == BASELINE_V4.version {
+        validate_v4_checksum()?;
+    }
     if path.exists() {
         return Err(ScmSchemaError::AlreadyExists(path.to_path_buf()));
     }
@@ -954,20 +957,21 @@ pub fn with_immediate_transaction<T>(
     Ok(value)
 }
 
+/// The frozen baselines (v2, v3) this binary embeds, checked before any
+/// Store is opened. The format 8 draft baseline (v4) is checked only for a
+/// Store that uses it (`validate_v4_checksum`): a draft must never stop
+/// formats 2 to 7 (council s26 r1).
 fn validate_embedded_checksum() -> Result<()> {
     // A pure function of this binary's embedded SQL: computed once.
     static VALID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *VALID.get_or_init(|| {
-        schema_checksum() == SCHEMA_CHECKSUM
-            && schema_v3_checksum() == SCHEMA_V3_CHECKSUM
-            && schema_v4_checksum() == SCHEMA_V4_CHECKSUM
+        schema_checksum() == SCHEMA_CHECKSUM && schema_v3_checksum() == SCHEMA_V3_CHECKSUM
     }) {
         return Ok(());
     }
     for (actual, published) in [
         (schema_checksum(), SCHEMA_CHECKSUM),
         (schema_v3_checksum(), SCHEMA_V3_CHECKSUM),
-        (schema_v4_checksum(), SCHEMA_V4_CHECKSUM),
     ] {
         if actual != published {
             return Err(ScmSchemaError::EmbeddedChecksumMismatch {
@@ -977,6 +981,18 @@ fn validate_embedded_checksum() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The embedded v4 baseline, for a Store that uses it.
+fn validate_v4_checksum() -> Result<()> {
+    static VALID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *VALID.get_or_init(|| schema_v4_checksum() == SCHEMA_V4_CHECKSUM) {
+        return Ok(());
+    }
+    Err(ScmSchemaError::EmbeddedChecksumMismatch {
+        published: SCHEMA_V4_CHECKSUM.into(),
+        actual: schema_v4_checksum(),
+    })
 }
 
 /// The baseline version of a validated database (2, or 3 for format 6).
@@ -1078,6 +1094,7 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
                 .all(|table| tables.iter().any(|actual| actual == table))
     };
     let baseline = if exactly(REQUIRED_TABLES_V4) {
+        validate_v4_checksum()?;
         &BASELINE_V4
     } else if exactly(REQUIRED_TABLES_V3) {
         &BASELINE_V3

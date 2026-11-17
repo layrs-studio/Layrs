@@ -233,6 +233,7 @@ impl Context<'_> {
                             // unknown, not missing (council s18 r3).
                             if !self.object_ids.contains_key(&target_id)
                                 && !self.unreadable_sources.contains(&target_id)
+                                && !self.history_unknowable(&target_id)
                             {
                                 self.finding(
                                     FsckFindingCode::TreeClosureBroken,

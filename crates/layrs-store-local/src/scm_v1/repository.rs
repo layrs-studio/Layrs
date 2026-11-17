@@ -718,15 +718,29 @@ impl NativeScmRepository {
         insert_entities(&guard, batch, projections)?;
         insert_object_projections_views(&guard, batch, projections)?;
         self.hit(RepositoryFaultPoint::AfterEntitiesAndProjections)?;
+        let mut catalog = None;
         if publication.is_some() {
-            let catalog =
+            let loaded =
                 super::cas::RegisteredCatalog::load(&guard, cas.reader()).map_err(cas_backend)?;
-            insert_admissions_compact(&guard, batch, &catalog, cas.reader().bitmap_admissions())?;
+            insert_admissions_compact(&guard, batch, &loaded, cas.reader().bitmap_admissions())?;
+            catalog = Some(loaded);
         } else {
             insert_admissions(&guard, batch)?;
         }
         self.hit(RepositoryFaultPoint::AfterAdmissions)?;
         apply_mutations(&guard, batch, self)?;
+        // Format 8: the references formats 5 to 7 check through the foreign
+        // keys of their projection rows, at the same point (council s26 r1).
+        if !projections {
+            let catalog = match catalog {
+                Some(catalog) => catalog,
+                None => super::cas::RegisteredCatalog::load(&guard, cas.reader())
+                    .map_err(cas_backend)?,
+            };
+            super::references::check_batch(&guard, batch, |id| {
+                catalog.contains_with(id, false).map_err(cas_backend)
+            })?;
+        }
         drop(rows);
         let gc_roots = crate::perf::span("batch.update_gc_roots");
         update_gc_roots(
@@ -1081,62 +1095,65 @@ pub(super) fn insert_object_projection(
     compact: bool,
     projections: bool,
 ) -> Result<()> {
-    {
-        match object {
-            // Format 6: no file_* projections and no manifest_chunk edges;
-            // the FileId section and the manifest itself answer them.
-            CanonicalObject::FileManifest(_) if compact => {}
-            CanonicalObject::Product(value) => {
-                connection.execute("INSERT OR IGNORE INTO products(product_object_id,product_id) VALUES(?1,?2)",params![value.id().as_str(),value.envelope().logical_id()]).map_err(sql_backend)?;
-                if projections {
-                    insert_product_edges(connection, value)?;
-                }
+    match object {
+        // Format 6: no file_* projections and no manifest_chunk edges;
+        // the FileId section and the manifest itself answer them.
+        CanonicalObject::FileManifest(_) if compact => {}
+        CanonicalObject::Product(value) => {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO products(product_object_id,product_id) VALUES(?1,?2)",
+                    params![value.id().as_str(), value.envelope().logical_id()],
+                )
+                .map_err(sql_backend)?;
+            if projections {
+                insert_product_edges(connection, value)?;
             }
-            CanonicalObject::FileManifest(v) => {
-                connection.execute("INSERT OR IGNORE INTO file_availability(file_id,verified_at_ms) VALUES(?1,CAST(unixepoch('subsec')*1000 AS INTEGER))", [v.file_id().as_str()]).map_err(sql_backend)?;
-                connection.execute("INSERT OR IGNORE INTO file_manifests(manifest_id,file_id,file_byte_length,chunking_json) VALUES(?1,?2,?3,?4)", params![v.id().as_str(),v.file_id().as_str(),v.byte_length(),json(v.chunking())?]).map_err(sql_backend)?;
-                for (i, c) in v.chunks().iter().enumerate() {
-                    connection.execute("INSERT OR IGNORE INTO file_manifest_chunks(manifest_id,ordinal,chunk_id,byte_offset,byte_length) VALUES(?1,?2,?3,?4,?5)",params![v.id().as_str(),i,c.chunk_id().as_str(),c.offset(),c.byte_length()]).map_err(sql_backend)?;
-                    edge(
-                        connection,
-                        v.id().as_str(),
-                        "manifest_chunk",
-                        i,
-                        c.chunk_id().as_str(),
-                    )?;
-                }
-            }
-            _ if !projections => {}
-            CanonicalObject::Tree(v) => {
-                for (i, e) in v.entries().iter().enumerate() {
-                    let target = e.target();
-                    let id = target
-                        .tree_id()
-                        .map(ToString::to_string)
-                        .or_else(|| target.conflict_id().map(ToString::to_string))
-                        .or_else(|| target.symlink_id().map(ToString::to_string))
-                        .or_else(|| target.tombstone_id().map(ToString::to_string));
-                    if let Some(id) = id {
-                        edge(connection, v.id().as_str(), "tree_entry", i, &id)?;
-                    }
-                }
-            }
-            CanonicalObject::Step(v) => {
-                connection.execute("INSERT OR IGNORE INTO steps(step_id,root_tree_id,parent_count) VALUES(?1,?2,?3)",params![v.id().as_str(),v.root_tree_id().as_str(),v.parent_step_ids().len()]).map_err(sql_backend)?;
-                for (i, p) in v.parent_step_ids().iter().enumerate() {
-                    connection.execute("INSERT OR IGNORE INTO step_parents(step_id,parent_step_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),p.as_str(),i]).map_err(sql_backend)?;
-                    edge(connection, v.id().as_str(), "step_parent", i, p.as_str())?;
-                }
+        }
+        CanonicalObject::FileManifest(v) => {
+            connection.execute("INSERT OR IGNORE INTO file_availability(file_id,verified_at_ms) VALUES(?1,CAST(unixepoch('subsec')*1000 AS INTEGER))", [v.file_id().as_str()]).map_err(sql_backend)?;
+            connection.execute("INSERT OR IGNORE INTO file_manifests(manifest_id,file_id,file_byte_length,chunking_json) VALUES(?1,?2,?3,?4)", params![v.id().as_str(),v.file_id().as_str(),v.byte_length(),json(v.chunking())?]).map_err(sql_backend)?;
+            for (i, c) in v.chunks().iter().enumerate() {
+                connection.execute("INSERT OR IGNORE INTO file_manifest_chunks(manifest_id,ordinal,chunk_id,byte_offset,byte_length) VALUES(?1,?2,?3,?4,?5)",params![v.id().as_str(),i,c.chunk_id().as_str(),c.offset(),c.byte_length()]).map_err(sql_backend)?;
                 edge(
                     connection,
                     v.id().as_str(),
-                    "step_tree",
-                    0,
-                    v.root_tree_id().as_str(),
+                    "manifest_chunk",
+                    i,
+                    c.chunk_id().as_str(),
                 )?;
             }
-            _ => {}
         }
+        _ if !projections => {}
+        CanonicalObject::Tree(v) => {
+            for (i, e) in v.entries().iter().enumerate() {
+                let target = e.target();
+                let id = target
+                    .tree_id()
+                    .map(ToString::to_string)
+                    .or_else(|| target.conflict_id().map(ToString::to_string))
+                    .or_else(|| target.symlink_id().map(ToString::to_string))
+                    .or_else(|| target.tombstone_id().map(ToString::to_string));
+                if let Some(id) = id {
+                    edge(connection, v.id().as_str(), "tree_entry", i, &id)?;
+                }
+            }
+        }
+        CanonicalObject::Step(v) => {
+            connection.execute("INSERT OR IGNORE INTO steps(step_id,root_tree_id,parent_count) VALUES(?1,?2,?3)",params![v.id().as_str(),v.root_tree_id().as_str(),v.parent_step_ids().len()]).map_err(sql_backend)?;
+            for (i, p) in v.parent_step_ids().iter().enumerate() {
+                connection.execute("INSERT OR IGNORE INTO step_parents(step_id,parent_step_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),p.as_str(),i]).map_err(sql_backend)?;
+                edge(connection, v.id().as_str(), "step_parent", i, p.as_str())?;
+            }
+            edge(
+                connection,
+                v.id().as_str(),
+                "step_tree",
+                0,
+                v.root_tree_id().as_str(),
+            )?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1301,26 +1318,22 @@ pub(super) fn insert_view_projection(
     c: &Connection,
     v: &layrs_core::scm::RepositoryView,
 ) -> Result<()> {
-    {
-        {
-            let mut edge_ordinal = 0_usize;
-            for h in v.layer_heads() {
-                for (i, s) in h.step_ids().iter().enumerate() {
-                    c.execute("INSERT OR IGNORE INTO repository_view_layer_heads(repository_view_id,layer_id,step_id,ordinal) VALUES(?1,?2,?3,?4)",params![v.id().as_str(),h.layer_id().as_str(),s.as_str(),i]).map_err(sql_backend)?;
-                    edge(c, v.id().as_str(), "view_step", edge_ordinal, s.as_str())?;
-                    edge_ordinal += 1;
-                }
-            }
-            for (i, m) in v.marker_ids().iter().enumerate() {
-                c.execute("INSERT OR IGNORE INTO repository_view_markers(repository_view_id,marker_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),m.as_str(),i]).map_err(sql_backend)?;
-            }
-            for (i, r) in v.release_ids().iter().enumerate() {
-                c.execute("INSERT OR IGNORE INTO repository_view_releases(repository_view_id,release_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),r.as_str(),i]).map_err(sql_backend)?;
-            }
-            for (i, w) in v.worktrees().iter().enumerate() {
-                c.execute("INSERT OR IGNORE INTO repository_view_worktrees(repository_view_id,worktree_id,active_layer_id,base_step_id,materialized_tree_id,status,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![v.id().as_str(),w.worktree_id().as_str(),w.active_layer_id().map(|x|x.as_str()),w.base_step_id().map(|x|x.as_str()),w.materialized_tree_id().map(|x|x.as_str()),enum_name(w.status())?,i]).map_err(sql_backend)?;
-            }
+    let mut edge_ordinal = 0_usize;
+    for h in v.layer_heads() {
+        for (i, s) in h.step_ids().iter().enumerate() {
+            c.execute("INSERT OR IGNORE INTO repository_view_layer_heads(repository_view_id,layer_id,step_id,ordinal) VALUES(?1,?2,?3,?4)",params![v.id().as_str(),h.layer_id().as_str(),s.as_str(),i]).map_err(sql_backend)?;
+            edge(c, v.id().as_str(), "view_step", edge_ordinal, s.as_str())?;
+            edge_ordinal += 1;
         }
+    }
+    for (i, m) in v.marker_ids().iter().enumerate() {
+        c.execute("INSERT OR IGNORE INTO repository_view_markers(repository_view_id,marker_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),m.as_str(),i]).map_err(sql_backend)?;
+    }
+    for (i, r) in v.release_ids().iter().enumerate() {
+        c.execute("INSERT OR IGNORE INTO repository_view_releases(repository_view_id,release_id,ordinal) VALUES(?1,?2,?3)",params![v.id().as_str(),r.as_str(),i]).map_err(sql_backend)?;
+    }
+    for (i, w) in v.worktrees().iter().enumerate() {
+        c.execute("INSERT OR IGNORE INTO repository_view_worktrees(repository_view_id,worktree_id,active_layer_id,base_step_id,materialized_tree_id,status,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![v.id().as_str(),w.worktree_id().as_str(),w.active_layer_id().map(|x|x.as_str()),w.base_step_id().map(|x|x.as_str()),w.materialized_tree_id().map(|x|x.as_str()),enum_name(w.status())?,i]).map_err(sql_backend)?;
     }
     Ok(())
 }
@@ -1782,7 +1795,9 @@ fn moved_worktree_roots(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<Ve
             Some(view) => view,
             None => reader
                 .get_operation(operation)?
-                .ok_or_else(|| native_backend(format!("Operation {operation} is missing")))?
+                .ok_or_else(|| StoreError::Corruption {
+                    message: format!("Worktree Operation {operation} cannot be read"),
+                })?
                 .resulting_view_id()
                 .clone(),
         };
@@ -1797,9 +1812,13 @@ fn moved_worktree_roots(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<Ve
             });
         let view = match carried {
             Some(view) => view,
-            None => reader
-                .get_repository_view(&view_id)?
-                .ok_or_else(|| native_backend(format!("View {view_id} is missing")))?,
+            None => {
+                reader
+                    .get_repository_view(&view_id)?
+                    .ok_or_else(|| StoreError::Corruption {
+                        message: format!("View {view_id} of a Worktree Operation cannot be read"),
+                    })?
+            }
         };
         let mut objects = vec![view_id.as_str().to_owned()];
         if let Some(state) = view
@@ -1985,11 +2004,10 @@ fn update_immutable_roots(
     Ok(())
 }
 
-/// Whether `gc_roots` holds exactly the full projection `fsck` expects.
+/// Whether `gc_roots` holds exactly the full projection `fsck` expects
+/// (formats 5 to 7; format 8 keeps no View projections to compare with,
+/// and fsck checks its roots).
 #[cfg(debug_assertions)]
-/// Whether `gc_roots` is the full projection fsck expects. Format 8
-/// admits Products by the bitmaps, which SQL cannot read here: its Product
-/// roots are left out of the comparison (fsck checks them).
 fn gc_roots_complete(c: &Connection, bitmap_admissions: bool) -> Result<bool> {
     let mut statement = c
         .prepare("SELECT root_kind, root_id, object_id FROM gc_roots")

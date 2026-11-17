@@ -312,6 +312,11 @@ impl Context<'_> {
             if !self.consume_cpu(1) {
                 return Ok(());
             }
+            // Format 8 beside an unreadable pack: the admission bits it
+            // holds are unknown, not absent (council s26 r1).
+            if self.history_incomplete() && reason.contains("is not admitted") {
+                continue;
+            }
             self.error(FsckFindingCode::CrossSpaceReference, Some(entity), reason);
         }
         Ok(())
@@ -444,7 +449,16 @@ impl Context<'_> {
             rows.collect::<rusqlite::Result<BTreeSet<_>>>()?
         };
         let expected_rows: BTreeSet<_> = query_gc_expected(self.connection)?.into_iter().collect();
-        for (kind, root, object) in actual_rows.symmetric_difference(&expected_rows) {
+        for row in actual_rows.symmetric_difference(&expected_rows) {
+            let (kind, root, object) = row;
+            // Format 8 beside an unreadable pack: a Worktree's or Product's
+            // expected roots come from records or bits that pack may hold.
+            if self.history_incomplete()
+                && actual_rows.contains(row)
+                && matches!(kind.as_str(), "worktree" | "product")
+            {
+                continue;
+            }
             self.finding(
                 FsckFindingCode::GcRootInvalid,
                 FsckSeverity::Error,
@@ -488,7 +502,7 @@ impl Context<'_> {
         for root in &roots {
             if known.contains(root) {
                 queue.push_back(root.clone());
-            } else if self.unreadable_sources.contains(root) {
+            } else if self.unreadable_sources.contains(root) || self.history_unknowable(root) {
                 // Held only by an unreadable pack: unknown, not missing
                 // (council s18 r3); that pack is reported once.
             } else {

@@ -25,6 +25,7 @@ pub mod materialize;
 pub mod projection_cache;
 mod read;
 pub mod recovery;
+mod references;
 mod repository;
 pub mod schema;
 mod sqlite;

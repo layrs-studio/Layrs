@@ -2398,7 +2398,6 @@ impl RegisteredCatalog {
         self.contains_with(id, false)
     }
 
-    /// `contains`, `positive` as in `settle`.
     /// `placements`, but the copies `horizon` excludes.
     fn durable_placements(
         &self,
@@ -2442,6 +2441,7 @@ impl RegisteredCatalog {
         self.read_placements(cas, id, positive, placements)
     }
 
+    /// `contains`, `positive` as in `settle`.
     pub(crate) fn contains_with(&self, id: &StoreObjectId, positive: bool) -> CasResult<bool> {
         if self.placements(id)?.is_empty() {
             return self.settle(positive, || object_keys(id), false);
@@ -2821,9 +2821,6 @@ impl RegisteredCatalog {
         ))
     }
 
-    /// Every registered content object: explicit content records, the chunk
-    /// and the manifest each file record stands for, and loose content.
-    /// Records whose identity cannot be rebuilt are returned as errors.
     /// Every registered pack record that is not content (Trees, Steps,
     /// Views, ...): format 8's audit reads them where formats 6 and 7 read
     /// `objects` rows. Loose objects of every kind are in `content_objects`.
@@ -2851,6 +2848,10 @@ impl RegisteredCatalog {
         (ids, errors)
     }
 
+    /// Every registered content object: explicit content records, the chunk
+    /// and the manifest each file record stands for, and loose objects (of
+    /// every kind in format 8). Records whose identity cannot be rebuilt are
+    /// returned as errors.
     pub(crate) fn content_objects(&self) -> (Vec<StoreObjectId>, Vec<CasError>) {
         let mut ids = Vec::new();
         let mut errors = Vec::new();

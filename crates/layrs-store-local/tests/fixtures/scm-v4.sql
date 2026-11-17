@@ -123,10 +123,11 @@ CREATE TABLE space_pack_admissions (
     FOREIGN KEY (pack_seq) REFERENCES cas_packs(pack_seq) ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 
--- Content records over 1 MiB, each a loose file at its id-derived path.
--- object_kind: 1 chunk_raw, 2 file_manifest (pack kind codes). A loose
--- manifest keeps its FileId and file length here: the FileId section of the
--- content that is not in a pack.
+-- Records over 1 MiB, each a loose file at its id-derived path: content,
+-- and in format 8 every kind. object_kind: the pack kind code (1 chunk_raw,
+-- 2 file_manifest, 3 to 9 the other kinds). A loose manifest keeps its
+-- FileId and file length here: the FileId section of the content that is
+-- not in a pack.
 CREATE TABLE loose_objects (
     object_id BLOB PRIMARY KEY CHECK (length(object_id) = 32),
     object_kind INTEGER NOT NULL CHECK (object_kind BETWEEN 1 AND 9),

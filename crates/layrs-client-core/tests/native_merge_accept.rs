@@ -806,3 +806,72 @@ fn manual_binary_then_empty_replacements_are_atomic_partial_stale_safe_and_repla
             .is_clean()
     );
 }
+
+/// Format 8 keeps none of the foreign keys through which formats 5 to 7
+/// refuse a Product dependency the Store does not hold (council s26 r1): a
+/// Weave Product only carried, never admitted, naming a missing Conflict is
+/// refused in every format.
+#[test]
+fn a_carried_product_naming_a_missing_conflict_is_refused() {
+    let f = Fixture::new();
+    let w = f.workspace();
+    let source = branch(&f, &w);
+    f.write(
+        "code.ts",
+        b"OTHER
+b
+c
+",
+    );
+    w.capture().unwrap();
+    let preview = w
+        .preview_structural_merge(&[source], &layer(&w), policy(), GraphMergeLimits::default())
+        .unwrap();
+    let accepted = w.accept_merge(&preview).unwrap();
+    assert_eq!(accepted.conflict_ids.len(), 1);
+    let product = {
+        let store = scm_v1::open(w.store_root()).unwrap();
+        NativeScmReader::new(&store)
+            .unwrap()
+            .get_product(&accepted.product_object_id)
+            .unwrap()
+            .unwrap()
+    };
+    let mut envelope = product.envelope().clone();
+    let ProductEnvelope::Weave {
+        record, product_id, ..
+    } = &mut envelope
+    else {
+        panic!("Weave expected")
+    };
+    record.conflict_ids = vec![ConflictId::parse(format!("blake3:{}", "c".repeat(64))).unwrap()];
+    // The receipt's own id, as `verify_id` derives it.
+    let mut json = serde_json::to_value(&**record).unwrap();
+    json.as_object_mut().unwrap().remove("weaveId");
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"layrs-weave-receipt-v1");
+    hash.update(&[0]);
+    hash.update(&layrs_core::scm::canonical_json(&json).unwrap());
+    record.weave_id = ObjectId::parse(format!("blake3:{}", hash.finalize().to_hex())).unwrap();
+    *product_id =
+        layrs_sync::v3::WeaveLogicalId::parse(format!("weave:{}", record.weave_id)).unwrap();
+    let id = envelope.computed_object_id().unwrap();
+    if let ProductEnvelope::Weave {
+        product_object_id, ..
+    } = &mut envelope
+    {
+        *product_object_id = id;
+    }
+    let dangling = CanonicalProduct::from_envelope(envelope).unwrap();
+    let batch = WriteBatch::new(
+        TransactionId::new("transaction:dangling-product").unwrap(),
+        vec![CanonicalObject::Product(dangling.clone())],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let mut repository = scm_v1::NativeScmRepository::new(w.store_root());
+    assert!(repository.apply_batch(&batch).is_err());
+    assert_eq!(repository.get_product(dangling.id()).unwrap(), None);
+}

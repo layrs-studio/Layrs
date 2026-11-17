@@ -145,6 +145,141 @@ impl Context<'_> {
         Ok(())
     }
 
+    /// Format 8 keeps none of the foreign keys formats 5 to 7 check on their
+    /// projection rows (council s26 r1): every reference they guarded is
+    /// checked here, against the records this run read and the metadata
+    /// rows. A record an unreadable pack may hold is unknowable, not
+    /// missing (the pack is reported).
+    pub(super) fn check_history_references(&mut self) -> Result<(), FsckError> {
+        use crate::scm_v1::references::{self, Reference};
+        let mut found: Vec<(String, Reference)> = Vec::new();
+        for (id, object) in &self.objects {
+            for reference in references::object_references(object) {
+                found.push((id.clone(), reference));
+            }
+        }
+        // Metadata rows that name records: (table, its key, the record
+        // column, the record kind).
+        const ROWS: &[(&str, &str, &str, StoreObjectKind)] = &[
+            (
+                "operations",
+                "operation_id",
+                "resulting_view_id",
+                StoreObjectKind::RepositoryView,
+            ),
+            (
+                "operation_rewrites",
+                "operation_id",
+                "old_step_id",
+                StoreObjectKind::Step,
+            ),
+            (
+                "operation_rewrite_targets",
+                "operation_id",
+                "new_step_id",
+                StoreObjectKind::Step,
+            ),
+            (
+                "step_observations",
+                "observation_id",
+                "step_id",
+                StoreObjectKind::Step,
+            ),
+            (
+                "markers",
+                "marker_id",
+                "target_step_id",
+                StoreObjectKind::Step,
+            ),
+            (
+                "releases",
+                "release_id",
+                "target_step_id",
+                StoreObjectKind::Step,
+            ),
+            (
+                "current_repository_views",
+                "space_id",
+                "repository_view_id",
+                StoreObjectKind::RepositoryView,
+            ),
+            (
+                "products",
+                "product_object_id",
+                "product_object_id",
+                StoreObjectKind::Product,
+            ),
+        ];
+        for (table, key, column, kind) in ROWS {
+            let rows: Vec<(String, String)> = {
+                let mut statement = self
+                    .connection
+                    .prepare(&format!("SELECT {key}, {column} FROM main.{table}"))?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (source, target) in rows {
+                match parse_object_id(*kind, &target) {
+                    Some(id) => found.push((format!("{table}:{source}"), Reference::Record(id))),
+                    None => self.error(
+                        FsckFindingCode::ForeignKeyViolation,
+                        Some(format!("{table}:{source}")),
+                        format!("{column} {target} is not a valid id"),
+                    ),
+                }
+            }
+        }
+        let catalog = self.compact_catalog().map(|(_, catalog)| catalog);
+        for (source, reference) in found {
+            let present = match &reference {
+                Reference::Record(id) => self
+                    .object_ids
+                    .get(id.as_str())
+                    .is_some_and(|known| known == id),
+                Reference::Row(table, column, id) => {
+                    references::row_exists(self.connection, table, column, id)?
+                }
+            };
+            if present {
+                continue;
+            }
+            if let (Reference::Record(id), Some(catalog)) = (&reference, &catalog) {
+                if self.compact_damaged && catalog.may_hold_unreadably(id).unwrap_or(true) {
+                    continue;
+                }
+            }
+            let (kind, id) = match &reference {
+                Reference::Record(id) => (format!("{:?}", id.kind()), id.to_string()),
+                Reference::Row(table, _, id) => ((*table).to_owned(), id.clone()),
+            };
+            self.error(
+                FsckFindingCode::ForeignKeyViolation,
+                Some(source),
+                format!("references missing {kind} {id}"),
+            );
+        }
+        Ok(())
+    }
+
+    /// Format 8 beside an unreadable pack: its derived tables miss what that
+    /// pack holds, so a check whose expectation comes from them cannot tell
+    /// missing from unknown (council s18 r3, s26 r1).
+    pub(super) fn history_incomplete(&self) -> bool {
+        self.compact_damaged && self.audit.bitmap_admissions()
+    }
+
+    /// Whether `id` may be a record of an unreadable pack, in format 8
+    /// (formats 6 and 7 answer from `unreadable_sources`).
+    pub(super) fn history_unknowable(&mut self, id: &str) -> bool {
+        if !self.history_incomplete() {
+            return false;
+        }
+        match self.compact_catalog() {
+            Some((_, catalog)) => may_be_unreadable(&catalog, id),
+            None => true,
+        }
+    }
+
     /// The audit CAS view and its registered catalog, loaded once per fsck
     /// run from the metadata on disk now (never the process cache) and
     /// reused by every check.
