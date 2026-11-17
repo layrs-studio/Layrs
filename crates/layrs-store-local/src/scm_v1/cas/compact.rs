@@ -2930,63 +2930,84 @@ impl RegisteredCatalog {
     /// keeps instead of `space_object_admissions` (fsck rebuilds that table
     /// from it). Bits of a pack this catalog cannot read are left out (the
     /// catalog reports the pack).
-    /// At most `limit` + 1 of them: a caller with a work budget stops
-    /// there (council s26 r2).
+    /// Rows are streamed and charged to `work` as they are read (a bitmap
+    /// row one unit and one per 8 of its bytes, a loose row one unit), and
+    /// at most `limit` + 1 admissions are kept: `None` once `work` is spent
+    /// (council s26 r2, r3).
     pub(crate) fn non_content_admissions(
         &self,
         connection: &Connection,
         limit: usize,
-    ) -> CasResult<Vec<(String, StoreObjectId)>> {
+        work: &mut u64,
+    ) -> CasResult<Option<Vec<(String, StoreObjectId)>>> {
+        fn spend(work: &mut u64, units: u64) -> bool {
+            match work.checked_sub(units) {
+                Some(left) => {
+                    *work = left;
+                    true
+                }
+                None => {
+                    *work = 0;
+                    false
+                }
+            }
+        }
         let mut admitted = Vec::new();
         let mut statement = connection
             .prepare("SELECT space_id, pack_seq, bitmap FROM space_pack_admissions")
             .map_err(sql_error)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql_error)?;
-        for (space, seq, bitmap) in rows {
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let bytes = row.get_ref(2).map_err(sql_error)?.as_bytes().map_err(|_| {
+                pack2::pack2_corruption(&self_path(), "admission bitmap is not a blob")
+            })?;
+            if !spend(work, 1 + (bytes.len() as u64).div_ceil(8)) {
+                return Ok(None);
+            }
+            let seq: i64 = row.get(1).map_err(sql_error)?;
             let Some(registered) = self.packs.iter().find(|pack| pack.seq == seq) else {
                 continue;
             };
+            let space: String = row.get(0).map_err(sql_error)?;
             let index = &registered.pack.index;
-            for ordinal in 0..index.explicit_count() {
-                if !bit(&bitmap, ordinal as u64) {
+            for (position, byte) in bytes.iter().enumerate() {
+                if *byte == 0 {
                     continue;
                 }
-                let Some((code, digest, _)) = index.explicit(ordinal) else {
-                    continue;
-                };
-                let Some(kind) = pack2::kind_of_code(code) else {
-                    continue;
-                };
-                if super::is_content(kind) {
-                    continue;
-                }
-                admitted.push((space.clone(), pack2::object_id_of(kind, digest)?));
-                if admitted.len() > limit {
-                    return Ok(admitted);
+                for shift in 0..8 {
+                    if byte & (1 << shift) == 0 {
+                        continue;
+                    }
+                    let ordinal = position * 8 + shift;
+                    if ordinal >= index.explicit_count() {
+                        break;
+                    }
+                    let Some((code, digest, _)) = index.explicit(ordinal) else {
+                        continue;
+                    };
+                    let Some(kind) = pack2::kind_of_code(code) else {
+                        continue;
+                    };
+                    if super::is_content(kind) {
+                        continue;
+                    }
+                    admitted.push((space.clone(), pack2::object_id_of(kind, digest)?));
+                    if admitted.len() > limit {
+                        return Ok(Some(admitted));
+                    }
                 }
             }
         }
+        drop(rows);
         let mut statement = connection
             .prepare("SELECT space_id, object_id FROM space_loose_admissions")
             .map_err(sql_error)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql_error)?;
-        for (space, digest) in rows {
+        let mut rows = statement.query([]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            if !spend(work, 1) {
+                return Ok(None);
+            }
+            let digest: Vec<u8> = row.get(1).map_err(sql_error)?;
             let Ok(digest) = <[u8; 32]>::try_from(digest) else {
                 continue;
             };
@@ -3000,12 +3021,13 @@ impl RegisteredCatalog {
             if super::is_content(kind) {
                 continue;
             }
+            let space: String = row.get(0).map_err(sql_error)?;
             admitted.push((space, pack2::object_id_of(kind, &digest)?));
             if admitted.len() > limit {
-                return Ok(admitted);
+                return Ok(Some(admitted));
             }
         }
-        Ok(admitted)
+        Ok(Some(admitted))
     }
 
     /// Content admissions of `space` in this snapshot, read once.

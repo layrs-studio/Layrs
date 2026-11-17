@@ -275,7 +275,7 @@ impl Context<'_> {
                                WHERE child.space_id=a.space_id AND child.object_id=e.target_object_id)",
         )?;
         for (space, source, target) in missing {
-            if self.history_unknowable(&target) {
+            if self.admission_unknowable(&target) {
                 continue;
             }
             self.finding(
@@ -295,7 +295,7 @@ impl Context<'_> {
                                WHERE child.space_id=a.space_id AND child.object_id=s.root_tree_id)",
         )?;
         for (space, step, tree) in missing_roots {
-            if self.history_unknowable(&tree) {
+            if self.admission_unknowable(&tree) {
                 continue;
             }
             self.finding(
@@ -380,7 +380,7 @@ impl Context<'_> {
             }
             // Format 8 beside an unreadable pack: a record it may hold has
             // unknown admission bits, not absent ones (council s26).
-            if target.is_some_and(|target| self.history_unknowable(&target)) {
+            if target.is_some_and(|target| self.admission_unknowable(&target)) {
                 continue;
             }
             self.error(FsckFindingCode::CrossSpaceReference, Some(entity), reason);
@@ -525,7 +525,7 @@ impl Context<'_> {
             // that pack may hold either (council s26).
             if self.history_incomplete() && actual_rows.contains(row) {
                 let unknown = match kind.as_str() {
-                    "product" => self.history_unknowable(object),
+                    "product" => self.admission_unknowable(object),
                     "worktree" => {
                         let view = self
                             .connection

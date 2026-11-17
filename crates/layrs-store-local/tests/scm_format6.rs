@@ -1119,6 +1119,89 @@ fn beside_a_lost_pack_format_8_reports_only_the_pack() {
     }
 }
 
+/// Format 8's admission projection is charged to fsck's budget as it is
+/// expanded: a small budget stops there, truncated, before any check
+/// (council s26 r2, r3).
+#[test]
+fn fsck_stops_the_admission_projection_at_its_budget() {
+    let root = TestRoot::new("projection-budget");
+    create(&root.0, "projection-budget", "8");
+    let mut files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("projection-budget", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    // Each capture admits a Tree, a Step and a View: past 64 rows.
+    for index in 0..30 {
+        let added = file(
+            &format!("f{index}.txt"),
+            format!("{index}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+    }
+    drop(repository);
+    assert_fsck_clean(&root.0);
+    let report = fsck_existing(&root.0, FsckOptions { max_findings: 1 }).unwrap();
+    assert!(report.is_truncated(), "{:#?}", report.findings);
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .map(|finding| finding.code)
+            .collect::<Vec<_>>(),
+        [FsckFindingCode::WorkBudgetExceeded]
+    );
+}
+
+/// A record whose pack is lost and that another Space carries again is
+/// readable, but its admission bits to the first Space were in the lost
+/// pack: unknown, not absent (council s26 r3).
+#[test]
+fn a_record_carried_again_elsewhere_keeps_its_lost_admissions_unknown() {
+    let root = TestRoot::new("lost-admission");
+    create(&root.0, "lost-admission", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("first", &files);
+    let first = Step::new(vec![], tree_of(&files).id().clone()).unwrap();
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    // A child in the first Space, in its own pack: its parent's admission
+    // to that Space stays in the first pack.
+    let more = vec![files[0].clone(), file("b.txt", b"beta", Recipe::Fixed)];
+    let carried = file_objects(&more[1..]);
+    repository
+        .apply_batch(&lane.capture_on(&more, carried, vec![first.id().clone()]))
+        .unwrap();
+    drop(repository);
+    let lost = registered_packs(&root.0).remove(0);
+    fs::remove_file(root.0.join("objects/packs").join(lost)).unwrap();
+    forget_loaded_packs();
+    // Another Space carries the same Tree and Step again.
+    let (_other, batch) = Lane::begin("second", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    assert!(
+        NativeScmReader::new(&open(&root.0).unwrap())
+            .unwrap()
+            .get_step(first.id())
+            .unwrap()
+            .is_some()
+    );
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    let codes: Vec<_> = report.findings.iter().map(|finding| finding.code).collect();
+    assert_eq!(
+        codes,
+        [FsckFindingCode::CasCorruption],
+        "{:#?}",
+        report.findings
+    );
+}
+
 /// Beside a lost pack, format 8 has no `objects` row to answer for a record
 /// whose only copy was there: a reader cannot tell it present (an error,
 /// never a guess) and a writer does not count it (council s26 r1, fail

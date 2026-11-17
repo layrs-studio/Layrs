@@ -190,3 +190,29 @@ complete (Opus mapped every dropped key).
   references (format 8 shares their checks with the Product one, untested
   alone); fsck reports a dangling subtree or current View twice; the loose
   horizon variant.
+
+## Council s26 r3 (2026-11-17, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 7/10 | 7/10 |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 7/10 | 8/10 (ship) |
+
+- Fixed (P2 Astra, Sol; P3 Opus): reading a record does not prove its
+  admissions. Bits are kept per copy; a record whose only copy was lost and
+  that another Space carries again has a readable copy without the first
+  Space's bit. Admission checks (closure, cross-Space "not admitted", a
+  Product's GC root) now ask `admission_unknowable`, without the "was read"
+  shortcut; presence checks keep it. Test: two Spaces, the first pack lost,
+  the second Space carries the same Step again: only the pack is reported
+  (AdmissionClosureBroken without the fix).
+- Fixed (P2 Astra, Sol): the admission projection streams its rows and
+  charges every bitmap row (one unit and one per 8 bytes) and loose row to
+  fsck's CPU budget, stopping when it is spent. Test: a budget of one
+  finding stops fsck, truncated, with only WorkBudgetExceeded.
+- Later (2b): in format 8 a corrupt block inside a readable pack also
+  yields parent, current View and GC root findings for the records it
+  holds (formats 6 and 7 keep their rows); noise, not wrong data.
+
+Council review of phase 2a is closed after three rounds (the chair's rule).

@@ -98,13 +98,15 @@ impl Context<'_> {
         };
         // Charged to the row budget as it is expanded, before anything else
         // reads it (council s26 r2).
+        let mut work = self.cpu_budget_remaining;
         let admitted = catalog
-            .non_content_admissions(self.connection, self.row_limit)
+            .non_content_admissions(self.connection, self.row_limit, &mut work)
             .map_err(|error| FsckError::Native(error.to_string()))?;
-        if admitted.len() > self.row_limit {
+        self.cpu_budget_remaining = work;
+        let Some(admitted) = admitted.filter(|admitted| admitted.len() <= self.row_limit) else {
             self.exhaust_cpu();
             return Ok(());
-        }
+        };
         let mut insert = self
             .connection
             .prepare(
@@ -286,6 +288,20 @@ impl Context<'_> {
     pub(super) fn history_unknowable(&mut self, id: &str) -> bool {
         // A record this run read, and its admission bits, are known.
         if !self.history_incomplete() || self.object_ids.contains_key(id) {
+            return false;
+        }
+        match self.compact_catalog() {
+            Some((_, catalog)) => may_be_unreadable(&catalog, id),
+            None => true,
+        }
+    }
+
+    /// Format 8 beside an unreadable pack: whether `id`'s admission bits
+    /// may be there. A copy readable elsewhere does not carry them (a
+    /// record republished to another Space after its pack was lost; council
+    /// s26 r3).
+    pub(super) fn admission_unknowable(&mut self, id: &str) -> bool {
+        if !self.history_incomplete() {
             return false;
         }
         match self.compact_catalog() {
