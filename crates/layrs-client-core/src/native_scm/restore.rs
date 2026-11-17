@@ -228,7 +228,19 @@ impl NativeWorkspace {
         let mut retries = 0_u32;
         loop {
             match self.fast_forward_layer_once(target, expected_head, step) {
-                Err(error) if retries < 8 && stale_batch(&error) => {
+                Err(error) if stale_batch(&error) => {
+                    if retries == 8 {
+                        // Reported as the Store's CAS mismatch it is.
+                        return Err(match error {
+                            NativeClientError::Filesystem(error) => error
+                                .into_inner()
+                                .and_then(|inner| inner.downcast::<StoreError>().ok())
+                                .map_or(NativeClientError::NeedsIntegration, |inner| {
+                                    NativeClientError::Store(*inner)
+                                }),
+                            other => other,
+                        });
+                    }
                     retries += 1;
                     layrs_store_local::perf::count("room.fast_forward_retry", 1);
                 }
@@ -307,11 +319,26 @@ impl NativeWorkspace {
                     .cloned()
                     .collect(),
             )?;
-            let span = layrs_store_local::perf::span("ff.read_after");
-            let after = self.read_step_projection_in(source.space.id(), step)?;
+            // Both projections at once: the base's and the target's.
+            let span = layrs_store_local::perf::span("ff.read_projections");
+            let (before, after) = std::thread::scope(|scope| {
+                let before = scope.spawn(|| {
+                    let _span = layrs_store_local::perf::span("ff.read_before");
+                    self.read_step_projection_in(source.space.id(), expected_head)
+                });
+                let after = {
+                    let _span = layrs_store_local::perf::span("ff.read_after");
+                    self.read_step_projection_in(source.space.id(), step)
+                };
+                let before = before
+                    .join()
+                    .map_err(|_| NativeClientError::InvalidSnapshot("projection read".into()))?;
+                Ok::<_, NativeClientError>((before?, after?))
+            })?;
             drop(span);
-            self.apply_transition(
+            self.apply_projection_transition(
                 &source,
+                Some(before),
                 step.clone(),
                 Some(target.clone()),
                 after,
@@ -319,6 +346,7 @@ impl NativeWorkspace {
                 Some(reference),
                 OperationKind::MoveLayerHeads,
                 "Fast-forward Room merge",
+                vec![],
                 &FastForwardContract { step: step.clone() },
             )?;
             return Ok(true);
@@ -459,6 +487,7 @@ impl NativeWorkspace {
     ) -> Result<()> {
         self.apply_projection_transition(
             source,
+            None,
             target_step,
             active_layer,
             after,
@@ -487,6 +516,7 @@ impl NativeWorkspace {
     ) -> Result<()> {
         self.apply_projection_transition(
             source,
+            None,
             target_step,
             active_layer,
             after.iter().map(CheckoutProjectionEntry::from).collect(),
@@ -500,9 +530,11 @@ impl NativeWorkspace {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// `before`: the base Step's projection, when the caller read it.
     fn apply_projection_transition(
         &self,
         source: &WorkspaceState,
+        before: Option<Vec<CheckoutProjectionEntry>>,
         target_step: StepId,
         active_layer: Option<LayerId>,
         after: Vec<CheckoutProjectionEntry>,
@@ -513,9 +545,12 @@ impl NativeWorkspace {
         rewrite_map: Vec<RewriteTarget>,
         faults: &dyn MaterializationFaults,
     ) -> Result<()> {
-        let before = {
-            let _span = layrs_store_local::perf::span("transition.read_before_projection");
-            self.read_step_projection_in(source.space.id(), &base_step(source)?)?
+        let before = match before {
+            Some(before) => before,
+            None => {
+                let _span = layrs_store_local::perf::span("transition.read_before_projection");
+                self.read_step_projection_in(source.space.id(), &base_step(source)?)?
+            }
         };
         // Projections are metadata only. The Store copy of every displaced
         // base file is verified before the journal; target bytes are proven

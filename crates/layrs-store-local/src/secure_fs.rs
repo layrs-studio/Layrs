@@ -708,6 +708,38 @@ fn sync_directory_handle(file: &File) -> io::Result<()> {
 #[path = "secure_fs/unix.rs"]
 mod platform;
 
+/// Raises this process's soft limit on open files to its hard limit, once
+/// (Unix; as many tools do): a transition keeps each staged file open until
+/// its commit (council s21 r2). Best effort; Windows has no such low limit.
+pub(crate) fn raise_open_file_limit() {
+    #[cfg(unix)]
+    {
+        static RAISED: std::sync::Once = std::sync::Once::new();
+        RAISED.call_once(|| {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit writes one rlimit through a valid pointer.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            let wanted = limit.rlim_max.min(libc::OPEN_MAX as libc::rlim_t);
+            #[cfg(not(target_os = "macos"))]
+            let wanted = limit.rlim_max;
+            if wanted > limit.rlim_cur {
+                let raised = libc::rlimit {
+                    rlim_cur: wanted,
+                    rlim_max: limit.rlim_max,
+                };
+                // SAFETY: setrlimit reads one rlimit through a valid pointer.
+                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) };
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod directory_capability_tests {
     use super::*;

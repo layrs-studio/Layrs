@@ -1327,6 +1327,7 @@ fn discard_attempt(backups: &PinnedDirectory, name: &std::ffi::OsStr) {
 
 /// Identity and metadata of a moved original, observed right after it was
 /// proven equal to its tracked content.
+#[derive(PartialEq, Eq)]
 struct BackupSeal {
     identity: String,
     length: u64,
@@ -1334,9 +1335,14 @@ struct BackupSeal {
 }
 impl BackupSeal {
     fn of(leaf: &PinnedLeaf) -> Option<Self> {
-        #[allow(irrefutable_let_patterns)]
-        let PinnedLeaf::File(file) = leaf else {
-            return None;
+        let Some(file) = leaf.regular_file() else {
+            // A symlink never changes in place: its identity and target
+            // length seal it (council s21 r2, else its backup is kept).
+            return Some(Self {
+                identity: leaf.any_identity_token(),
+                length: leaf.link_target().ok()??.len() as u64,
+                modified: None,
+            });
         };
         let metadata = file.file().metadata().ok()?;
         Some(Self {
@@ -1452,6 +1458,8 @@ fn stage_all<'a>(
     next: &BTreeMap<&'a str, &CheckoutProjectionContent>,
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<Staged<'a>> {
+    // Each staged file stays open until the commit (council s21 r2).
+    crate::secure_fs::raise_open_file_limit();
     let jobs: Vec<sources::StageJob<'_>> = paths
         .iter()
         .enumerate()

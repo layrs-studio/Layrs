@@ -693,17 +693,23 @@ impl Walk<'_> {
             return;
         }
         let path = Self::path(folder, name);
+        // The scan refuses a name it does not accept before any ignore rule
+        // (council s21 r2): left to the full path, which reports it.
+        let canonical =
+            layrs_core::scm::RepoPath::parse(&path).is_ok_and(|parsed| parsed.as_str() == path);
+        if !canonical {
+            self.decide(UNKNOWN);
+            return;
+        }
         if self.ignored.ignores(&path, metadata.is_dir()) {
             if metadata.is_dir() && self.ignored.has_exceptions {
                 self.decide(UNKNOWN);
             }
             return;
         }
-        // A new regular file with a name the scan accepts is a change;
-        // anything else is left to the full path.
-        let canonical =
-            layrs_core::scm::RepoPath::parse(&path).is_ok_and(|parsed| parsed.as_str() == path);
-        if metadata.is_file() && !reparse(metadata) && canonical {
+        // A new regular file is a change; anything else is left to the full
+        // path.
+        if metadata.is_file() && !reparse(metadata) {
             self.decide(CHANGED);
         } else {
             self.decide(UNKNOWN);

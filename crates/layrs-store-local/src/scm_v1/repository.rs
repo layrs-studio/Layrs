@@ -75,6 +75,15 @@ impl CasFaultInjector for NoCasFaults {
     }
 }
 
+/// Where a batch's guard runs: with the exclusive Store held, before the
+/// CAS installation, then right before COMMIT once the batch is validated
+/// (`replay`: it was applied earlier, nothing new commits).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GuardPoint {
+    BeforeInstall,
+    BeforeCommit { replay: bool },
+}
+
 impl NativeScmRepository {
     /// Filesystem-only optimistic guard, executed with the exclusive Store held
     /// before CAS installation and immediately before COMMIT. It must not reopen
@@ -82,13 +91,13 @@ impl NativeScmRepository {
     pub fn apply_batch_guarded(
         &mut self,
         batch: &WriteBatch,
-        guard: impl FnMut() -> Result<()>,
+        mut guard: impl FnMut() -> Result<()>,
     ) -> Result<ApplyBatchOutcome> {
         self.apply_batch_with_chunks_guarded(
             batch,
             &[],
             |_| unreachable!("no external chunks"),
-            guard,
+            |_| guard(),
             SHORT_WAIT,
             None,
         )
@@ -207,7 +216,7 @@ impl NativeScmRepository {
             batch,
             chunks,
             read_chunk,
-            || Ok(()),
+            |_| Ok(()),
             self.acquisition_budget,
             Some((completion, clock)),
         )
@@ -240,7 +249,7 @@ impl NativeScmRepository {
             batch,
             chunks,
             read_chunk,
-            || Ok(()),
+            |_| Ok(()),
             Some((completion, clock)),
         )
     }
@@ -259,18 +268,16 @@ impl NativeScmRepository {
         before_commit: impl FnOnce() -> Result<()>,
     ) -> Result<ApplyBatchOutcome> {
         let mut before_commit = Some(before_commit);
-        let mut calls = 0_u8;
         self.apply_batch_with_chunks_guarded(
             batch,
             chunks,
             read_chunk,
-            || {
-                // The guard runs before the CAS installation, then once the
-                // batch is validated, right before COMMIT.
-                calls = calls.saturating_add(1);
-                match before_commit.take_if(|_| calls == 2) {
-                    Some(action) => action(),
-                    None => Ok(()),
+            |point| match (point, before_commit.take()) {
+                // A new batch, validated, right before its COMMIT.
+                (GuardPoint::BeforeCommit { replay: false }, Some(action)) => action(),
+                (_, taken) => {
+                    before_commit = taken;
+                    Ok(())
                 }
             },
             self.acquisition_budget,
@@ -335,7 +342,7 @@ impl NativeScmRepository {
             batch,
             chunks,
             read_chunk,
-            || Ok(()),
+            |_| Ok(()),
             self.acquisition_budget,
             None,
         )
@@ -346,7 +353,7 @@ impl NativeScmRepository {
         batch: &WriteBatch,
         chunks: &[(ChunkId, u64)],
         read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
-        mut guard: impl FnMut() -> Result<()>,
+        mut guard: impl FnMut(GuardPoint) -> Result<()>,
         acquisition_budget: Duration,
         completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
@@ -372,7 +379,7 @@ impl NativeScmRepository {
             None => store,
         };
         self.validate_store_id(store.store_id())?;
-        guard()?;
+        guard(GuardPoint::BeforeInstall)?;
         self.apply_on_store(
             &store,
             None,
@@ -420,7 +427,7 @@ impl NativeScmRepository {
         batch: &WriteBatch,
         chunks: &[(ChunkId, u64)],
         mut read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
-        mut guard: impl FnMut() -> Result<()>,
+        mut guard: impl FnMut(GuardPoint) -> Result<()>,
         completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
         let validated = held.is_some();
@@ -536,7 +543,9 @@ impl NativeScmRepository {
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
-                guard()?;
+                guard(GuardPoint::BeforeCommit {
+                    replay: matches!(outcome, ApplyBatchOutcome::AlreadyApplied { .. }),
+                })?;
                 Ok(outcome)
             });
         match result {

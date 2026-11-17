@@ -413,6 +413,39 @@ fn a_fast_forward_writes_directly_without_a_journal() {
     assert_eq!(left, 0, "attempt folders left in {}", backups.display());
 }
 
+/// A fast-forward removes the folders it empties, as git does (council s21
+/// r2), so the next `status` is still decided by the status view.
+#[test]
+fn a_fast_forward_removes_the_folders_it_empties() {
+    let fixture = Fixture::new();
+    let project = init(&fixture);
+    fs::create_dir_all(project.join("deep/er")).unwrap();
+    fs::write(project.join("deep/er/c.txt"), b"c\n").unwrap();
+    run(&project, &["step"], true);
+    let dir = fixture.room_dir("agent-e");
+    let created = run(&project, &["room", "new", "agent-e", "--dir", &dir], true);
+    let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
+    fs::remove_dir_all(room.join("deep")).unwrap();
+    fs::write(room.join("src/a.txt"), b"a, again\n").unwrap();
+    run(&room, &["room", "step"], true);
+    run(&project, &["room", "merge", "agent-e"], true);
+    assert!(!project.join("deep").exists());
+    assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a, again\n");
+    let perf = fixture.0.join("emptied.perf");
+    let output = Command::new(env!("CARGO_BIN_EXE_layrs"))
+        .current_dir(&project)
+        .env("LAYRS_PERF", "1")
+        .env("LAYRS_PERF_OUT", &perf)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["data"]["dirty"], false, "{envelope}");
+    let report = fs::read_to_string(&perf).unwrap();
+    assert!(report.contains("\"status_view.decided\""), "{report}");
+}
+
 #[test]
 fn room_names_and_folders_are_validated() {
     let fixture = Fixture::new();

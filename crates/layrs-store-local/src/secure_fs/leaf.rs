@@ -77,6 +77,17 @@ impl PinnedLeaf {
             Self::Symlink(_) => None,
         }
     }
+    /// Identity of any leaf, a symlink's included.
+    pub(crate) fn any_identity_token(&self) -> String {
+        match self {
+            Self::File(file) => file.identity_token(),
+            #[cfg(target_os = "linux")]
+            Self::Symlink(link) => format!(
+                "fs:v1:{:016x}:{:016x}",
+                link.identity.volume, link.identity.file
+            ),
+        }
+    }
     pub(crate) fn link_target(&self) -> io::Result<Option<String>> {
         match self {
             Self::File(_) => Ok(None),

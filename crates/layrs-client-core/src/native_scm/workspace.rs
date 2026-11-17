@@ -816,24 +816,39 @@ impl NativeWorkspace {
     }
 }
 
-/// Removes the Store a refused `initialize` created, only while `.layrs` is
-/// still that Store (council s21 r1): the same folder, when its identity was
-/// read, and its marker naming this call's StoreId. Creation stopped before
-/// the marker: only an empty folder goes. Anything else stays untouched.
+/// Removes the Store a refused `initialize` created, only while it is that
+/// Store (council s21 r1, r2). `.layrs` is first moved aside under a name of
+/// its own (one atomic rename), then checked there: the same folder, when
+/// its identity was read, and its marker naming this call's StoreId; when
+/// creation stopped before the marker, only an empty folder. A `.layrs`
+/// that replaced this call's meanwhile is never the one removed: it goes
+/// back to its name (never over another entry), or stays aside, untouched.
 fn remove_created_store(store_path: &Path, store_id: &StoreId, identity: Option<&str>) {
-    if layrs_store_local::scm_v1::checkout::CheckoutReader::open(store_path, identity).is_err() {
+    let Some(parent) = store_path.parent() else {
+        return;
+    };
+    let aside = parent.join(format!(".layrs-refused-{}", uuid::Uuid::new_v4().simple()));
+    if std::fs::rename(store_path, &aside).is_err() {
         return;
     }
-    match scm_v1::inspect(store_path) {
-        Ok(scm_v1::NativeStoreInspection::AbsentOrEmpty { .. }) => {
-            let _ = std::fs::remove_dir(store_path);
-        }
-        Ok(
-            scm_v1::NativeStoreInspection::NativeReady { marker, .. }
-            | scm_v1::NativeStoreInspection::NativeInitializing { marker, .. },
-        ) if marker.store_id() == store_id => {
-            let _ = std::fs::remove_dir_all(store_path);
-        }
-        _ => {}
+    let pinned = layrs_store_local::scm_v1::checkout::CheckoutReader::open(&aside, identity).ok();
+    let ours = pinned.is_some()
+        && match scm_v1::inspect(&aside) {
+            Ok(scm_v1::NativeStoreInspection::AbsentOrEmpty { .. }) => {
+                drop(pinned);
+                std::fs::remove_dir(&aside).is_ok()
+            }
+            Ok(
+                scm_v1::NativeStoreInspection::NativeReady { marker, .. }
+                | scm_v1::NativeStoreInspection::NativeInitializing { marker, .. },
+            ) if marker.store_id() == store_id => {
+                drop(pinned);
+                let _ = std::fs::remove_dir_all(&aside);
+                true
+            }
+            _ => false,
+        };
+    if !ours && std::fs::symlink_metadata(store_path).is_err() {
+        let _ = std::fs::rename(&aside, store_path);
     }
 }
