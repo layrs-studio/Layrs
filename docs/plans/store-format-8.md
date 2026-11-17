@@ -1,0 +1,89 @@
+# Store format 8: history out of SQLite (council s24, s25)
+
+Goal: a Store no larger than git's on long histories, weakening nothing beyond
+what git itself does. Measured on 1,000 Steps of a 100-file folder (release,
+format 7, automatic maintenance): Store 11.1 MiB against git 12.8 MiB as left
+and 0.8 MiB after `git gc`; SQLite 10.3 MiB of it (about 10.3 KiB per Step),
+objects 717 KiB (after the clustered consolidation of s24 phase 1).
+
+## Council s25 (design, round 1, 2026-11-17)
+
+Astra (GPT-6 Astra, xhigh), Sol (GPT-6.1 Sol, max) and Opus (Claude Opus 5.5,
+xhigh) agree on:
+
+- Format 8 = schema v4 + packs v4. Opt-in (`LAYRS_STORE_FORMAT=8`) until
+  conversion, fault tests, consolidation and measurements pass; then `init`
+  creates format 8 (format 7 is never made the default).
+- Operations (record kind 11) and StepObservations (kind 12) become records of
+  the batch's pack, with a stable history sequence (a clock in SQLite, bumped
+  in the batch transaction) replacing `rowid`, and pack-local sections:
+  observations by Step, Operations and observations by Space, actor/device
+  postings. Their ids are not content addresses: every read checks the
+  decoded id, and a pack's `keys_digest` commits to each entity's payload
+  digest and sequence. Consolidation copies sequences and compares duplicate
+  bytes; an unreadable pack that may hold an id blocks a different payload
+  under it.
+- The derived projections go: `objects`, `object_edges`, `steps`,
+  `step_parents`, `repository_views` and its child tables,
+  `space_object_admissions`, `operations` and its child tables,
+  `step_observations`, the unused `pending_*` tables. Canonical records are
+  the only source; edges come from one typed dependency decoder shared by
+  admission, fsck and GC. Every dropped foreign key becomes an explicit
+  writer check (recovery writers included) and an fsck check.
+- Admission bitmaps for every packed object kind (Trees, Steps, Views,
+  Symlinks, Tombstones, Conflicts, Products); loose catalog for every kind.
+  History records are never admitted.
+- GC: ordinary writes never scan history (council s23). Roots from mutable
+  state stay incremental; roots of history (every Operation's View, rewrite
+  sources and targets, observed Steps, markers, releases, Products) are
+  derived when fsck or GC runs. An incomplete inventory never authorizes a
+  deletion.
+- Conversion (`layrs store convert`) is an offline, journaled,
+  identity-preserving copy of the source's records, verified (clean fsck of
+  the target and equal logical digests), never a replay of history through
+  the resolver: replay could refuse legitimate old histories (the
+  `OperationDag::from_history` integration order). This amends ADR 0028 §5
+  ("rejouera l'historique en lots validés"). The Store root and `metadata`
+  directory keep their identities (Worktree locators bind them).
+- Receipts keep every field today's replay and VFS recovery compare.
+
+Risk raised by Opus, to review first: the durable horizon. Format 7 registers
+a batch's pack before validating it; non-content objects only become visible
+when their `objects` rows are inserted after validation. Without those rows,
+a validating reader would find the batch's own Steps and Operations in its
+pack and treat them as durable (bounded admission would skip them). Format 8
+reads non-content objects and history records, during validation, only from
+packs registered before the batch. Test: a batch carrying a new Step whose
+parent is missing is refused.
+
+Chair's decisions where the members differ:
+
+- Receipts stay in SQLite, compact (Sol): `applied_transactions(transaction_key
+  BLOB PRIMARY KEY, receipt BLOB) WITHOUT ROWID`, a reversible key and a
+  binary receipt (codec, request digest, four counts, time). In packs they
+  would cost about as much (98 B per receipt measured, below) and replay would
+  depend on pack readability (Opus); blocks (Astra) add rewriting for little.
+- `gc_roots` keeps only roots maintained from mutable state (Astra, Sol).
+
+## Phase 2.0 measurements (prototype `scratchpad/s24proto`)
+
+History records dumped from a real 1,000-Step Store, packed by kind with a
+40-byte index entry each: Operation 479 B raw, 109-119 B packed; observation
+497 B raw, 117-126 B; receipt 294 B raw, 98-104 B. History in packs: about
+0.33 KiB per Step (gate: 0.45). Projected format 8 total: objects 0.72 +
+history 0.33 + SQLite about 0.1 = about 1.1 KiB per Step, against 0.82 for
+`git gc`: phase 3 (binary Tree codec: objects 0.72 to about 0.34) is needed to
+pass git.
+
+## Landing order (one council review each)
+
+1. 2a: format 8 opt-in, schema v4 draft, packs v3. Drop the object
+   projections and `space_object_admissions`; all-kind bitmaps; the durable
+   horizon; fsck from decoded objects. Gate: suites in formats 8, 7 and 5;
+   lost-pack tests in 8; no latency regression at 10k and 99k files.
+2. 2b: packs v4 with Operation and observation records, sequence clock,
+   initializers, identities; client history paging; drop their tables.
+3. 2c: compact receipts; freeze schema v4 and packs v4 (earlier format-8
+   Stores refused).
+4. 2d: `layrs store convert` from 5, 6 and 7.
+5. 2e: default 8.
