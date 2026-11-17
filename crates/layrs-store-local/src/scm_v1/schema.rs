@@ -94,7 +94,7 @@ pub fn schema_v3_checksum() -> String {
 /// `pending_*` tables. Drafts change until format 8 is frozen; a Store of an
 /// earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft2";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft3";
 pub const SCHEMA_V4_CHECKSUM: &str =
     "5b4baeb18f68852464a7c7cb7fe0604f5ecae04c3e207e3103d1f6f473365020";
 pub const SCHEMA_V4_FINGERPRINT: &str =

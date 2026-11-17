@@ -96,9 +96,15 @@ impl Context<'_> {
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
+        // Charged to the row budget as it is expanded, before anything else
+        // reads it (council s26 r2).
         let admitted = catalog
-            .non_content_admissions(self.connection)
+            .non_content_admissions(self.connection, self.row_limit)
             .map_err(|error| FsckError::Native(error.to_string()))?;
+        if admitted.len() > self.row_limit {
+            self.exhaust_cpu();
+            return Ok(());
+        }
         let mut insert = self
             .connection
             .prepare(
@@ -243,8 +249,15 @@ impl Context<'_> {
             if present {
                 continue;
             }
-            if let (Reference::Record(id), Some(catalog)) = (&reference, &catalog) {
-                if self.compact_damaged && catalog.may_hold_unreadably(id).unwrap_or(true) {
+            if let Reference::Record(id) = &reference {
+                let unknown = match &catalog {
+                    Some(catalog) => {
+                        self.compact_damaged && catalog.may_hold_unreadably(id).unwrap_or(true)
+                    }
+                    // No audit catalog: nothing could be read (reported).
+                    None => true,
+                };
+                if unknown {
                     continue;
                 }
             }
@@ -265,13 +278,14 @@ impl Context<'_> {
     /// pack holds, so a check whose expectation comes from them cannot tell
     /// missing from unknown (council s18 r3, s26 r1).
     pub(super) fn history_incomplete(&self) -> bool {
-        self.compact_damaged && self.audit.bitmap_admissions()
+        self.audit.bitmap_admissions() && (self.compact_damaged || self.compact_audit_failed)
     }
 
     /// Whether `id` may be a record of an unreadable pack, in format 8
     /// (formats 6 and 7 answer from `unreadable_sources`).
     pub(super) fn history_unknowable(&mut self, id: &str) -> bool {
-        if !self.history_incomplete() {
+        // A record this run read, and its admission bits, are known.
+        if !self.history_incomplete() || self.object_ids.contains_key(id) {
             return false;
         }
         match self.compact_catalog() {

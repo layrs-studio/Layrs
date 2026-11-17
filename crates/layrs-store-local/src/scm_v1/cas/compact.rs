@@ -2930,9 +2930,12 @@ impl RegisteredCatalog {
     /// keeps instead of `space_object_admissions` (fsck rebuilds that table
     /// from it). Bits of a pack this catalog cannot read are left out (the
     /// catalog reports the pack).
+    /// At most `limit` + 1 of them: a caller with a work budget stops
+    /// there (council s26 r2).
     pub(crate) fn non_content_admissions(
         &self,
         connection: &Connection,
+        limit: usize,
     ) -> CasResult<Vec<(String, StoreObjectId)>> {
         let mut admitted = Vec::new();
         let mut statement = connection
@@ -2968,6 +2971,9 @@ impl RegisteredCatalog {
                     continue;
                 }
                 admitted.push((space.clone(), pack2::object_id_of(kind, digest)?));
+                if admitted.len() > limit {
+                    return Ok(admitted);
+                }
             }
         }
         let mut statement = connection
@@ -2995,6 +3001,9 @@ impl RegisteredCatalog {
                 continue;
             }
             admitted.push((space, pack2::object_id_of(kind, &digest)?));
+            if admitted.len() > limit {
+                return Ok(admitted);
+            }
         }
         Ok(admitted)
     }

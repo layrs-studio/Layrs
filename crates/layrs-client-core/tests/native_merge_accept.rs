@@ -872,6 +872,21 @@ c
     )
     .unwrap();
     let mut repository = scm_v1::NativeScmRepository::new(w.store_root());
-    assert!(repository.apply_batch(&batch).is_err());
+    let error = repository.apply_batch(&batch).unwrap_err();
+    // Format 8 refuses by its reference check; 5 to 7 by a foreign key.
+    if std::env::var("LAYRS_STORE_FORMAT").as_deref() == Ok("8") {
+        assert!(
+            matches!(
+                &error,
+                StoreError::NotFound {
+                    kind: "Conflict",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    } else {
+        assert!(error.to_string().contains("FOREIGN KEY"), "{error:?}");
+    }
     assert_eq!(repository.get_product(dangling.id()).unwrap(), None);
 }

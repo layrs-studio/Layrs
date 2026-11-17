@@ -30,13 +30,9 @@ pub fn require_idle(db: &Connection) -> CompactionResult<()> {
             "SELECT EXISTS(SELECT 1 FROM pending_ref_updates WHERE state IN ('pending','validated'))",
         ),
     ] {
-        // Format 8 has no `pending_*` tables (schema v4).
-        let present: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )?;
-        if !present {
+        // Format 8 has no `pending_*` tables (schema v4); every other table
+        // must be there.
+        if table.starts_with("pending_") && sqlite::schema_version(db)? == 4 {
             continue;
         }
         if db.query_row(query, [], |row| row.get::<_, bool>(0))? {

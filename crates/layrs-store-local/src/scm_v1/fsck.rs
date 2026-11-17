@@ -239,6 +239,9 @@ impl NativeFsck {
         }
         if audit.bitmap_admissions() {
             context.project_bitmap_admissions()?;
+            if context.work_truncated {
+                return Ok(context.finish());
+            }
         }
         context.check_work_budget()?;
         if context.work_truncated {
@@ -795,7 +798,11 @@ fn graph_reaches_bounded(
     Some(false)
 }
 
-fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+/// Cross-Space and admission violations: (entity, reason, the record an
+/// admission check found not admitted).
+fn cross_space_violations(
+    connection: &Connection,
+) -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
     const CHECKS: &[(&str, &str)] = &[
         (
             "SELECT p.layer_id FROM layer_parents p JOIN layers c ON c.layer_id=p.layer_id JOIN layers a ON a.layer_id=p.parent_layer_id WHERE c.space_id<>a.space_id",
@@ -822,7 +829,7 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
             "StepObservation Worktree belongs to another Space",
         ),
         (
-            "SELECT s.observation_id FROM step_observations s WHERE s.space_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=s.space_id AND a.object_id=s.step_id)",
+            "SELECT s.observation_id, s.step_id FROM step_observations s WHERE s.space_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=s.space_id AND a.object_id=s.step_id)",
             "StepObservation Step is not admitted to its Space",
         ),
         (
@@ -830,11 +837,11 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
             "Worktree references another Store identity",
         ),
         (
-            "SELECT m.marker_id FROM markers m WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=m.space_id AND a.object_id=m.target_step_id)",
+            "SELECT m.marker_id, m.target_step_id FROM markers m WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=m.space_id AND a.object_id=m.target_step_id)",
             "Marker target Step is not admitted to its Space",
         ),
         (
-            "SELECT r.release_id FROM releases r WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=r.space_id AND a.object_id=r.target_step_id)",
+            "SELECT r.release_id, r.target_step_id FROM releases r WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=r.space_id AND a.object_id=r.target_step_id)",
             "Release target Step is not admitted to its Space",
         ),
         (
@@ -846,11 +853,11 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
             "ReleasePublication references an Operation from another Space",
         ),
         (
-            "SELECT r.operation_id FROM operation_rewrites r JOIN operations o ON o.operation_id=r.operation_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=o.space_id AND a.object_id=r.old_step_id)",
+            "SELECT r.operation_id, r.old_step_id FROM operation_rewrites r JOIN operations o ON o.operation_id=r.operation_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=o.space_id AND a.object_id=r.old_step_id)",
             "Operation rewrite source Step is not admitted to its Space",
         ),
         (
-            "SELECT t.operation_id FROM operation_rewrite_targets t JOIN operations o ON o.operation_id=t.operation_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=o.space_id AND a.object_id=t.new_step_id)",
+            "SELECT t.operation_id, t.new_step_id FROM operation_rewrite_targets t JOIN operations o ON o.operation_id=t.operation_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=o.space_id AND a.object_id=t.new_step_id)",
             "Operation rewrite target Step is not admitted to its Space",
         ),
         (
@@ -858,7 +865,7 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
             "RepositoryView contains a Layer from another Space",
         ),
         (
-            "SELECT h.repository_view_id FROM repository_view_layer_heads h JOIN repository_views v ON v.repository_view_id=h.repository_view_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=h.step_id)",
+            "SELECT h.repository_view_id, h.step_id FROM repository_view_layer_heads h JOIN repository_views v ON v.repository_view_id=h.repository_view_id WHERE NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=h.step_id)",
             "RepositoryView head Step is not admitted to its Space",
         ),
         (
@@ -878,21 +885,32 @@ fn cross_space_violations(connection: &Connection) -> rusqlite::Result<Vec<(Stri
             "RepositoryView Worktree state uses an active Layer from another Space",
         ),
         (
-            "SELECT x.repository_view_id FROM repository_view_worktrees x JOIN repository_views v ON v.repository_view_id=x.repository_view_id WHERE x.base_step_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=x.base_step_id)",
+            "SELECT x.repository_view_id, x.base_step_id FROM repository_view_worktrees x JOIN repository_views v ON v.repository_view_id=x.repository_view_id WHERE x.base_step_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=x.base_step_id)",
             "RepositoryView Worktree base Step is not admitted to its Space",
         ),
         (
-            "SELECT x.repository_view_id FROM repository_view_worktrees x JOIN repository_views v ON v.repository_view_id=x.repository_view_id WHERE x.materialized_tree_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=x.materialized_tree_id)",
+            "SELECT x.repository_view_id, x.materialized_tree_id FROM repository_view_worktrees x JOIN repository_views v ON v.repository_view_id=x.repository_view_id WHERE x.materialized_tree_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM space_object_admissions a WHERE a.space_id=v.space_id AND a.object_id=x.materialized_tree_id)",
             "RepositoryView Worktree materialized Tree is not admitted to its Space",
         ),
     ];
     let mut findings = Vec::new();
     for (sql, reason) in CHECKS {
-        findings.extend(
-            query_strings_no_param(connection, sql)?
-                .into_iter()
-                .map(|id| (id, (*reason).to_owned())),
-        );
+        let mut statement = connection.prepare(sql)?;
+        let columns = statement.column_count();
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (*reason).to_owned(),
+                if columns > 1 {
+                    row.get::<_, Option<String>>(1)?
+                } else {
+                    None
+                },
+            ))
+        })?;
+        for row in rows {
+            findings.push(row?);
+        }
     }
     Ok(findings)
 }

@@ -157,3 +157,36 @@ pass git.
 - Later (performance, not 2a): `products_in_space` scans every Product in
   format 8; `project_bitmap_admissions` decodes every bitmap before fsck's
   work budget.
+
+## Council s26 r2 (2026-11-17)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 7/10 |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 7/10 |
+
+All three: ship after fixes; the round 1 reference fixes confirmed
+complete (Opus mapped every dropped key).
+
+- Fixed (P2, all three): beside an unreadable pack, uncertainty is now
+  decided per record, never for the whole Store. A record this run read,
+  and its admission bits, are known; another is unknown when an unreadable
+  pack may hold it (or no audit catalog loaded). This reaches Step parents,
+  the admission closure, the cross-Space admission checks (by the record
+  each names), GC roots (a Worktree's by its View, a Product's by its
+  bits), the current View, observation reachability (a walk meeting an
+  unknown Step) and retained View dependencies. Test: Steps chained across
+  two packs, either pack lost, fsck names only the pack
+  (`beside_a_lost_pack_format_8_reports_only_the_pack`; StepParentMissing,
+  AdmissionClosureBroken and GcRootInvalid without the fix).
+- Fixed (P2, Sol, contesting deferral 9): fsck's admission projection is
+  charged to the row budget as it is expanded, and stops there.
+- Fixed (P3, Opus): metadata compaction lets only the `pending_*` tables be
+  absent, and only from v4; the v4 baseline is named draft 3 (its fixture
+  changed: Stores of earlier drafts are refused as such); the Product
+  regression names the refusal of each format.
+- Later (2b): the writer-level refusal tests of the row and entity
+  references (format 8 shares their checks with the Product one, untested
+  alone); fsck reports a dangling subtree or current View twice; the loose
+  horizon variant.

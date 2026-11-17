@@ -260,6 +260,16 @@ impl Lane {
     /// A capture whose Step holds `files`; `carried` objects are in the
     /// batch (the others must be durably admitted already).
     fn capture(&mut self, files: &[File], carried: Vec<CanonicalObject>) -> WriteBatch {
+        self.capture_on(files, carried, vec![])
+    }
+
+    /// `capture`, its Step on `parents`.
+    fn capture_on(
+        &mut self,
+        files: &[File],
+        carried: Vec<CanonicalObject>,
+        parents: Vec<layrs_core::scm::StepId>,
+    ) -> WriteBatch {
         self.sequence += 1;
         let label = self
             .space
@@ -268,7 +278,7 @@ impl Lane {
             .trim_start_matches("space:")
             .to_owned();
         let tree = tree_of(files);
-        let step = Step::new(vec![], tree.id().clone()).unwrap();
+        let step = Step::new(parents, tree.id().clone()).unwrap();
         let view = RepositoryView::new(
             self.space.id().clone(),
             vec![LayerHeadSet::new(self.layer.id().clone(), vec![step.id().clone()]).unwrap()],
@@ -1070,6 +1080,40 @@ fn fsck_reports_a_view_naming_a_missing_layer() {
                 .iter()
                 .any(|finding| finding.code == FsckFindingCode::ForeignKeyViolation),
             "format {format}: {:#?}",
+            report.findings
+        );
+    }
+}
+
+/// Beside a lost pack, format 8's derived tables miss what it held: a Step
+/// parent, admission bits, the current View it held are unknown, not
+/// missing (council s26 r2). Either pack lost, fsck names only the pack.
+#[test]
+fn beside_a_lost_pack_format_8_reports_only_the_pack() {
+    for lost in [0, 1] {
+        let root = TestRoot::new("lost-history");
+        create(&root.0, "lost-history", "8");
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (mut lane, batch) = Lane::begin("lost-history", &files);
+        let first = Step::new(vec![], tree_of(&files).id().clone()).unwrap();
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let more = vec![files[0].clone(), file("b.txt", b"beta", Recipe::Fixed)];
+        let carried = file_objects(&more[1..]);
+        repository
+            .apply_batch(&lane.capture_on(&more, carried, vec![first.id().clone()]))
+            .unwrap();
+        drop(repository);
+        assert_fsck_clean(&root.0);
+        let pack = registered_packs(&root.0).remove(lost);
+        fs::remove_file(root.0.join("objects/packs").join(pack)).unwrap();
+        forget_loaded_packs();
+        let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+        let codes: Vec<_> = report.findings.iter().map(|finding| finding.code).collect();
+        assert_eq!(
+            codes,
+            [FsckFindingCode::CasCorruption],
+            "pack {lost} lost: {:#?}",
             report.findings
         );
     }

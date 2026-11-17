@@ -167,6 +167,9 @@ impl Context<'_> {
                     }
                 }
             }
+            if !reachable && self.observation_unknowable(&operation, &step, step_adjacency)? {
+                continue;
+            }
             if !reachable {
                 self.error(
                     FsckFindingCode::OperationHistoryInvalid,
@@ -180,6 +183,58 @@ impl Context<'_> {
         Ok(())
     }
 
+    /// Format 8 beside an unreadable pack: whether an observation's
+    /// reachability is unknown, its Step, its Operation's View or a Step
+    /// its walk meets being possibly held by that pack (council s26).
+    fn observation_unknowable(
+        &mut self,
+        operation: &str,
+        step: &str,
+        step_adjacency: &BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<bool, FsckError> {
+        if !self.history_incomplete() {
+            return Ok(false);
+        }
+        if self.history_unknowable(step) {
+            return Ok(true);
+        }
+        let view: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT resulting_view_id FROM operations WHERE operation_id=?1",
+                [operation],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if view.is_some_and(|view| self.history_unknowable(&view)) {
+            return Ok(true);
+        }
+        let heads = query_strings(
+            self.connection,
+            "SELECT h.step_id FROM operations o
+             JOIN repository_view_layer_heads h ON h.repository_view_id=o.resulting_view_id
+             WHERE o.operation_id=?1",
+            operation,
+        )?;
+        let mut seen = BTreeSet::new();
+        let mut pending = heads;
+        while let Some(node) = pending.pop() {
+            if !seen.insert(node.clone()) {
+                continue;
+            }
+            if !self.consume_cpu(1) {
+                return Ok(true);
+            }
+            if self.history_unknowable(&node) {
+                return Ok(true);
+            }
+            if let Some(parents) = step_adjacency.get(&node) {
+                pending.extend(parents.iter().cloned());
+            }
+        }
+        Ok(false)
+    }
+
     pub(super) fn check_parent_graph(
         &mut self,
         nodes: &BTreeMap<String, String>,
@@ -190,6 +245,11 @@ impl Context<'_> {
     ) {
         for (child, parent) in edges {
             if !nodes.contains_key(child) || !nodes.contains_key(parent) {
+                // Format 8 beside an unreadable pack: a parent it may hold is
+                // unknown, not missing (council s26).
+                if nodes.contains_key(child) && self.history_unknowable(parent) {
+                    continue;
+                }
                 self.error(
                     missing_code,
                     Some(child.clone()),
@@ -215,6 +275,9 @@ impl Context<'_> {
                                WHERE child.space_id=a.space_id AND child.object_id=e.target_object_id)",
         )?;
         for (space, source, target) in missing {
+            if self.history_unknowable(&target) {
+                continue;
+            }
             self.finding(
                 FsckFindingCode::AdmissionClosureBroken,
                 FsckSeverity::Error,
@@ -232,6 +295,9 @@ impl Context<'_> {
                                WHERE child.space_id=a.space_id AND child.object_id=s.root_tree_id)",
         )?;
         for (space, step, tree) in missing_roots {
+            if self.history_unknowable(&tree) {
+                continue;
+            }
             self.finding(
                 FsckFindingCode::AdmissionClosureBroken,
                 FsckSeverity::Error,
@@ -308,13 +374,13 @@ impl Context<'_> {
             }
         }
 
-        for (entity, reason) in cross_space_violations(self.connection)? {
+        for (entity, reason, target) in cross_space_violations(self.connection)? {
             if !self.consume_cpu(1) {
                 return Ok(());
             }
-            // Format 8 beside an unreadable pack: the admission bits it
-            // holds are unknown, not absent (council s26 r1).
-            if self.history_incomplete() && reason.contains("is not admitted") {
+            // Format 8 beside an unreadable pack: a record it may hold has
+            // unknown admission bits, not absent ones (council s26).
+            if target.is_some_and(|target| self.history_unknowable(&target)) {
                 continue;
             }
             self.error(FsckFindingCode::CrossSpaceReference, Some(entity), reason);
@@ -330,6 +396,9 @@ impl Context<'_> {
              WHERE c.generation < 1 OR v.repository_view_id IS NULL OR v.space_id<>c.space_id",
         )?;
         for (space, view) in invalid_views {
+            if self.history_unknowable(&view) {
+                continue;
+            }
             self.error(
                 FsckFindingCode::CurrentReferenceInvalid,
                 Some(space),
@@ -451,13 +520,29 @@ impl Context<'_> {
         let expected_rows: BTreeSet<_> = query_gc_expected(self.connection)?.into_iter().collect();
         for row in actual_rows.symmetric_difference(&expected_rows) {
             let (kind, root, object) = row;
-            // Format 8 beside an unreadable pack: a Worktree's or Product's
-            // expected roots come from records or bits that pack may hold.
-            if self.history_incomplete()
-                && actual_rows.contains(row)
-                && matches!(kind.as_str(), "worktree" | "product")
-            {
-                continue;
+            // Format 8 beside an unreadable pack: a Worktree's expected roots
+            // come from its View, a Product's from its admission bits, and
+            // that pack may hold either (council s26).
+            if self.history_incomplete() && actual_rows.contains(row) {
+                let unknown = match kind.as_str() {
+                    "product" => self.history_unknowable(object),
+                    "worktree" => {
+                        let view = self
+                            .connection
+                            .query_row(
+                                "SELECT o.resulting_view_id FROM worktrees w JOIN operations o ON o.operation_id=w.active_operation_id WHERE w.worktree_id=?1",
+                                [root],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?;
+                        view.is_some_and(|view| self.history_unknowable(&view))
+                            || self.history_unknowable(object)
+                    }
+                    _ => false,
+                };
+                if unknown {
+                    continue;
+                }
             }
             self.finding(
                 FsckFindingCode::GcRootInvalid,
@@ -560,6 +645,8 @@ impl Context<'_> {
             for dependency in view_dependencies {
                 if known.contains(&dependency) {
                     queue.push_back(dependency);
+                } else if self.history_unknowable(&dependency) {
+                    // Format 8: held by an unreadable pack, unknown.
                 } else {
                     self.finding(
                         FsckFindingCode::AdmissionClosureBroken,
