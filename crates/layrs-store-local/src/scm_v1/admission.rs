@@ -91,10 +91,14 @@ pub struct CompositeAdmissionResolver<'a> {
     lazy_frontier: Option<bounded::LazyFrontier>,
     /// Per observed Operation, the Steps reached from its resulting heads
     /// and those still to walk (bounded mode).
-    observation_walks: Mutex<HashMap<OperationId, (HashSet<StepId>, Vec<StepId>)>>,
+    observation_walks: Mutex<HashMap<OperationId, ObservationWalk>>,
 }
 
 /// The memo scope of the Store `store_id` at `root` (`with_memo_scope`).
+/// The Steps one Operation's observations reached from its resulting
+/// heads, and those still to walk.
+type ObservationWalk = (HashSet<StepId>, Vec<StepId>);
+
 pub(crate) fn memo_scope_of(store_id: &StoreId, root: &std::path::Path) -> String {
     format!(
         "{store_id}
