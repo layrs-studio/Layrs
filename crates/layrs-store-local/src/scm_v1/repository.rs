@@ -1755,3 +1755,57 @@ impl ScmReader for NativeScmRepository {
         self.with_reader(|r| r.proof_in_space(p, s))
     }
 }
+
+#[cfg(test)]
+mod before_commit_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// The folder write of a fast-forward runs once, for the batch's first
+    /// application only (council s21 r2): a replay never writes the folder.
+    #[test]
+    fn a_replayed_batch_never_runs_before_commit() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "layrs-before-commit-{}-{nonce}",
+            std::process::id()
+        ));
+        let id = layrs_core::scm::StoreId::parse(format!("store:replay-{nonce}")).unwrap();
+        drop(super::super::init(&root, id).unwrap());
+        let batch = WriteBatch::new(
+            layrs_store::scm::TransactionId::new("transaction:replay-probe").unwrap(),
+            vec![CanonicalObject::Tree(
+                layrs_core::scm::Tree::new(vec![]).unwrap(),
+            )],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let calls = Cell::new(0);
+        let apply = || {
+            NativeScmRepository::new(&root).apply_batch_with_chunks_before_commit(
+                &batch,
+                &[],
+                |_| unreachable!("no external chunks"),
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            )
+        };
+        assert!(matches!(
+            apply().unwrap(),
+            ApplyBatchOutcome::Applied { .. }
+        ));
+        assert!(matches!(
+            apply().unwrap(),
+            ApplyBatchOutcome::AlreadyApplied { .. }
+        ));
+        assert_eq!(calls.get(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

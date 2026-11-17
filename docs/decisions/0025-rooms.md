@@ -49,6 +49,15 @@ particulier une par agent :
 - Durabilité « comme git » pour les fichiers projetés depuis le Store (décision
   du 4 novembre 2026) : un fichier abîmé par une coupure apparaît comme une
   modification et se restaure depuis l'historique.
+- Avance rapide sous le contrat de git (décision du 17 novembre 2026,
+  `materialize::direct`) : ni journal ni fsync ; un arrêt brutal peut laisser
+  le dossier en partie à jour, `status` le montre, rien n'est perdu dans le
+  Store. Chaque chemin touché a été prouvé égal à sa base avant (vérification
+  préalable) ; un original est déplacé de côté puis prouvé de nouveau là, sous
+  scellé (identité, longueur, date) ; un original changé entre-temps revient
+  à sa place et l'opération refuse ; un refus avant toute installation remet
+  chaque original à sa place et nomme ceux qu'il n'a pas pu remettre (conseil
+  s21).
 - `room drop` refuse une Room dont des changements ne sont ni capturés ni
   fusionnés, sauf `--force` qui capture d'abord : rien de ce que la capture
   voit n'est effacé sans avoir été conservé dans le Store. Une réécriture qui

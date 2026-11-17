@@ -58,6 +58,10 @@ fn verdict(root: &Path, workspace: &NativeWorkspace) -> (Verdict, bool) {
 fn the_view_decides_clear_cases_and_defers_the_others() {
     let (root, workspace) = workspace("cases");
     assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
+    // A new folder is walked (council s21 r3): empty, it changes nothing.
+    fs::create_dir_all(root.join("empty/deeper")).unwrap();
+    assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
+    fs::remove_dir_all(root.join("empty")).unwrap();
     // Another length: changed without reading.
     fs::write(root.join("d/a.txt"), b"alpha, longer\n").unwrap();
     assert_eq!(verdict(&root, &workspace), (Verdict::Changed, true));
@@ -80,10 +84,10 @@ fn the_view_decides_clear_cases_and_defers_the_others() {
     assert!(verdict(&root, &workspace).1);
     fs::remove_file(root.join(".layrsignore")).unwrap();
     fs::remove_file(root.join("d/new.log")).unwrap();
-    // A new folder: left to the full comparison.
-    fs::create_dir_all(root.join("fresh")).unwrap();
-    fs::write(root.join("fresh/x.txt"), b"x\n").unwrap();
-    assert_eq!(verdict(&root, &workspace), (Verdict::Unknown, true));
+    // A new folder with a file, deep down: a change.
+    fs::create_dir_all(root.join("fresh/deeper")).unwrap();
+    fs::write(root.join("fresh/deeper/x.txt"), b"x\n").unwrap();
+    assert_eq!(verdict(&root, &workspace), (Verdict::Changed, true));
     fs::remove_dir_all(root.join("fresh")).unwrap();
     // A tracked folder replaced by a file of that name.
     fs::remove_dir_all(root.join("d/e")).unwrap();
@@ -109,6 +113,26 @@ fn a_nested_git_entry_is_never_a_change() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A name the scan refuses (not canonical NFC) is never outweighed by a
+/// change found elsewhere (council s21 r3): the view leaves it to the full
+/// path, which reports it, in either order of discovery.
+#[test]
+fn a_refused_name_outweighs_a_change() {
+    let (root, workspace) = workspace("refused-name");
+    fs::write(root.join("b.txt"), b"beta, longer\n").unwrap();
+    for name in ["0e\u{301}.log", "ze\u{301}.log"] {
+        fs::write(root.join("d").join(name), b"decomposed\n").unwrap();
+        let view = StatusView::load(workspace.store_root(), workspace.worktree_id().as_str())
+            .expect("a status view");
+        let checkout = CheckoutReader::open(&root, None).unwrap();
+        assert_eq!(view.verdict(&checkout).unwrap(), Verdict::Unknown, "{name}");
+        assert!(workspace.status_report(true).is_err(), "{name}");
+        assert!(workspace.status_report(false).is_err(), "{name}");
+        fs::remove_file(root.join("d").join(name)).unwrap();
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn an_ignored_new_file_leaves_the_folder_clean() {
     let (root, workspace) = workspace("ignored");
@@ -120,6 +144,10 @@ fn an_ignored_new_file_leaves_the_folder_clean() {
     ));
     assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
     fs::write(root.join("d/new.log"), b"log\n").unwrap();
+    assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
+    // A new folder holding only ignored files changes nothing.
+    fs::create_dir_all(root.join("cache/inner")).unwrap();
+    fs::write(root.join("cache/inner/run.log"), b"log\n").unwrap();
     assert_eq!(verdict(&root, &workspace), (Verdict::Clean, false));
     let _ = fs::remove_dir_all(&root);
 }

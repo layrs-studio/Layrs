@@ -3,19 +3,22 @@
 //! recovery journal or directory syncs.
 //!
 //! Every path the transition touches was checked to hold its exact base
-//! content before this runs (a local change refuses before anything is
-//! written). New files are staged (and their bytes proven) first. The
-//! folder is then written inside the batch's own transaction, once the
-//! batch is validated there with the exclusive Store held (council s21 r1:
-//! a stale or invalid batch refuses before any file moves), right before
-//! its commit. Each original, one at a time, is checked again, moved aside
-//! into the attempt folder and checked once more there: one changed meanwhile
-//! goes back to its path (its edits were never stored), and the transition
-//! refuses. A crash or a failure once files moved leaves the folder partly
-//! at the target while the Worktree's base has not moved: `status` shows
-//! those paths as changes (git leaves the same state); originals moved
-//! aside held base content (in the Store), and the attempt folder is swept
-//! like any unjournaled one.
+//! content before this runs (the precheck; a local change refuses before
+//! anything is written). New files are staged (and their bytes proven)
+//! first. The folder is then written inside the batch's own transaction,
+//! once the batch is validated there with the exclusive Store held (council
+//! s21 r1: a stale or invalid batch refuses before any file moves), right
+//! before its commit. Each original, one at a time, is moved aside into the
+//! attempt folder, sealed and proven there again (council s21 r2): one that
+//! changed since the precheck goes back to its path, and the transition
+//! refuses. A refusal before anything is installed puts every original
+//! back, never over another entry, and names any original it could not
+//! return. Once files are installed, a crash or a failure leaves the folder
+//! partly at the target while the Worktree's base has not moved: `status`
+//! shows those paths as changes (git leaves the same state); the originals
+//! moved aside held base content (in the Store), and the attempt folder is
+//! swept like any unjournaled one. Folders the transition emptied are
+//! removed, as git removes them.
 use super::*;
 
 pub(super) struct DirectCheckout<'a> {
@@ -162,14 +165,36 @@ fn write(
         if let Err(failure) = aside_all() {
             // Nothing installed yet: every original goes back, never over
             // another entry (one that cannot is kept under another name), so
-            // the refusal leaves the folder as it was.
+            // the refusal leaves the folder as it was. One that cannot go
+            // back at all stays in the attempt folder, never removed, and
+            // the error names it (council s21 r3).
+            let mut renamed = Vec::new();
+            let mut kept = Vec::new();
             for (aside, path) in moved.iter().rev() {
+                sealed.retain(|(name, _)| name != aside);
                 match put_back(&checkout, attempt, aside, path) {
-                    Ok(()) => sealed.retain(|(name, _)| name != aside),
-                    Err(_) => crate::perf::count("materialize.direct_not_put_back", 1),
+                    Ok(None) => {}
+                    Ok(Some(name)) => renamed.push(format!("{path} as {name}")),
+                    Err(_) => kept.push(format!("{path} as {aside}")),
                 }
             }
-            return Err(failure);
+            // Every original not back at its own path is named (council
+            // s21 r3).
+            let mut message = failure.to_string();
+            if !renamed.is_empty() {
+                message.push_str(&format!(
+                    "; originals whose path was taken are kept beside it: {}",
+                    renamed.join(", ")
+                ));
+            }
+            if !kept.is_empty() {
+                message.push_str(&format!(
+                    "; originals that could not be put back are kept in {}: {}",
+                    attempt.display_path().display(),
+                    kept.join(", ")
+                ));
+            }
+            return Err(io::Error::new(failure.kind(), message));
         }
         let mut parents: BTreeMap<&str, PinnedDirectory> = BTreeMap::new();
         for path in paths {
@@ -319,22 +344,26 @@ fn write(
 
 /// Puts the original moved aside as `aside` back at `path`, never over
 /// another entry: when the path was taken meanwhile, it is kept next to it
-/// as `<name>.layrs-kept-<ms>`.
+/// as `<name>.layrs-kept-<ms>`, whose name is returned.
 fn put_back(
     checkout: &PinnedDirectory,
     attempt: &PinnedDirectory,
     aside: &str,
     path: &str,
-) -> io::Result<()> {
-    let (parent, name) = checkout.existing_parent(Path::new(path))?;
+) -> io::Result<Option<String>> {
+    // Its folders are made again if the attempt removed them (obstruction
+    // cleanup), never over another entry.
+    let (parent, name) = checkout.components_to_parent_with(Path::new(path), false)?;
+    parent.verify_path_identity()?;
     let original = attempt.open_leaf(aside.as_ref())?;
-    if original.rename_to(&parent, &name)? {
-        let kept = format!("{}.layrs-kept-{}", name.to_string_lossy(), now_ms()?);
-        if original.rename_to(&parent, kept.as_ref())? {
-            return Err(error("a kept original's name is taken"));
-        }
+    if !original.rename_to(&parent, &name)? {
+        return Ok(None);
     }
-    Ok(())
+    let kept = format!("{}.layrs-kept-{}", name.to_string_lossy(), now_ms()?);
+    if original.rename_to(&parent, kept.as_ref())? {
+        return Err(error("a kept original's name is taken"));
+    }
+    Ok(Some(kept))
 }
 
 /// Removes the folders this transition emptied, as git does (council s21

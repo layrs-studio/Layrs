@@ -36,6 +36,10 @@ const KEY_PREFIX: &str = "status:";
 /// The most bytes a stored view may hold (decompressed).
 const MAX_VIEW_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The most entries a view checks under the new folders of one folder;
+/// past it, the full path decides.
+const UNTRACKED_FOLDER_ENTRIES: usize = 256;
+
 /// The largest unproven file a view hashes; a larger one takes the full
 /// path.
 const MAX_HASHED_BYTES: u64 = 64 * 1024 * 1024;
@@ -425,6 +429,7 @@ impl StatusView {
         Ok(match walk.verdict.load(Ordering::Acquire) {
             CLEAN => Verdict::Clean,
             CHANGED => Verdict::Changed,
+            // UNKNOWN, and FALLBACK: the full path decides.
             _ => Verdict::Unknown,
         })
     }
@@ -544,7 +549,14 @@ impl<'a> EntryCursor<'a> {
 
 const CLEAN: u8 = 0;
 const CHANGED: u8 = 1;
+/// The content of an entry is uncertain: a change found elsewhere still
+/// decides.
 const UNKNOWN: u8 = 2;
+/// The full path must decide, whatever else is found (council s21 r3): an
+/// entry the scan may refuse (a name it does not accept, an unexpected kind,
+/// a folder the view does not walk) or a view it cannot trust. It dominates
+/// a change, so `status` never answers where the full comparison fails.
+const FALLBACK: u8 = 3;
 
 /// One parallel comparison of a checkout with a view.
 struct Walk<'a> {
@@ -565,12 +577,30 @@ struct Queue {
 
 impl Walk<'_> {
     fn decide(&self, verdict: u8) {
-        // Changed wins over Unknown: a change is certain, an unknown is not.
+        // Fallback wins over all; Changed over Unknown (a change is certain,
+        // an unknown is not); either over Clean.
+        let rank = |verdict: u8| match verdict {
+            CLEAN => 0,
+            UNKNOWN => 1,
+            CHANGED => 2,
+            _ => 3,
+        };
         let _ = self
             .verdict
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current == CLEAN || (current == UNKNOWN && verdict == CHANGED)).then_some(verdict)
+                (rank(verdict) > rank(current)).then_some(verdict)
             });
+    }
+
+    /// Whether nothing found later can change the verdict: the walk stops.
+    fn settled(&self) -> bool {
+        self.verdict.load(Ordering::Acquire) == FALLBACK
+    }
+
+    /// Whether a change was found: content need not be read any more, but
+    /// every entry is still listed, for what would make the scan refuse.
+    fn changed(&self) -> bool {
+        matches!(self.verdict.load(Ordering::Relaxed), CHANGED | FALLBACK)
     }
 
     fn work(&self) {
@@ -580,7 +610,7 @@ impl Walk<'_> {
             let folder = {
                 let mut work = self.work.lock().unwrap_or_else(PoisonError::into_inner);
                 loop {
-                    if self.verdict.load(Ordering::Acquire) == CHANGED {
+                    if self.settled() {
                         return;
                     }
                     if let Some(folder) = work.folders.pop() {
@@ -597,14 +627,12 @@ impl Walk<'_> {
             };
             let children = self.compare(&folder).unwrap_or_else(|_| {
                 // The full path reports the error itself.
-                self.decide(UNKNOWN);
+                self.decide(FALLBACK);
                 Vec::new()
             });
             let mut work = self.work.lock().unwrap_or_else(PoisonError::into_inner);
             work.pending = work.pending + children.len() - 1;
-            let wake = !children.is_empty()
-                || work.pending == 0
-                || self.verdict.load(Ordering::Acquire) == CHANGED;
+            let wake = !children.is_empty() || work.pending == 0 || self.settled();
             work.folders.extend(children);
             drop(work);
             if wake {
@@ -625,21 +653,21 @@ impl Walk<'_> {
         for entry in fs::read_dir(&disk)? {
             let entry = entry?;
             let Ok(name) = entry.file_name().into_string() else {
-                self.decide(UNKNOWN);
+                self.decide(FALLBACK);
                 return Ok(Vec::new());
             };
             listed.push((name, entry.metadata()?));
         }
         listed.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         let Some(mut base) = self.view.folder(folder) else {
-            self.decide(UNKNOWN);
+            self.decide(FALLBACK);
             return Ok(Vec::new());
         };
         let mut children = Vec::new();
         let mut listed = listed.into_iter().peekable();
         let mut next_base = base.next();
         loop {
-            if self.verdict.load(Ordering::Relaxed) == CHANGED {
+            if self.settled() {
                 return Ok(Vec::new());
             }
             let order = match (listed.peek(), &next_base) {
@@ -656,10 +684,11 @@ impl Walk<'_> {
                     let (name, metadata) = listed.next().expect("peeked");
                     self.untracked(folder, &name, &metadata);
                 }
-                // In the base only: a tracked path is gone.
+                // In the base only: a tracked path is gone. The rest of the
+                // folder is still listed.
                 std::cmp::Ordering::Greater => {
                     self.decide(CHANGED);
-                    return Ok(Vec::new());
+                    next_base = base.next();
                 }
                 std::cmp::Ordering::Equal => {
                     let (name, metadata) = listed.next().expect("peeked");
@@ -673,7 +702,7 @@ impl Walk<'_> {
         }
         if base.left != 0 {
             // A malformed folder: decided by the full path.
-            self.decide(UNKNOWN);
+            self.decide(FALLBACK);
         }
         Ok(children)
     }
@@ -698,21 +727,80 @@ impl Walk<'_> {
         let canonical =
             layrs_core::scm::RepoPath::parse(&path).is_ok_and(|parsed| parsed.as_str() == path);
         if !canonical {
-            self.decide(UNKNOWN);
+            self.decide(FALLBACK);
             return;
         }
         if self.ignored.ignores(&path, metadata.is_dir()) {
             if metadata.is_dir() && self.ignored.has_exceptions {
-                self.decide(UNKNOWN);
+                self.decide(FALLBACK);
             }
             return;
         }
-        // A new regular file is a change; anything else is left to the full
-        // path.
+        // A new regular file is a change; a new folder is walked (bounded);
+        // anything else is left to the full path.
         if metadata.is_file() && !reparse(metadata) {
             self.decide(CHANGED);
+        } else if metadata.is_dir() && !reparse(metadata) {
+            let mut budget = UNTRACKED_FOLDER_ENTRIES;
+            self.untracked_folder(&path, &mut budget);
         } else {
-            self.decide(UNKNOWN);
+            self.decide(FALLBACK);
+        }
+    }
+
+    /// A folder the base does not have (council s21 r3): it changes nothing
+    /// when it is empty or holds only ignored entries (captures keep no
+    /// empty folder), as a folder emptied of tracked files that keeps an
+    /// ignored cache. Its entries are checked as the scan checks them, up to
+    /// `budget` of them; past it, the full path decides.
+    fn untracked_folder(&self, path: &str, budget: &mut usize) {
+        let Ok(entries) = fs::read_dir(self.root.join(path)) else {
+            self.decide(FALLBACK);
+            return;
+        };
+        for entry in entries {
+            if self.settled() {
+                return;
+            }
+            let Some(left) = budget.checked_sub(1) else {
+                self.decide(FALLBACK);
+                return;
+            };
+            *budget = left;
+            let Ok(entry) = entry else {
+                self.decide(FALLBACK);
+                return;
+            };
+            let (Ok(name), Ok(metadata)) = (entry.file_name().into_string(), entry.metadata())
+            else {
+                self.decide(FALLBACK);
+                return;
+            };
+            if name.eq_ignore_ascii_case(".layrs") || name.eq_ignore_ascii_case(".git") {
+                continue;
+            }
+            let child = Self::path(path, &name);
+            let canonical = layrs_core::scm::RepoPath::parse(&child)
+                .is_ok_and(|parsed| parsed.as_str() == child);
+            if !canonical {
+                self.decide(FALLBACK);
+                return;
+            }
+            if self.ignored.ignores(&child, metadata.is_dir()) {
+                if metadata.is_dir() && self.ignored.has_exceptions {
+                    self.decide(FALLBACK);
+                    return;
+                }
+                continue;
+            }
+            if metadata.is_file() && !reparse(&metadata) {
+                self.decide(CHANGED);
+            } else if metadata.is_dir() && !reparse(&metadata) {
+                self.untracked_folder(&child, budget);
+            } else {
+                self.decide(FALLBACK);
+                return;
+            }
         }
     }
 
@@ -729,18 +817,21 @@ impl Walk<'_> {
                 if metadata.is_dir() && !reparse(metadata) {
                     return Ok(Some(Self::path(folder, name)));
                 }
-                self.decide(UNKNOWN);
+                self.decide(FALLBACK);
             }
             Entry::Symlink(target) => {
                 if !metadata.file_type().is_symlink() {
-                    self.decide(UNKNOWN);
+                    self.decide(FALLBACK);
+                    return Ok(None);
+                }
+                if self.changed() {
                     return Ok(None);
                 }
                 let disk = self.root.join(Self::path(folder, name));
                 match fs::read_link(&disk)?.to_str() {
                     Some(listed) if listed == target => {}
                     Some(_) => self.decide(CHANGED),
-                    None => self.decide(UNKNOWN),
+                    None => self.decide(FALLBACK),
                 }
             }
             Entry::File {
@@ -750,7 +841,7 @@ impl Walk<'_> {
                 file,
             } => {
                 if !metadata.is_file() || reparse(metadata) {
-                    self.decide(UNKNOWN);
+                    self.decide(FALLBACK);
                     return Ok(None);
                 }
                 if executable(metadata) != base_executable {
@@ -780,15 +871,21 @@ impl Walk<'_> {
                     _ => {
                         if stat.length != length {
                             self.decide(CHANGED);
+                        } else if self.changed() {
+                            // Already changed: its content does not matter.
                         } else if let Some(base) = file.filter(|_| length <= MAX_HASHED_BYTES) {
                             let disk = self.root.join(Self::path(folder, name));
-                            let bytes = fs::read(&disk)?;
-                            crate::perf::count("status_view.hashed", 1);
-                            if bytes.len() as u64 != length
-                                || layrs_core::scm::FileId::from_bytes(&bytes).digest_bytes()
-                                    != base
-                            {
-                                self.decide(CHANGED);
+                            match read_regular(&disk, length)? {
+                                Some(bytes) => {
+                                    crate::perf::count("status_view.hashed", 1);
+                                    if layrs_core::scm::FileId::from_bytes(&bytes).digest_bytes()
+                                        != base
+                                    {
+                                        self.decide(CHANGED);
+                                    }
+                                }
+                                // No longer that regular file: the full path.
+                                None => self.decide(UNKNOWN),
                             }
                         } else {
                             self.decide(UNKNOWN);
@@ -799,6 +896,39 @@ impl Walk<'_> {
         }
         Ok(None)
     }
+}
+
+/// The bytes of the regular file at `path` when it is one of exactly
+/// `length` bytes (council s21 r3): opened without following a link, never
+/// blocking on a special file, its kind and length checked on the opened
+/// handle, and never more than `length` bytes read. `None` otherwise.
+fn read_regular(path: &Path, length: u64) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: the link itself, never its target.
+        options.custom_flags(0x0020_0000);
+    }
+    let Ok(file) = options.open(path) else {
+        return Ok(None);
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || reparse(&metadata) || metadata.len() != length {
+        return Ok(None);
+    }
+    let capacity = usize::try_from(length).map_err(io::Error::other)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(length.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 == length).then_some(bytes))
 }
 
 fn executable(metadata: &fs::Metadata) -> bool {

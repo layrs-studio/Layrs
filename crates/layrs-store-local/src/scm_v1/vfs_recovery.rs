@@ -119,18 +119,26 @@ fn remove_pinned_tree(parent: &PinnedDirectory, name: &std::ffi::OsStr) -> io::R
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
+    remove_pinned_contents(&directory)?;
+    drop(directory);
+    parent.remove_empty_child(name)
+}
+
+/// Removes everything inside `directory` through its pinned handle: each
+/// entry is named relative to that handle, never by a path that could lead
+/// elsewhere.
+pub(super) fn remove_pinned_contents(directory: &PinnedDirectory) -> io::Result<()> {
     directory.verify_path_identity()?;
     for entry in std::fs::read_dir(directory.display_path())? {
         let entry = entry?;
         let kind = entry.file_type()?;
         if kind.is_dir() && !kind.is_symlink() {
-            remove_pinned_tree(&directory, &entry.file_name())?;
+            remove_pinned_tree(directory, &entry.file_name())?;
         } else {
             directory.unlink_file(&entry.file_name())?;
         }
     }
-    drop(directory);
-    parent.remove_empty_child(name)
+    Ok(())
 }
 
 /// Retry only typed transient contention. Identity checks are performed on the

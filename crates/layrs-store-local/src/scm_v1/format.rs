@@ -355,6 +355,38 @@ pub fn init(
 /// `init` creating a Store of an explicit supported format (2, 5, 6 or 7)
 /// instead of the one `LAYRS_STORE_FORMAT` selects. Resuming an interrupted
 /// initialization still keeps the version of its marker.
+/// Removes the folder `parent/name`, which the caller created and gives up
+/// (a refused `init`), through pinned handles only (council s21 r1 to r3).
+/// The folder is pinned and must have identity `identity` when one is
+/// given; `owned` then reads it at its path (checked afterwards to still
+/// name the pinned folder) and answers `None` (not the caller's: kept),
+/// `Some(false)` (removed only while empty) or `Some(true)` (its contents
+/// removed through that very handle). The name itself is only ever removed
+/// once empty, so whatever replaces the folder meanwhile is never removed.
+/// Returns whether it is gone.
+pub fn remove_owned_folder(
+    parent: &Path,
+    name: &std::ffi::OsStr,
+    identity: Option<&str>,
+    owned: impl FnOnce(&Path) -> Option<bool>,
+) -> io::Result<bool> {
+    let parent = crate::secure_fs::PinnedDirectory::open(parent)?;
+    let folder = parent.open_child(name)?;
+    if identity.is_some_and(|identity| identity != folder.identity_token()) {
+        return Ok(false);
+    }
+    let Some(contents) = owned(folder.display_path()) else {
+        return Ok(false);
+    };
+    folder.verify_path_identity()?;
+    if contents {
+        super::vfs_recovery::remove_pinned_contents(&folder)?;
+    }
+    drop(folder);
+    parent.remove_empty_child(name)?;
+    Ok(true)
+}
+
 pub fn init_with_format(
     root: impl AsRef<Path>,
     store_id: StoreId,
@@ -925,5 +957,38 @@ mod open_timing {
             total.elapsed().as_secs_f64() * 1e6 / f64::from(rounds)
         );
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod owned_folder_tests {
+    use super::*;
+
+    /// A refused `init` removes only its own Store, through pinned handles
+    /// (council s21 r3).
+    #[test]
+    fn only_an_owned_folder_is_removed() {
+        let parent = std::env::temp_dir().join(format!(
+            "layrs-owned-folder-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(parent.join("a/sub")).unwrap();
+        fs::write(parent.join("a/x"), b"x").unwrap();
+        fs::write(parent.join("a/sub/y"), b"y").unwrap();
+        let name = std::ffi::OsStr::new("a");
+        // Not the caller's, or another folder: kept.
+        assert!(!remove_owned_folder(&parent, name, None, |_| None).unwrap());
+        assert!(!remove_owned_folder(&parent, name, Some("fs:v1:0:0"), |_| Some(true)).unwrap());
+        // Only while empty: refused, kept.
+        assert!(remove_owned_folder(&parent, name, None, |_| Some(false)).is_err());
+        assert!(parent.join("a/sub/y").exists());
+        // The caller's: removed with its contents.
+        assert!(remove_owned_folder(&parent, name, None, |_| Some(true)).unwrap());
+        assert!(!parent.join("a").exists());
+        fs::remove_dir_all(&parent).unwrap();
     }
 }
