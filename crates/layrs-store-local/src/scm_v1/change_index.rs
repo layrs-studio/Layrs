@@ -2,9 +2,11 @@
 //! that lets a capture recognise an unchanged regular file from its directory
 //! listing metadata without reopening it, like git's index.
 //!
-//! An entry only ever records content that was proven: hashed by an accepted
-//! capture, or written by a materialization while it held the file with
-//! exclusive write sharing. It is trusted again only when the listed stat key
+//! An entry only ever records content that was proven: hashed by a capture
+//! (recorded while it is accepted, every entry bound to the projection of
+//! the Tree it builds, so trusted only once that Tree is admitted and its
+//! projection supplied again; council s23 review r3), or written by a
+//! materialization while it held the file with exclusive write sharing. It is trusted again only when the listed stat key
 //! is identical and the file's modification time precedes the moment of proof
 //! by at least the volume's timestamp margin (otherwise the entry is "racy",
 //! as in git, and the file is read again). A missing index disables the
@@ -565,6 +567,17 @@ impl ChangeIndex {
     pub fn entry(&self, path: &str) -> Option<&IndexEntry> {
         self.entries.get(path)?.known()
     }
+    /// Whether every entry is bound to the bound projection (a capture's
+    /// next index, recorded before its acceptance ends, must be: an unbound
+    /// entry would vouch for content the Store may never receive).
+    pub fn every_entry_bound(&self) -> bool {
+        self.binding.is_some()
+            && self
+                .entries
+                .values()
+                .all(|slot| matches!(slot, Slot::Known { bound: true, .. }))
+    }
+
     /// Same recorded entries and binding (and so nothing to write).
     pub fn same_entries(&self, other: &Self) -> bool {
         self.worktree_id == other.worktree_id

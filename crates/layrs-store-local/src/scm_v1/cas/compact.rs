@@ -61,6 +61,33 @@ pub(crate) struct LoadedPack {
     /// Raw id of each file record's recipe manifest, computed on first use
     /// from the record's metadata (never from its bytes).
     manifest_digests: Vec<OnceLock<[u8; 32]>>,
+    /// A pack file's length and date when its index was read: the process
+    /// cache serves it only while its file still has them.
+    stamp: Option<FileStamp>,
+}
+
+/// A file's length and last write time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
+
+/// The packs directory as one catalog load reads it: pinned once, and each
+/// pack file's stamp listed once (`None` when it cannot be listed).
+#[derive(Default)]
+pub(super) struct PacksDirectory {
+    pinned: std::cell::OnceCell<PinnedDirectory>,
+    listing: std::cell::OnceCell<Option<HashMap<OsString, FileStamp>>>,
 }
 
 impl fmt::Debug for LoadedPack {
@@ -297,6 +324,7 @@ impl NativeCas {
             index,
             image: Some(image),
             manifest_digests,
+            stamp: None,
         });
         if fresh {
             return Ok(pack);
@@ -315,7 +343,7 @@ impl NativeCas {
     /// filled is seen.
     fn loaded_pack_in(
         &self,
-        packs: &std::cell::OnceCell<PinnedDirectory>,
+        packs: &PacksDirectory,
         name: &OsStr,
         fresh: bool,
     ) -> CasResult<Arc<LoadedPack>> {
@@ -323,14 +351,46 @@ impl NativeCas {
         if fresh {
             return self.load_pack_from_disk(packs, name).map(Arc::new);
         }
+        // A cached pack whose file has changed or gone since its index was
+        // read (council s23 review r3) is read again from disk: a missing or
+        // damaged one then fails to load, so the catalog counts it damaged
+        // and no positive answer comes from it, as in a fresh process. The
+        // directory is listed once per catalog load.
+        let listing = || {
+            packs.listing.get_or_init(|| {
+                let directory = self.objects_dir.join(PACKS_DIR);
+                fs::read_dir(&directory).ok().map(|entries| {
+                    entries
+                        .filter_map(|entry| {
+                            let entry = entry.ok()?;
+                            let metadata = entry.metadata().ok()?;
+                            Some((entry.file_name(), FileStamp::of(&metadata)))
+                        })
+                        .collect()
+                })
+            })
+        };
+        let unchanged = |pack: &LoadedPack| {
+            pack.stamp.is_some_and(|stamp| {
+                listing()
+                    .as_ref()
+                    .is_some_and(|listing| listing.get(name) == Some(&stamp))
+            })
+        };
         // Only a cached pack file: a pack is served only in the form its
         // registration declares (an inline pack is never its file).
         let cached = || {
-            pack_cache()
-                .lock()
-                .ok()
-                .and_then(|cache| cache.get(&key).cloned())
-                .filter(|pack| pack.image.is_none())
+            let mut cache = pack_cache().lock().ok()?;
+            let pack = cache
+                .get(&key)
+                .cloned()
+                .filter(|pack| pack.image.is_none())?;
+            if unchanged(&pack) {
+                return Some(pack);
+            }
+            crate::perf::count("cas.pack_cache_stale", 1);
+            cache.remove(&key);
+            None
         };
         if let Some(pack) = cached() {
             self.check_pack_version(&pack.index, &pack.path)?;
@@ -351,27 +411,25 @@ impl NativeCas {
         Ok(pack)
     }
 
-    fn load_pack_from_disk(
-        &self,
-        packs: &std::cell::OnceCell<PinnedDirectory>,
-        name: &OsStr,
-    ) -> CasResult<LoadedPack> {
+    fn load_pack_from_disk(&self, packs: &PacksDirectory, name: &OsStr) -> CasResult<LoadedPack> {
         let _span = crate::perf::span("cas.pack_load");
         let directory = self.objects_dir.join(PACKS_DIR);
         let path = directory.join(name);
-        let packs = match packs.get() {
+        let packs = match packs.pinned.get() {
             Some(packs) => packs,
             None => {
                 let opened = self
                     .pinned_objects_for_read()?
                     .open_child(OsStr::new(PACKS_DIR))
                     .map_err(|error| missing_or_io("pin CAS packs", &directory, error))?;
-                packs.get_or_init(|| opened)
+                packs.pinned.get_or_init(|| opened)
             }
         };
         let file = packs
             .open_file(name)
             .map_err(|error| missing_or_io("open CAS pack", &path, error))?;
+        // Taken before the index is read: a write meanwhile changes it.
+        let stamp = file.file().metadata().ok().map(|m| FileStamp::of(&m));
         let parse = crate::perf::span("cas.pack_index");
         let index = pack2::load(file.file(), &path)?;
         drop(parse);
@@ -384,6 +442,7 @@ impl NativeCas {
             index,
             image: None,
             manifest_digests,
+            stamp,
         })
     }
 
@@ -1236,7 +1295,7 @@ impl NativeCas {
                 .inline_pack(&pack.0, Arc::from(image.as_slice()), true)
                 .map_err(general)?,
             None => Arc::new(
-                self.load_pack_from_disk(&std::cell::OnceCell::new(), &pack.0)
+                self.load_pack_from_disk(&PacksDirectory::default(), &pack.0)
                     .map_err(general)?,
             ),
         };
@@ -1361,7 +1420,7 @@ impl NativeCas {
             .map(OsStr::to_os_string)
             .ok_or_else(|| general(pack2::pack2_corruption(&open.path, "no file name")))?;
         let new = self
-            .load_pack_from_disk(&std::cell::OnceCell::new(), &temporary)
+            .load_pack_from_disk(&PacksDirectory::default(), &temporary)
             .map_err(general)?;
         // The file read back is the one written and verified (council s19
         // r2): its index digest is the sealed one.
@@ -1743,7 +1802,7 @@ impl RegisteredRow {
     fn load(
         &self,
         cas: &NativeCas,
-        packs: &std::cell::OnceCell<PinnedDirectory>,
+        packs: &PacksDirectory,
         fresh: bool,
     ) -> CasResult<Arc<LoadedPack>> {
         let corrupt = |reason: &str| pack2::pack2_corruption(&self.location(cas), reason);
@@ -2026,7 +2085,7 @@ impl RegisteredCatalog {
         let mut packs = Vec::with_capacity(rows.len());
         let mut damaged = Vec::new();
         let mut registered_rows = Vec::with_capacity(rows.len());
-        let packs_directory = std::cell::OnceCell::new();
+        let packs_directory = PacksDirectory::default();
         // The process cache keeps only this Store's registered packs: one a
         // consolidation retired (here or in another process) is forgotten.
         if let Ok(mut cache) = pack_cache().lock() {
@@ -2186,7 +2245,7 @@ impl RegisteredCatalog {
             .ok()?
             .collect::<rusqlite::Result<_>>()
             .ok()?;
-        let packs = std::cell::OnceCell::new();
+        let packs = PacksDirectory::default();
         for (seq, name, digest, entries, form) in rows {
             let image = if form == 1 {
                 let image: Vec<u8> = connection
@@ -2226,18 +2285,6 @@ impl RegisteredCatalog {
     /// The first unreadable registered pack, if any.
     pub(crate) fn damage(&self) -> Option<&CasError> {
         self.damaged.first().map(|(_, error)| error)
-    }
-
-    /// Whether every registered pack file still exists where it was loaded
-    /// from (council s23 review r2): a pack whose index this process cached
-    /// is not read again, so a file deleted since would only be seen as
-    /// damaged by a fresh process.
-    pub(crate) fn pack_files_present(&self) -> bool {
-        self.fresh
-            || self
-                .packs
-                .iter()
-                .all(|pack| pack.pack.image.is_some() || pack.pack.path.exists())
     }
 
     /// `Ok(value)` when the catalog answers exactly about `keys` (the
@@ -3878,7 +3925,7 @@ impl RegisteredCatalog {
                         })),
                 }
             } else {
-                row.load(cas, &std::cell::OnceCell::new(), true)
+                row.load(cas, &PacksDirectory::default(), true)
                     .and_then(|pack| {
                         check_registration(&pack, &row.name, &row.digest, row.entries)
                             .map(|()| pack)

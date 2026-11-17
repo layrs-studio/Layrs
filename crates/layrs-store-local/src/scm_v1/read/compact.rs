@@ -43,10 +43,10 @@ impl NativeScmReader<'_> {
         if !self.compact() {
             return Ok(false);
         }
-        let catalog = self.catalog()?;
-        // A cached pack whose file is gone is damaged too (council s23
-        // review r2), as a fresh process would find it.
-        Ok(catalog.damage().is_some() || !catalog.pack_files_present())
+        // A cached pack whose file has changed or gone since this process
+        // read its index is read again when the catalog loads, and counts
+        // as damaged if it no longer loads (council s23 review r3).
+        Ok(self.catalog()?.damage().is_some())
     }
 
     /// Whether a readable copy of `id` is stored: a readable registered pack

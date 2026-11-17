@@ -119,6 +119,95 @@ fn operation_reachability_caches_bounded_closure_for_thousands_of_observations()
     cleanup(&root);
 }
 
+/// Bounded admission walks the new Steps below each descendant once, and
+/// the new Steps a View reaches once (council s23 review r3): a long new
+/// chain under many sibling heads, and many observations of its first Step,
+/// stay within the ancestry budgets the complete resolver stays within.
+#[test]
+fn bounded_ancestry_walks_a_long_new_chain_once_for_many_questions() {
+    use layrs_core::scm::AdmissionResolver;
+    let root = unique_root("bounded-ancestry-scale");
+    let fixture = fixture();
+    seed(&root, &fixture);
+    let store = open(&root).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    let empty = Tree::new(vec![]).unwrap();
+    let mut objects = vec![CanonicalObject::Tree(empty.clone())];
+    // A chain on a durable Step of the fixture.
+    let durable = fixture.observation.step_id().clone();
+    let mut chain: Vec<StepId> = Vec::new();
+    for _ in 0..2400 {
+        let parent = chain.last().unwrap_or(&durable).clone();
+        let step = Step::new(vec![parent], empty.id().clone()).unwrap();
+        chain.push(step.id().clone());
+        objects.push(CanonicalObject::Step(step));
+    }
+    // Forty distinct sibling heads on the chain's tip.
+    let mut heads: Vec<StepId> = Vec::new();
+    for sibling in 0..40 {
+        let tree = Tree::new(vec![TreeEntry::new(
+            RepoPathComponent::parse(format!("sibling-{sibling}")).unwrap(),
+            TreeEntryTarget::tree(empty.id().clone()),
+            false,
+        )])
+        .unwrap();
+        let step = Step::new(vec![chain.last().unwrap().clone()], tree.id().clone()).unwrap();
+        heads.push(step.id().clone());
+        objects.push(CanonicalObject::Tree(tree));
+        objects.push(CanonicalObject::Step(step));
+    }
+    heads.sort();
+    let view = RepositoryView::new(
+        fixture.space.id().clone(),
+        vec![LayerHeadSet::new(fixture.layer.id().clone(), heads.clone()).unwrap()],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let operation = Operation::new(
+        OperationId::parse("operation:bounded-ancestry-scale").unwrap(),
+        fixture.space.id().clone(),
+        vec![fixture.operation.id().clone()],
+        view.id().clone(),
+        OperationKind::ReceiveRemoteState,
+        "import",
+        vec![],
+        None,
+        None,
+        Timestamp::parse("2026-07-19T12:01:00Z").unwrap(),
+        Metadata::empty(),
+    )
+    .unwrap();
+    objects.push(CanonicalObject::RepositoryView(view));
+    let batch = WriteBatch::new(
+        transaction("bounded-ancestry-scale"),
+        objects,
+        vec![EntityRecord::Operation(operation.clone())],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let resolver = CompositeAdmissionResolver::bounded(&reader, &batch).unwrap();
+    // The antichain check of the View's heads: every ordered pair.
+    for a in &heads {
+        for b in &heads {
+            assert!(!resolver.is_step_ancestor(a, b));
+        }
+    }
+    // Many observations of the chain's first Step.
+    for _ in 0..3000 {
+        assert!(resolver.operation_reaches_step(operation.id(), &chain[0]));
+    }
+    // Still within budget: a true answer is still found.
+    assert!(resolver.is_step_ancestor(&chain[0], heads.last().unwrap()));
+    assert!(resolver.is_step_ancestor(&durable, heads.first().unwrap()));
+    drop(resolver);
+    drop(reader);
+    drop(store);
+    cleanup(&root);
+}
+
 #[test]
 fn admissions_require_real_objects_and_complete_overlay_durable_closure() {
     let root = unique_root("admission-closure");

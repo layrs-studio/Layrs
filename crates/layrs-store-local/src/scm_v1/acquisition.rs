@@ -9,6 +9,25 @@ use std::{
 pub(super) const ORDINARY_WAIT: Duration = Duration::from_secs(60);
 pub(super) const SHORT_WAIT: Duration = Duration::from_secs(5);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(2);
+
+/// `ORDINARY_WAIT`, a repository's budget to take the Store. Debug builds
+/// can shorten it (`LAYRS_TEST_ACQUISITION_MS`): a test of a write refused
+/// while another session holds the Store need not wait a minute.
+pub(super) fn ordinary_wait() -> Duration {
+    #[cfg(debug_assertions)]
+    {
+        static WAIT: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+        if let Some(wait) = *WAIT.get_or_init(|| {
+            std::env::var("LAYRS_TEST_ACQUISITION_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(Duration::from_millis)
+        }) {
+            return wait;
+        }
+    }
+    ORDINARY_WAIT
+}
 const MAX_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Ordinary facade reads may wait for a legitimate full acceptance. Each raw

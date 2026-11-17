@@ -765,6 +765,10 @@ impl NativeWorkspace {
                             scope.spawn(move || {
                                 let _span = layrs_store_local::perf::span("capture.index_record");
                                 let mut next = next.build(previous, pending);
+                                debug_assert!(
+                                    next.every_entry_bound(),
+                                    "a capture's index recorded before its acceptance ends is bound"
+                                );
                                 next.set_base_step(change.step_id());
                                 // An idle capture that proved nothing new
                                 // writes nothing.

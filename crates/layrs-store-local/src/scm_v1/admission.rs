@@ -94,7 +94,16 @@ pub struct CompositeAdmissionResolver<'a> {
     /// Per observed Operation, the Steps reached from its resulting heads
     /// and those still to walk (bounded mode).
     observation_walks: Mutex<HashMap<RepositoryViewId, ObservationWalk>>,
+    /// Per resulting View, the new Steps its new heads reach (bounded mode;
+    /// council s23 review r3).
+    new_observation_walks: Mutex<HashMap<RepositoryViewId, std::sync::Arc<HashSet<StepId>>>>,
+    /// Per new Step asked about, the new Steps below it and the durable
+    /// Steps they rest on (bounded mode; council s23 review r3).
+    new_below: Mutex<HashMap<StepId, std::sync::Arc<NewBelow>>>,
 }
+
+/// The new Steps below a new Step, and the durable Steps they rest on.
+type NewBelow = (HashSet<StepId>, Vec<StepId>);
 
 /// The memo scope of the Store `store_id` at `root` (`with_memo_scope`).
 /// The Steps one Operation's observations reached from its resulting
@@ -325,6 +334,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
             new_step_ranks,
             lazy_frontier,
             observation_walks: Mutex::new(HashMap::new()),
+            new_observation_walks: Mutex::new(HashMap::new()),
+            new_below: Mutex::new(HashMap::new()),
         })
     }
 
@@ -395,11 +406,16 @@ impl<'a> CompositeAdmissionResolver<'a> {
                         );
                     }
                 }
-                // History beyond the complete resolver's bounds, or history
+                // History beyond the complete resolver's bounds, history
                 // its graph replay rejects (the integration order of
-                // `OperationDag::from_history`, a known defect): no verdict.
-                Err(StoreError::AdmissionBudgetExceeded { .. } | StoreError::Corruption { .. }) => {
-                }
+                // `OperationDag::from_history`, a known defect), or durable
+                // history it cannot load (damage bounded admission trusts
+                // by design; council s23 review r3): no verdict.
+                Err(
+                    StoreError::AdmissionBudgetExceeded { .. }
+                    | StoreError::Corruption { .. }
+                    | StoreError::NotFound { .. },
+                ) => {}
                 Err(error) => assert!(
                     result.is_err(),
                     "bounded admission accepts a batch the complete resolver refuses: {error:?}"
@@ -1229,8 +1245,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
 
     /// Ancestry without the Step DAG (council s23): a Step this batch
     /// introduces is never an ancestor of a durable one; otherwise the new
-    /// Steps are walked down to their durable parents, and the reader walks
-    /// durable history from there.
+    /// Steps below the descendant (found once per descendant) and the
+    /// durable history they rest on are walked, every Step visited charged
+    /// to the ancestor relations budget (council s23 review r3).
     fn bounded_is_step_ancestor(&self, ancestor: &StepId, descendant: &StepId) -> Result<bool> {
         if ancestor == descendant {
             return Ok(false);
@@ -1240,7 +1257,7 @@ impl<'a> CompositeAdmissionResolver<'a> {
             return if new_ancestor {
                 Ok(false)
             } else {
-                self.reader.is_step_ancestor(ancestor, descendant)
+                self.durable_reaches(ancestor, [descendant.clone()])
             };
         }
         // Both new: a topological order of the new Steps answers the
@@ -1254,24 +1271,91 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 return Ok(false);
             }
         }
+        let below = self.new_below(descendant)?;
+        if new_ancestor {
+            return Ok(below.0.contains(ancestor));
+        }
+        // A durable ancestor: one of the durable Steps the new ones rest on,
+        // or below them.
+        if below.1.contains(ancestor) {
+            return Ok(true);
+        }
+        self.durable_reaches(ancestor, below.1.iter().cloned())
+    }
+
+    /// The new Steps below the new Step `descendant`, and the durable Steps
+    /// they rest on: walked once per descendant, each new Step charged.
+    fn new_below(&self, descendant: &StepId) -> Result<std::sync::Arc<NewBelow>> {
+        let poisoned = || StoreError::Backend {
+            message: "new Step ancestry poisoned".into(),
+        };
+        if let Some(found) = self
+            .new_below
+            .lock()
+            .map_err(|_| poisoned())?
+            .get(descendant)
+        {
+            return Ok(std::sync::Arc::clone(found));
+        }
+        let mut new = HashSet::new();
+        let mut durable = Vec::new();
         let mut seen = HashSet::new();
         let mut pending = vec![descendant];
         while let Some(id) = pending.pop() {
             let relations = self.ancestor_relations.fetch_add(1, Ordering::Relaxed) + 1;
             require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
             let Some(step) = self.new_steps.get(id) else {
-                // A durable Step: a new ancestor cannot be below it.
-                if !new_ancestor && self.reader.is_step_ancestor(ancestor, id)? {
-                    return Ok(true);
-                }
                 continue;
             };
+            for parent in step.parent_step_ids() {
+                if !seen.insert(parent) {
+                    continue;
+                }
+                if self.new_steps.contains_key(parent) {
+                    new.insert(parent.clone());
+                    pending.push(parent);
+                } else {
+                    durable.push(parent.clone());
+                }
+            }
+        }
+        let found = std::sync::Arc::new((new, durable));
+        self.new_below
+            .lock()
+            .map_err(|_| poisoned())?
+            .insert(descendant.clone(), std::sync::Arc::clone(&found));
+        Ok(found)
+    }
+
+    /// Whether the durable `ancestor` is strictly below one of the durable
+    /// Steps `from`: one walk of durable history shared by all of them,
+    /// each Step visited charged to the ancestor relations budget (council
+    /// s23 review r3). A Step it cannot read is corruption.
+    fn durable_reaches(
+        &self,
+        ancestor: &StepId,
+        from: impl IntoIterator<Item = StepId>,
+    ) -> Result<bool> {
+        let mut seen = HashSet::new();
+        let mut pending: Vec<StepId> = from.into_iter().collect();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let relations = self.ancestor_relations.fetch_add(1, Ordering::Relaxed) + 1;
+            require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
+            let step = self
+                .reader
+                .get_step(&id)?
+                .ok_or_else(|| StoreError::Corruption {
+                    message: format!("Step DAG references Step {id} that cannot be read"),
+                })?;
             for parent in step.parent_step_ids() {
                 if parent == ancestor {
                     return Ok(true);
                 }
-                if seen.insert(parent) {
-                    pending.push(parent);
+                if !seen.contains(parent) {
+                    pending.push(parent.clone());
                 }
             }
         }
@@ -1279,9 +1363,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
     }
 
     /// `operation_reaches_step` without the Step DAG: equality with a head
-    /// first, then one walk per Operation down from its resulting heads,
-    /// shared by all its observations and charged as the complete
-    /// resolver's union closure is (council s23 review r1).
+    /// first, then one walk per resulting View down from its heads, shared
+    /// by all its observations and charged as the complete resolver's
+    /// union closure is (council s23 review r1).
     fn bounded_operation_reaches<'h>(
         &self,
         view: &RepositoryViewId,
@@ -1292,29 +1376,10 @@ impl<'a> CompositeAdmissionResolver<'a> {
             return Ok(true);
         }
         // A durable Step never leads to a new one: for a new Step, only the
-        // new Steps are walked (council s23 review r2).
+        // new Steps are walked (council s23 review r2), once per resulting
+        // View and charged (council s23 review r3).
         if self.new_steps.contains_key(step) {
-            let mut seen = HashSet::new();
-            let mut pending: Vec<&StepId> = heads
-                .filter(|head| self.new_steps.contains_key(*head))
-                .collect();
-            while let Some(id) = pending.pop() {
-                if id == step {
-                    return Ok(true);
-                }
-                if !seen.insert(id) {
-                    continue;
-                }
-                if let Some(value) = self.new_steps.get(id) {
-                    pending.extend(
-                        value
-                            .parent_step_ids()
-                            .iter()
-                            .filter(|parent| self.new_steps.contains_key(*parent)),
-                    );
-                }
-            }
-            return Ok(false);
+            return Ok(self.new_reached_from(view, heads)?.contains(step));
         }
         let mut walks = self
             .observation_walks
@@ -1347,10 +1412,16 @@ impl<'a> CompositeAdmissionResolver<'a> {
             require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
             let parents = match self.new_steps.get(&next) {
                 Some(step) => step.parent_step_ids().to_vec(),
-                None => match self.reader.get_step(&next)? {
-                    Some(step) => step.parent_step_ids().to_vec(),
-                    None => continue,
-                },
+                // A durable Step it cannot read is corruption, as the
+                // complete resolver reports it (council s23 review r3).
+                None => self
+                    .reader
+                    .get_step(&next)?
+                    .ok_or_else(|| StoreError::Corruption {
+                        message: format!("Step DAG references Step {next} that cannot be read"),
+                    })?
+                    .parent_step_ids()
+                    .to_vec(),
             };
             pending.extend(
                 parents
@@ -1358,6 +1429,52 @@ impl<'a> CompositeAdmissionResolver<'a> {
                     .filter(|parent| !reached.contains(parent)),
             );
         }
+    }
+
+    /// The new Steps a resulting View's new heads reach (themselves
+    /// included), walked once per View: one query and a relation per Step.
+    fn new_reached_from<'h>(
+        &self,
+        view: &RepositoryViewId,
+        heads: impl Iterator<Item = &'h StepId>,
+    ) -> Result<std::sync::Arc<HashSet<StepId>>> {
+        let poisoned = || StoreError::Backend {
+            message: "observation walk poisoned".into(),
+        };
+        if let Some(found) = self
+            .new_observation_walks
+            .lock()
+            .map_err(|_| poisoned())?
+            .get(view)
+        {
+            return Ok(std::sync::Arc::clone(found));
+        }
+        let query = self.ancestor_queries.fetch_add(1, Ordering::Relaxed) + 1;
+        require_budget("ancestor queries", query, MAX_ANCESTOR_QUERIES)?;
+        let mut reached = HashSet::new();
+        let mut pending: Vec<&StepId> = heads
+            .filter(|head| self.new_steps.contains_key(*head))
+            .collect();
+        while let Some(id) = pending.pop() {
+            if !reached.insert(id.clone()) {
+                continue;
+            }
+            let relations = self.ancestor_relations.fetch_add(1, Ordering::Relaxed) + 1;
+            require_budget("ancestor relations", relations, MAX_ANCESTOR_RELATIONS)?;
+            if let Some(step) = self.new_steps.get(id) {
+                pending.extend(
+                    step.parent_step_ids()
+                        .iter()
+                        .filter(|parent| self.new_steps.contains_key(*parent)),
+                );
+            }
+        }
+        let found = std::sync::Arc::new(reached);
+        self.new_observation_walks
+            .lock()
+            .map_err(|_| poisoned())?
+            .insert(view.clone(), std::sync::Arc::clone(&found));
+        Ok(found)
     }
 
     /// Whether the durable Operation `id` is in its Space's durable

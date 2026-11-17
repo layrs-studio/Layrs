@@ -39,8 +39,31 @@ fn file_bytes(workspace: &NativeWorkspace, path: &str) -> Vec<u8> {
     }
 }
 
+/// How the pack is lost: deleted, then seen by a new process; or deleted or
+/// truncated while this process holds its cached index (council s23 r3).
+#[derive(Clone, Copy)]
+enum Loss {
+    DeletedFresh,
+    DeletedCached,
+    TruncatedCached,
+}
+
 #[test]
 fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
+    lost_pack(Loss::DeletedFresh);
+}
+
+#[test]
+fn a_pack_deleted_under_its_cached_index_is_lost_in_this_process_too() {
+    lost_pack(Loss::DeletedCached);
+}
+
+#[test]
+fn a_pack_truncated_under_its_cached_index_is_lost_in_this_process_too() {
+    lost_pack(Loss::TruncatedCached);
+}
+
+fn lost_pack(loss: Loss) {
     let root = std::env::temp_dir().join(format!("layrs-lost-pack-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(root.join("d")).unwrap();
     fs::write(root.join("a.txt"), b"alpha\n").unwrap();
@@ -76,9 +99,24 @@ fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
     // The second capture's pack (c.txt, its Step and View) is lost; the
     // current Step, View and Trees are in the third, the Space and Layers in
     // the first.
-    fs::remove_file(&second[0]).unwrap();
-    // As the next command, a new process, would find it.
-    layrs_store_local::scm_v1::forget_loaded_packs();
+    match loss {
+        Loss::DeletedFresh => {
+            fs::remove_file(&second[0]).unwrap();
+            // As the next command, a new process, would find it.
+            layrs_store_local::scm_v1::forget_loaded_packs();
+        }
+        Loss::DeletedCached => fs::remove_file(&second[0]).unwrap(),
+        Loss::TruncatedCached => {
+            let length = fs::metadata(&second[0]).unwrap().len();
+            fs::File::options()
+                .write(true)
+                .open(&second[0])
+                .unwrap()
+                .set_len(length / 2)
+                .unwrap();
+        }
+    }
+    assert!(workspace.store_has_unreadable_pack().unwrap());
 
     // A read-only observation still answers.
     assert_eq!(workspace.status_report(true).unwrap().dirty, Some(false));

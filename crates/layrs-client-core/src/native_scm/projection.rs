@@ -107,14 +107,6 @@ impl NativeWorkspace {
         let Some(tree) = index.bound_tree().cloned() else {
             return false;
         };
-        // The cached projection names most files by their pack records:
-        // reading it needs the Store's catalog, which a caller may hold.
-        if let Some(refs) = known_refs {
-            let cached = projection_cache::load(self.store_root(), &tree, Some(refs));
-            if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
-                return false;
-            }
-        }
         let opened;
         let store = match store {
             Some(store) => store,
@@ -129,6 +121,37 @@ impl NativeWorkspace {
         let Ok(reader) = NativeScmReader::new(store) else {
             return false;
         };
+        // Only a Tree admitted to this Worktree's Space vouches for its
+        // files' content: an index bound to a capture whose acceptance then
+        // failed (recorded while it was accepted) names content the Store
+        // never received, and its projection may be cached all the same
+        // (council s23 review r3). Its entries stay untrusted: those files
+        // are read again.
+        let admitted = reader
+            .get_worktree(self.worktree_id())
+            .ok()
+            .flatten()
+            .and_then(|worktree| {
+                reader
+                    .object_admitted_to_space(
+                        &StoreObjectId::Tree(tree.clone()),
+                        worktree.space_id(),
+                    )
+                    .ok()
+            })
+            .unwrap_or(false);
+        if !admitted {
+            layrs_store_local::perf::count("change_index.bound_tree_not_admitted", 1);
+            return false;
+        }
+        // The cached projection names most files by their pack records:
+        // reading it needs the Store's catalog, which a caller may hold.
+        if let Some(refs) = known_refs {
+            let cached = projection_cache::load(self.store_root(), &tree, Some(refs));
+            if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
+                return false;
+            }
+        }
         let refs = reader.file_record_refs().ok().flatten();
         let refs = refs
             .as_ref()

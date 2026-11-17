@@ -124,12 +124,17 @@ pub(super) fn require_budget(resource: &'static str, actual: usize, limit: usize
 /// beyond them (where only the bounded resolver can admit; council s23
 /// review r2) in a few dozen Steps.
 fn history_limit(bound: usize) -> usize {
+    // Read once per process (council s23 review r3).
     #[cfg(debug_assertions)]
-    if let Some(limit) = std::env::var("LAYRS_TEST_HISTORY_LIMIT")
-        .ok()
-        .and_then(|value| value.parse().ok())
     {
-        return limit;
+        static LIMIT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        if let Some(limit) = *LIMIT.get_or_init(|| {
+            std::env::var("LAYRS_TEST_HISTORY_LIMIT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        }) {
+            return limit;
+        }
     }
     bound
 }

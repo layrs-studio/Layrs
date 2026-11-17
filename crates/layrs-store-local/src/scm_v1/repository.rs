@@ -17,7 +17,7 @@ use layrs_store::scm::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-use super::acquisition::{ORDINARY_WAIT, SHORT_WAIT, acquire};
+use super::acquisition::{SHORT_WAIT, acquire};
 use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter, PutItem};
 use super::sqlite::{
     canonical_receipt_json, rfc3339_to_epoch_millis, validate_canonical_receipt_json,
@@ -112,7 +112,7 @@ impl NativeScmRepository {
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
-            acquisition_budget: ORDINARY_WAIT,
+            acquisition_budget: super::acquisition::ordinary_wait(),
         }
     }
 
@@ -128,7 +128,7 @@ impl NativeScmRepository {
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
-            acquisition_budget: ORDINARY_WAIT,
+            acquisition_budget: super::acquisition::ordinary_wait(),
         }
     }
 
@@ -145,7 +145,7 @@ impl NativeScmRepository {
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
-            acquisition_budget: ORDINARY_WAIT,
+            acquisition_budget: super::acquisition::ordinary_wait(),
         }
     }
 
@@ -161,7 +161,7 @@ impl NativeScmRepository {
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
-            acquisition_budget: ORDINARY_WAIT,
+            acquisition_budget: super::acquisition::ordinary_wait(),
         }
     }
 
