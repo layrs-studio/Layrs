@@ -235,10 +235,12 @@ impl Context<'_> {
                 format!("{}: {error}", error.code()),
             );
         }
-        for (code, key, _sequence, body) in records {
+        let mut sequences = Vec::with_capacity(records.len());
+        for (code, key, sequence, body) in records {
             if !self.consume_cpu(1) {
                 return Ok(());
             }
+            sequences.push(sequence);
             let budget = self.byte_budget_remaining;
             if !self.reserve_bytes(body.len() as u64, budget, "history record") {
                 return Ok(());
@@ -270,6 +272,115 @@ impl Context<'_> {
             }
             crate::scm_v1::repository::insert_history_entity(self.connection, &record)
                 .map_err(native)?;
+        }
+        self.check_history_clock(sequences)?;
+        self.check_history_tables()
+    }
+
+    /// Format 8: sequences are unique and below the clock, and, when every
+    /// pack was read, dense from 1 (a lost registration or a dropped record
+    /// leaves a gap; council s27).
+    fn check_history_clock(&mut self, mut sequences: Vec<u64>) -> Result<(), FsckError> {
+        let next: i64 = self.connection.query_row(
+            "SELECT next_sequence FROM history_clock WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let next = u64::try_from(next).unwrap_or(0);
+        sequences.sort_unstable();
+        let mut problems = Vec::new();
+        if sequences.windows(2).any(|pair| pair[0] == pair[1]) {
+            problems.push("two history records share a sequence".to_owned());
+        }
+        if sequences.last().is_some_and(|last| *last >= next) {
+            problems.push(format!(
+                "a history sequence is not below the clock ({next})"
+            ));
+        }
+        if !self.history_incomplete()
+            && (sequences.len() as u64 != next.saturating_sub(1)
+                || sequences
+                    .iter()
+                    .enumerate()
+                    .any(|(at, sequence)| *sequence != at as u64 + 1))
+        {
+            problems.push("history sequences are not dense below the clock".to_owned());
+        }
+        for problem in problems {
+            self.error(FsckFindingCode::OperationHistoryInvalid, None, problem);
+        }
+        Ok(())
+    }
+
+    /// Format 8: `space_initializers` and `history_identities` equal what the
+    /// records say (the records read; beside an unreadable pack, a row whose
+    /// record may be there is unknown).
+    fn check_history_tables(&mut self) -> Result<(), FsckError> {
+        let missing_initializers = query_pairs(
+            self.connection,
+            "SELECT o.space_id, o.operation_id FROM operations o
+             WHERE o.operation_kind = 'initialize'
+               AND NOT EXISTS (SELECT 1 FROM space_initializers i
+                               WHERE i.space_id = o.space_id AND i.operation_id = o.operation_id)",
+        )?;
+        for (space, operation) in missing_initializers {
+            self.error(
+                FsckFindingCode::OperationHistoryInvalid,
+                Some(space),
+                format!("Initialize Operation {operation} is not its Space's initializer"),
+            );
+        }
+        let orphan_initializers = query_pairs(
+            self.connection,
+            "SELECT i.space_id, i.operation_id FROM space_initializers i
+             WHERE NOT EXISTS (SELECT 1 FROM operations o
+                               WHERE o.operation_id = i.operation_id
+                                 AND o.space_id = i.space_id
+                                 AND o.operation_kind = 'initialize')",
+        )?;
+        for (space, operation) in orphan_initializers {
+            if self.history_unknowable(&operation) {
+                continue;
+            }
+            self.error(
+                FsckFindingCode::OperationHistoryInvalid,
+                Some(space),
+                format!(
+                    "initializer row names {operation}, not an Initialize Operation of the Space"
+                ),
+            );
+        }
+        let missing_identities = query_pairs(
+            self.connection,
+            "SELECT 'actor', actor_id FROM operations WHERE actor_id IS NOT NULL
+             UNION SELECT 'device', device_id FROM operations WHERE device_id IS NOT NULL
+             UNION SELECT 'actor', actor_id FROM step_observations WHERE actor_id IS NOT NULL
+             UNION SELECT 'device', device_id FROM step_observations WHERE device_id IS NOT NULL
+             EXCEPT SELECT identity_kind, identity_id FROM history_identities",
+        )?;
+        for (kind, id) in missing_identities {
+            self.error(
+                FsckFindingCode::OperationHistoryInvalid,
+                Some(id),
+                format!("history {kind} has no identity row"),
+            );
+        }
+        if !self.history_incomplete() {
+            let orphan_identities = query_pairs(
+                self.connection,
+                "SELECT identity_kind, identity_id FROM history_identities
+                 EXCEPT SELECT 'actor', actor_id FROM operations WHERE actor_id IS NOT NULL
+                 EXCEPT SELECT 'device', device_id FROM operations WHERE device_id IS NOT NULL
+                 EXCEPT SELECT 'actor', actor_id FROM step_observations WHERE actor_id IS NOT NULL
+                 EXCEPT SELECT 'device', device_id FROM step_observations WHERE device_id IS NOT NULL",
+            )?;
+            for (kind, id) in orphan_identities {
+                self.error(
+                    FsckFindingCode::OperationHistoryInvalid,
+                    Some(id),
+                    format!("identity row {kind} is named by no history record"),
+                );
+            }
         }
         Ok(())
     }
@@ -358,6 +469,102 @@ impl Context<'_> {
                 }
             }
         }
+        // Rows that name an Operation (format 8: a history record), and the
+        // Space and Worktree rows the history tables' keys guarded.
+        const HISTORY_ROWS: &[(&str, &str, &str, &str, &str)] = &[
+            (
+                "worktrees",
+                "worktree_id",
+                "active_operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "operation_heads",
+                "space_id",
+                "operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "release_publications",
+                "release_publication_id",
+                "operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "recovery_operations",
+                "recovery_operation_id",
+                "operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "step_observations",
+                "observation_id",
+                "operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "operation_parents",
+                "operation_id",
+                "parent_operation_id",
+                "operations",
+                "operation_id",
+            ),
+            (
+                "operations",
+                "operation_id",
+                "space_id",
+                "spaces",
+                "space_id",
+            ),
+            (
+                "step_observations",
+                "observation_id",
+                "space_id",
+                "spaces",
+                "space_id",
+            ),
+            (
+                "step_observations",
+                "observation_id",
+                "worktree_id",
+                "worktrees",
+                "worktree_id",
+            ),
+        ];
+        for (table, key, column, target, target_column) in HISTORY_ROWS {
+            let rows: Vec<(String, Option<String>)> = {
+                let mut statement = self
+                    .connection
+                    .prepare(&format!("SELECT {key}, {column} FROM {table}"))?;
+                let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (source, value) in rows {
+                let Some(value) = value else {
+                    continue;
+                };
+                if !self.consume_cpu(1) {
+                    return Ok(());
+                }
+                if references::row_exists(self.connection, target, target_column, &value)? {
+                    continue;
+                }
+                // An Operation an unreadable pack may hold is unknown.
+                if *target == "operations" && self.history_unknowable(&value) {
+                    continue;
+                }
+                self.error(
+                    FsckFindingCode::ForeignKeyViolation,
+                    Some(format!("{table}:{source}")),
+                    format!("references missing {target} {value}"),
+                );
+            }
+        }
         let catalog = self.compact_catalog().map(|(_, catalog)| catalog);
         for (source, reference) in found {
             let present = match &reference {
@@ -368,6 +575,8 @@ impl Context<'_> {
                 Reference::Row(table, column, id) => {
                     references::row_exists(self.connection, table, column, id)?
                 }
+                // fsck checks history references from their rows, above.
+                Reference::History(..) => true,
             };
             if present {
                 continue;
@@ -387,6 +596,7 @@ impl Context<'_> {
             let (kind, id) = match &reference {
                 Reference::Record(id) => (format!("{:?}", id.kind()), id.to_string()),
                 Reference::Row(table, _, id) => ((*table).to_owned(), id.clone()),
+                Reference::History(_, id) => ("operations".to_owned(), id.clone()),
             };
             self.error(
                 FsckFindingCode::ForeignKeyViolation,

@@ -1049,6 +1049,82 @@ fn a_new_step_is_never_read_back_from_its_own_batch() {
     }
 }
 
+/// A replayed batch places no history record and takes no sequence (its
+/// receipt decides): the clock stays dense, as fsck checks (council s27).
+#[test]
+fn a_replay_takes_no_history_sequence() {
+    for format in ["7", "8"] {
+        let root = TestRoot::new("replay-sequence");
+        create(&root.0, "replay-sequence", format);
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (mut lane, batch) = Lane::begin("replay-sequence", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        assert!(repository.apply_batch(&batch).unwrap().was_replay());
+        let capture = lane.capture(&files, vec![]);
+        repository.apply_batch(&capture).unwrap();
+        assert!(repository.apply_batch(&capture).unwrap().was_replay());
+        drop(repository);
+        assert_fsck_clean(&root.0);
+    }
+}
+
+/// An Operation id the Store holds names one payload forever: a batch
+/// carrying other bytes under it is refused (formats 7 and 8; in 8 by the
+/// history records' complete lookup, council s27).
+#[test]
+fn an_operation_id_keeps_its_payload() {
+    for format in ["7", "8"] {
+        let root = TestRoot::new("operation-payload");
+        create(&root.0, "operation-payload", format);
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (lane, batch) = Lane::begin("operation-payload", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let original = batch
+            .entity_records()
+            .iter()
+            .find_map(|record| match record {
+                EntityRecord::Operation(value) => Some(value.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let other = Operation::new(
+            original.id().clone(),
+            lane.space.id().clone(),
+            vec![],
+            original.resulting_view_id().clone(),
+            OperationKind::Initialize,
+            "Another summary",
+            vec![],
+            None,
+            None,
+            timestamp(),
+            Metadata::empty(),
+        )
+        .unwrap();
+        let conflicting = WriteBatch::new(
+            TransactionId::new("transaction:operation-payload-other").unwrap(),
+            vec![],
+            vec![EntityRecord::Operation(other)],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        assert!(
+            repository.apply_batch(&conflicting).is_err(),
+            "format {format}"
+        );
+        assert_eq!(
+            repository.get_operation(original.id()).unwrap(),
+            Some(original),
+            "format {format}"
+        );
+        drop(repository);
+        assert_fsck_clean(&root.0);
+    }
+}
+
 /// fsck checks every reference those foreign keys guarded (council s26
 /// r1): a View naming a Layer whose row is gone is reported, in format 8
 /// as in format 7.

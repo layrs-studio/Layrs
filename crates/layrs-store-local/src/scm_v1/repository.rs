@@ -747,9 +747,18 @@ impl NativeScmRepository {
                 None => super::cas::RegisteredCatalog::load(&guard, cas.reader())
                     .map_err(cas_backend)?,
             };
-            super::references::check_batch(&guard, batch, |id| {
-                catalog.contains_with(id, false).map_err(cas_backend)
-            })?;
+            super::references::check_batch(
+                &guard,
+                batch,
+                |id| catalog.contains_with(id, false).map_err(cas_backend),
+                |code, id| {
+                    let key = super::cas::history_key(code, id);
+                    Ok(catalog
+                        .history_record(cas.reader(), code, &key, None)
+                        .map_err(cas_backend)?
+                        .is_some())
+                },
+            )?;
         }
         drop(rows);
         let gc_roots = crate::perf::span("batch.update_gc_roots");

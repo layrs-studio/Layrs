@@ -15,6 +15,8 @@ pub(crate) enum Reference {
     Record(StoreObjectId),
     /// A metadata row: (table, key column, key).
     Row(&'static str, &'static str, String),
+    /// Format 8: a history record (Operation), by its id (council s27).
+    History(u8, String),
 }
 
 impl Reference {
@@ -111,8 +113,42 @@ pub(crate) fn object_references(object: &CanonicalObject) -> Vec<Reference> {
 }
 
 /// The records an entity names (`operations.resulting_view_id`, rewrites,
-/// observations, Markers and Releases in formats 5 to 7).
-pub(crate) fn entity_references(record: &EntityRecord) -> Vec<Reference> {
+/// observations, Markers and Releases in formats 5 to 7), and in format 8
+/// (`history`) what the history tables' keys guarded: an Operation's Space
+/// and parents, an observation's Space, Worktree and Operation, a
+/// Worktree's and a publication's Operation.
+pub(crate) fn entity_references(record: &EntityRecord, history: bool) -> Vec<Reference> {
+    let operation = |id: &layrs_core::scm::OperationId| {
+        Reference::History(crate::scm_v1::cas::OPERATION_KIND, id.as_str().to_owned())
+    };
+    let mut references = match record {
+        EntityRecord::Operation(value) if history => {
+            let mut references = vec![Reference::row("spaces", "space_id", value.space_id())];
+            references.extend(value.parent_operation_ids().iter().map(operation));
+            references
+        }
+        EntityRecord::StepObservation(value) if history => {
+            let mut references = Vec::new();
+            if let Some(space) = value.space_id() {
+                references.push(Reference::row("spaces", "space_id", space));
+            }
+            if let Some(worktree) = value.worktree_id() {
+                references.push(Reference::row("worktrees", "worktree_id", worktree));
+            }
+            references.extend(value.operation_id().map(operation));
+            references
+        }
+        EntityRecord::Worktree(value) if history => vec![operation(value.active_operation_id())],
+        EntityRecord::ReleasePublication(value) if history => {
+            value.operation_id().map(operation).into_iter().collect()
+        }
+        _ => Vec::new(),
+    };
+    references.extend(record_references(record));
+    references
+}
+
+fn record_references(record: &EntityRecord) -> Vec<Reference> {
     match record {
         EntityRecord::Operation(operation) => {
             let mut references = vec![Reference::Record(StoreObjectId::RepositoryView(
@@ -177,6 +213,7 @@ fn label(reference: &Reference) -> &'static str {
         Reference::Row("releases", ..) => "Release",
         Reference::Row("worktrees", ..) => "Worktree",
         Reference::Row(..) => "metadata row",
+        Reference::History(..) => "Operation",
     }
 }
 
@@ -188,19 +225,31 @@ pub(crate) fn check_batch(
     connection: &Connection,
     batch: &WriteBatch,
     registered: impl Fn(&StoreObjectId) -> Result<bool>,
+    history: impl Fn(u8, &str) -> Result<bool>,
 ) -> Result<()> {
+    let operation = |id: &layrs_core::scm::OperationId| {
+        Reference::History(crate::scm_v1::cas::OPERATION_KIND, id.as_str().to_owned())
+    };
     let mut references = Vec::new();
     for object in batch.canonical_objects() {
         references.extend(object_references(object));
     }
     for record in batch.entity_records() {
-        references.extend(entity_references(record));
+        references.extend(entity_references(record, true));
     }
     for mutation in batch.mutations() {
-        if let StoreMutation::RepositoryView(change) = mutation {
-            references.push(Reference::Record(StoreObjectId::RepositoryView(
-                change.new_view_id().clone(),
-            )));
+        match mutation {
+            StoreMutation::RepositoryView(change) => {
+                references.push(Reference::Record(StoreObjectId::RepositoryView(
+                    change.new_view_id().clone(),
+                )));
+            }
+            StoreMutation::OperationHeads(change) => {
+                references.extend(change.new_head_ids().iter().map(operation));
+            }
+            StoreMutation::WorktreeActiveOperation(change) => {
+                references.push(operation(change.new_operation_id()));
+            }
         }
     }
     for reference in references {
@@ -210,11 +259,12 @@ pub(crate) fn check_batch(
                 .map_err(|error| StoreError::Backend {
                     message: error.to_string(),
                 })?,
+            Reference::History(code, id) => history(*code, id)?,
         };
         if !present {
             let id = match &reference {
                 Reference::Record(id) => id.to_string(),
-                Reference::Row(_, _, id) => id.clone(),
+                Reference::Row(_, _, id) | Reference::History(_, id) => id.clone(),
             };
             return Err(StoreError::NotFound {
                 kind: label(&reference),
