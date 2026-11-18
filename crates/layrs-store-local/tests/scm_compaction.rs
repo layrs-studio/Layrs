@@ -86,8 +86,12 @@ fn physical_compaction_reclaims_pages_without_changing_rows_and_retains_backup()
         before
     );
     assert!(!report.history_deleted);
-    assert!(report.restart_history_traversal);
-    drop(scm_v1::open(&f.0).unwrap());
+    // Format 8 cursors are history sequences, which compaction keeps.
+    let format = scm_v1::open(&f.0).unwrap().format_version();
+    assert_eq!(
+        report.restart_history_traversal,
+        format != scm_v1::HISTORY_FORMAT_VERSION
+    );
     assert!(
         scm_v1::fsck_existing(&f.0, scm_v1::FsckOptions::default())
             .unwrap()

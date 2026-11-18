@@ -32,7 +32,8 @@ pub struct MetadataCompactionReport {
     pub backup_directory: PathBuf,
     pub history_deleted: bool,
     /// Physical SQLite rowids are not stable identities. Existing observation
-    /// snapshots are verified on reuse and may require restarting traversal.
+    /// snapshots are verified on reuse and may require restarting traversal
+    /// (formats before 8; format 8 cursors are history sequences).
     pub restart_history_traversal: bool,
 }
 
@@ -118,7 +119,9 @@ fn compact_metadata_impl(
         retained_rows: original.1,
         backup_directory: directory.clone(),
         history_deleted: false,
-        restart_history_traversal: true,
+        // Format 8 orders observations by their history sequence, which
+        // maintenance never changes: cursors stay valid (council s27).
+        restart_history_traversal: store.format_version() != super::HISTORY_FORMAT_VERSION,
     };
     faults.check(CompactionFaultPoint::CandidateReady)?;
     if let Some(audit) = audit {

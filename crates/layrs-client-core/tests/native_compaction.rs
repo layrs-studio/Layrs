@@ -28,9 +28,13 @@ fn compaction_retains_historical_targets_operations_views_dirty_state_and_observ
     let state_bytes = serde_jcs::to_vec(&state).unwrap();
     let marker_files = w.read_step_files(marker.target_step_id()).unwrap();
     let release_files = w.read_step_files(release.target_step_id()).unwrap();
+    // Format 8 keeps observations in packs, ordered by their history
+    // sequence: no rows to renumber, and cursors survive maintenance.
+    let history_in_packs =
+        scm_v1::open(w.store_root()).unwrap().format_version() == scm_v1::HISTORY_FORMAT_VERSION;
     // Create legal physical rowid gaps, while all immutable observation IDs and
     // their payloads remain untouched. Maintenance may renumber these rows.
-    {
+    if !history_in_packs {
         let guard = scm_v1::open_exclusive(w.store_root()).unwrap();
         let db = rusqlite::Connection::open(guard.layout().sqlite_path()).unwrap();
         db.execute("UPDATE step_observations SET rowid=rowid+10000", [])
@@ -75,7 +79,11 @@ fn compaction_retains_historical_targets_operations_views_dirty_state_and_observ
     );
     // A reused rowid cursor either remains exactly valid or explicitly fails;
     // it can never silently return a changed observation set.
-    if let Ok(reused) = typed.observation_projection(state.space.id(), Some(&before.snapshot)) {
+    let reused = typed.observation_projection(state.space.id(), Some(&before.snapshot));
+    if history_in_packs {
+        assert!(reused.is_ok(), "a sequence cursor survives compaction");
+    }
+    if let Ok(reused) = reused {
         assert_eq!(reused.snapshot, before.snapshot);
         assert_eq!(
             serde_jcs::to_vec(&reused.by_step).unwrap(),
@@ -91,7 +99,7 @@ fn compaction_retains_historical_targets_operations_views_dirty_state_and_observ
     // SQLite retained the explicit fixture gaps in this build. Also exercise
     // the existing cursor guard against a physical renumbering, without
     // changing any immutable observation or business identity.
-    {
+    if !history_in_packs {
         let guard = scm_v1::open_exclusive(w.store_root()).unwrap();
         let db = rusqlite::Connection::open(guard.layout().sqlite_path()).unwrap();
         db.execute("UPDATE step_observations SET rowid=rowid+20000", [])
@@ -100,9 +108,13 @@ fn compaction_retains_historical_targets_operations_views_dirty_state_and_observ
     {
         let reader = scm_v1::open(w.store_root()).unwrap();
         let typed = NativeScmReader::new(&reader).unwrap();
-        assert!(typed
-            .observation_projection(state.space.id(), Some(&before.snapshot))
-            .is_err());
+        // A renumbered rowid cursor fails; a sequence cursor still holds.
+        assert_eq!(
+            typed
+                .observation_projection(state.space.id(), Some(&before.snapshot))
+                .is_ok(),
+            history_in_packs
+        );
         assert_eq!(
             serde_jcs::to_vec(
                 &typed

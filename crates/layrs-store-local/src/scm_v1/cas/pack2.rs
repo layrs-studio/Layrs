@@ -55,6 +55,15 @@ pub(crate) const OBSERVATION_KIND: u8 = 12;
 /// Longest Space id a history section names.
 const MAX_SPACE_ID_BYTES: u64 = 4096;
 
+/// A history record's index key: derived from its kind and id, which are
+/// not content addresses (every read checks the decoded id).
+pub(crate) fn history_key(code: u8, id: &str) -> [u8; 32] {
+    let mut input = Vec::with_capacity(1 + id.len());
+    input.push(code);
+    input.extend_from_slice(id.as_bytes());
+    blake3::derive_key("layrs history key v1", &input)
+}
+
 /// Whether `code` is a history record's kind.
 pub(crate) fn is_history_code(code: u8) -> bool {
     code == OPERATION_KIND || code == OBSERVATION_KIND
@@ -1295,6 +1304,9 @@ pub(super) struct Pack2Builder {
     fileid: Vec<([u8; 32], [u8; 32], u64)>,
     /// History records: (kind code, key, sequence, Space).
     history: Vec<(u8, [u8; 32], u64, Option<String>)>,
+    /// Each history record's sequence and body digest, by (code, key): a
+    /// second copy must equal the first (consolidation).
+    history_copies: std::collections::HashMap<(u8, [u8; 32]), (u64, [u8; 32])>,
 }
 
 /// What `Pack2Builder::finish` wrote, for the reread check and registration.
@@ -1337,11 +1349,15 @@ impl Pack2Builder {
             files: Vec::new(),
             fileid: Vec::new(),
             history: Vec::new(),
+            history_copies: std::collections::HashMap::new(),
         })
     }
 
     /// One history record (packs v4): an Operation or a StepObservation,
-    /// keyed by its derived key, with its sequence and Space.
+    /// keyed by its derived key, with its sequence and Space. A second copy
+    /// of a key is not written again when its sequence and bytes are equal
+    /// (`Ok(false)`), and is refused (`InvalidData`) when they differ
+    /// (council s27: never choose one of two conflicting copies).
     pub(super) fn add_history_record(
         &mut self,
         out: &mut impl Write,
@@ -1350,17 +1366,28 @@ impl Pack2Builder {
         body: &[u8],
         sequence: u64,
         space: Option<String>,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         if self.version < PACK2_VERSION_HISTORY || !is_history_code(code) {
             return Err(io::Error::other("a history record belongs in a pack v4"));
         }
         if sequence == 0 || sequence > i64::MAX as u64 {
             return Err(io::Error::other("a history sequence is positive"));
         }
+        let digest = *blake3::hash(body).as_bytes();
+        if let Some(copy) = self.history_copies.get(&(code, key)) {
+            if *copy == (sequence, digest) {
+                return Ok(false);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "two copies of a history record differ",
+            ));
+        }
         let location = self.place(out, code, body, None)?;
         self.explicit.push((code, key, location));
         self.history.push((code, key, sequence, space));
-        Ok(())
+        self.history_copies.insert((code, key), (sequence, digest));
+        Ok(true)
     }
 
     fn append_block(&mut self, out: &mut impl Write, block: EncodedBlock) -> io::Result<u32> {

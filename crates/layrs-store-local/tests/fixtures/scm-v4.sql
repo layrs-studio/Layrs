@@ -146,121 +146,6 @@ CREATE TABLE space_loose_admissions (
     FOREIGN KEY (object_id) REFERENCES loose_objects(object_id) ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE step_observations (
-    observation_id TEXT PRIMARY KEY CHECK (length(observation_id) > 0),
-    step_id TEXT NOT NULL,
-    space_id TEXT,
-    operation_id TEXT,
-    worktree_id TEXT,
-    actor_id TEXT,
-    device_id TEXT,
-    observed_at TEXT NOT NULL,
-    capture_reason TEXT NOT NULL CHECK (capture_reason IN (
-        'automatic_idle', 'before_layer_switch', 'before_worktree_switch',
-        'before_operation', 'manual_snapshot', 'weave_result',
-        'conflict_resolution', 'rewrite', 'received', 'automation'
-    )),
-    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE SET NULL
-        DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (worktree_id) REFERENCES worktrees(worktree_id) ON DELETE SET NULL
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE INDEX step_observations_step_idx ON step_observations(step_id, observed_at);
-CREATE INDEX step_observations_space_idx ON step_observations(space_id, observed_at);
-
-CREATE TABLE operations (
-    operation_id TEXT PRIMARY KEY CHECK (length(operation_id) > 0),
-    space_id TEXT NOT NULL,
-    resulting_view_id TEXT NOT NULL,
-    operation_kind TEXT NOT NULL CHECK (operation_kind IN (
-        'initialize', 'capture_worktree', 'switch_layer', 'move_layer_heads',
-        'create_marker', 'hide_marker', 'create_release', 'weave',
-        'resolve_conflict', 'rewrite_steps', 'receive_remote_state',
-        'integrate_operations', 'undo', 'redo', 'restore', 'revert', 'prune'
-    )),
-    actor_id TEXT,
-    device_id TEXT,
-    created_at TEXT NOT NULL,
-    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)) CHECK (
-        json_type(payload_json, '$') = 'object'
-        AND json_extract(payload_json, '$.schemaVersion') IS 'layrs.operation.v1'
-        AND operation_id IS json_extract(payload_json, '$.operationId')
-        AND space_id IS json_extract(payload_json, '$.spaceId')
-        AND resulting_view_id IS json_extract(payload_json, '$.resultingViewId')
-        AND operation_kind IS json_extract(payload_json, '$.kind')
-        AND COALESCE(json_type(payload_json, '$.actorId') IN ('text', 'null'), 0)
-        AND actor_id IS json_extract(payload_json, '$.actorId')
-        AND COALESCE(json_type(payload_json, '$.deviceId') IN ('text', 'null'), 0)
-        AND device_id IS json_extract(payload_json, '$.deviceId')
-        AND created_at IS json_extract(payload_json, '$.createdAt')
-    ),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE INDEX operations_space_created_idx ON operations(space_id, created_at, operation_id);
-
-CREATE INDEX operations_payload_space_kind_idx ON operations(
-    json_extract(payload_json, '$.spaceId'),
-    json_extract(payload_json, '$.kind'),
-    operation_id
-);
-
-CREATE INDEX operations_projection_space_payload_kind_idx ON operations(
-    space_id,
-    json_extract(payload_json, '$.kind'),
-    operation_id
-);
-
-CREATE INDEX operations_payload_space_projection_kind_idx ON operations(
-    json_extract(payload_json, '$.spaceId'),
-    operation_kind,
-    operation_id
-);
-
-CREATE UNIQUE INDEX operations_single_initialize_per_space_idx
-ON operations(space_id) WHERE operation_kind = 'initialize';
-
-CREATE UNIQUE INDEX operations_single_initialize_payload_space_idx
-ON operations(json_extract(payload_json, '$.spaceId'))
-WHERE json_extract(payload_json, '$.kind') = 'initialize';
-
-CREATE TABLE operation_parents (
-    operation_id TEXT NOT NULL,
-    parent_operation_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (operation_id, ordinal),
-    UNIQUE (operation_id, parent_operation_id),
-    CHECK (operation_id <> parent_operation_id),
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_operation_id) REFERENCES operations(operation_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE INDEX operation_parents_parent_idx ON operation_parents(parent_operation_id);
-
-CREATE TABLE operation_rewrites (
-    operation_id TEXT NOT NULL,
-    old_step_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (operation_id, ordinal),
-    UNIQUE (operation_id, old_step_id),
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE operation_rewrite_targets (
-    operation_id TEXT NOT NULL,
-    old_step_id TEXT NOT NULL,
-    new_step_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    PRIMARY KEY (operation_id, old_step_id, ordinal),
-    UNIQUE (operation_id, old_step_id, new_step_id),
-    FOREIGN KEY (operation_id, old_step_id)
-        REFERENCES operation_rewrites(operation_id, old_step_id) ON DELETE CASCADE
-) STRICT;
-
 CREATE TABLE worktrees (
     worktree_id TEXT PRIMARY KEY CHECK (length(worktree_id) > 0),
     store_id TEXT NOT NULL,
@@ -272,9 +157,7 @@ CREATE TABLE worktrees (
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     UNIQUE (worktree_id, space_id),
     FOREIGN KEY (store_id) REFERENCES stores(store_id) ON DELETE RESTRICT,
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (active_operation_id) REFERENCES operations(operation_id) ON DELETE RESTRICT
-        DEFERRABLE INITIALLY DEFERRED
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX worktrees_space_idx ON worktrees(space_id, worktree_id);
@@ -331,8 +214,7 @@ CREATE TABLE release_publications (
     published_at TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     FOREIGN KEY (release_id) REFERENCES releases(release_id) ON DELETE CASCADE,
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE SET NULL
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX release_publications_release_idx
@@ -353,8 +235,7 @@ CREATE TABLE operation_heads (
     updated_by_transaction_id TEXT NOT NULL,
     PRIMARY KEY (space_id, ordinal),
     UNIQUE (space_id, operation_id),
-    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE RESTRICT
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX operation_heads_operation_idx ON operation_heads(operation_id);
@@ -382,8 +263,7 @@ CREATE TABLE recovery_operations (
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms),
     completed_at_ms INTEGER,
     CHECK ((state = 'completed') = (completed_at_ms IS NOT NULL)),
-    FOREIGN KEY (worktree_id) REFERENCES worktrees(worktree_id) ON DELETE RESTRICT,
-    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE RESTRICT
+    FOREIGN KEY (worktree_id) REFERENCES worktrees(worktree_id) ON DELETE RESTRICT
 ) STRICT;
 
 CREATE INDEX recovery_operations_state_idx ON recovery_operations(state, updated_at_ms);
@@ -473,3 +353,27 @@ CREATE TABLE products (
     product_id TEXT NOT NULL CHECK(length(product_id) > 0)
 ) STRICT;
 CREATE INDEX products_logical_id_idx ON products(product_id, product_object_id);
+
+-- Format 8 (council s25, s27): Operations and StepObservations are records
+-- of the packs; their sequence comes from this clock, moved by
+-- compare-and-set in the transaction that registers the batch's pack.
+CREATE TABLE history_clock (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    next_sequence INTEGER NOT NULL CHECK (next_sequence >= 1)
+) STRICT;
+
+INSERT INTO history_clock(singleton, next_sequence) VALUES (1, 1);
+
+-- One Initialize per Space, complete beside any unreadable pack.
+CREATE TABLE space_initializers (
+    space_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE CHECK (length(operation_id) > 0),
+    FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE
+) STRICT;
+
+-- Actors and devices the history names (identity witnesses).
+CREATE TABLE history_identities (
+    identity_kind TEXT NOT NULL CHECK (identity_kind IN ('actor', 'device')),
+    identity_id TEXT NOT NULL CHECK (length(identity_id) > 0),
+    PRIMARY KEY (identity_kind, identity_id)
+) STRICT, WITHOUT ROWID;

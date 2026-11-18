@@ -79,7 +79,9 @@ impl Context<'_> {
             if !self.consume_cpu(1) {
                 return Ok(());
             }
-            if operation_nodes.get(child) != operation_nodes.get(parent) {
+            // Format 8: a parent an unreadable pack may hold is unknown.
+            let unknown = !operation_nodes.contains_key(parent) && self.history_unknowable(parent);
+            if operation_nodes.get(child) != operation_nodes.get(parent) && !unknown {
                 self.error(
                     FsckFindingCode::CrossSpaceReference,
                     Some(child.clone()),
@@ -195,7 +197,7 @@ impl Context<'_> {
         if !self.history_incomplete() {
             return Ok(false);
         }
-        if self.history_unknowable(step) {
+        if self.history_unknowable(step) || self.history_unknowable(operation) {
             return Ok(true);
         }
         let view: Option<String> = self
@@ -412,6 +414,9 @@ impl Context<'_> {
              WHERE o.operation_id IS NULL OR o.space_id<>h.space_id",
         )?;
         for (space, operation) in invalid_heads {
+            if self.history_unknowable(&operation) {
+                continue;
+            }
             self.error(
                 FsckFindingCode::CurrentReferenceInvalid,
                 Some(space),
@@ -517,7 +522,24 @@ impl Context<'_> {
             })?;
             rows.collect::<rusqlite::Result<BTreeSet<_>>>()?
         };
-        let expected_rows: BTreeSet<_> = query_gc_expected(self.connection)?.into_iter().collect();
+        let mut expected_rows: BTreeSet<_> =
+            query_gc_expected(self.connection)?.into_iter().collect();
+        // Format 8 stores only mutable roots: the roots of history (every
+        // retained Operation's View and rewrite Steps, every observed Step)
+        // are derived here and seed the traversal (council s25, s27).
+        let history_roots: BTreeSet<String> = if self.audit.bitmap_admissions() {
+            let derived: Vec<_> = expected_rows
+                .iter()
+                .filter(|(kind, _, _)| kind == "retained_operation" || kind == "observation")
+                .cloned()
+                .collect();
+            for row in &derived {
+                expected_rows.remove(row);
+            }
+            derived.into_iter().map(|(_, _, object)| object).collect()
+        } else {
+            BTreeSet::new()
+        };
         for row in actual_rows.symmetric_difference(&expected_rows) {
             let (kind, root, object) = row;
             // Format 8 beside an unreadable pack: a Worktree's expected roots
@@ -526,6 +548,9 @@ impl Context<'_> {
             if self.history_incomplete() && actual_rows.contains(row) {
                 let unknown = match kind.as_str() {
                     "product" => self.admission_unknowable(object),
+                    "operation_head" => {
+                        self.history_unknowable(root) || self.history_unknowable(object)
+                    }
                     "worktree" => {
                         let view = self
                             .connection
@@ -561,6 +586,7 @@ impl Context<'_> {
         let roots: Vec<_> = actual_rows
             .intersection(&expected_rows)
             .map(|(_, _, object)| object.clone())
+            .chain(history_roots)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();

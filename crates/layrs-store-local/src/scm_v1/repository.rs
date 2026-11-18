@@ -438,10 +438,10 @@ impl NativeScmRepository {
                 store.begin_session_writer().map_err(schema_backend)?
             }
         };
-        let held = {
+        let (held, has_receipt) = {
             let writer = Mutex::new(held);
-            Self::precheck_new(&writer, batch)?;
-            writer.into_inner().map_err(|_| poisoned())?
+            let has_receipt = Self::precheck_new(&writer, batch)?;
+            (writer.into_inner().map_err(|_| poisoned())?, has_receipt)
         };
         store.verify_filesystem_identity().map_err(native_backend)?;
         drop(precheck);
@@ -459,6 +459,13 @@ impl NativeScmRepository {
         let compact = store.compact();
         if compact {
             plan_file_records(&cas, batch, chunks, &whole)?;
+        }
+        // Format 8: the batch's new history records join its pack, with
+        // their sequences (council s27). A replay places none: its receipt
+        // decides, whatever the history packs' state.
+        if !cas.reader().object_projections() && !has_receipt {
+            let (records, clock) = plan_history(&held, &cas, batch)?;
+            cas.plan_history(records, clock).map_err(cas_backend)?;
         }
         drop(cas_span);
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
@@ -698,7 +705,10 @@ impl NativeScmRepository {
         let moved_worktrees = if cas.reader().object_projections() {
             None
         } else {
-            Some(moved_worktree_roots(&reader, batch)?)
+            Some((
+                moved_worktree_roots(&reader, batch)?,
+                moved_head_roots(&reader, batch)?,
+            ))
         };
         drop(reader);
         drop(validation);
@@ -748,7 +758,9 @@ impl NativeScmRepository {
             batch,
             roots_complete,
             cas.reader().bitmap_admissions(),
-            moved_worktrees.as_deref(),
+            moved_worktrees
+                .as_ref()
+                .map(|(worktrees, heads)| (worktrees.as_slice(), heads.as_slice())),
         )?;
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
@@ -790,7 +802,7 @@ impl NativeScmRepository {
     /// Before any byte is installed: a batch with no receipt yet must still
     /// match every compare-and-swap target (a stale request installs
     /// nothing).
-    fn precheck_new(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<()> {
+    fn precheck_new(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<bool> {
         let has_receipt: bool = connection
             .lock()
             .map_err(|_| poisoned())?
@@ -803,7 +815,7 @@ impl NativeScmRepository {
         if !has_receipt {
             precheck_mutations(connection, batch)?;
         }
-        Ok(())
+        Ok(has_receipt)
     }
 
     /// A pending materialization of a Worktree this batch moves must be ours
@@ -1202,6 +1214,15 @@ pub(super) fn insert_history_projection(
 }
 
 fn insert_entities(connection: &Connection, batch: &WriteBatch, projections: bool) -> Result<()> {
+    // Format 8 keeps Operations and StepObservations in the batch's pack.
+    let insert_entity = |connection: &Connection, e: &EntityRecord| -> Result<()> {
+        match e {
+            EntityRecord::Operation(_) | EntityRecord::StepObservation(_) if !projections => {
+                insert_history_rows(connection, e)
+            }
+            _ => insert_entity(connection, e),
+        }
+    };
     for e in batch
         .entity_records()
         .iter()
@@ -1240,6 +1261,58 @@ fn insert_entities(connection: &Connection, batch: &WriteBatch, projections: boo
         }
     }
     Ok(())
+}
+
+/// Format 8: what an Operation or a StepObservation keeps in SQLite (its
+/// record is in the batch's pack): its Space's Initialize, its actor and
+/// device (council s27).
+fn insert_history_rows(c: &Connection, e: &EntityRecord) -> Result<()> {
+    let (actor, device) = match e {
+        EntityRecord::Operation(v) => {
+            if v.kind() == layrs_core::scm::OperationKind::Initialize {
+                c.execute(
+                    "INSERT OR IGNORE INTO space_initializers(space_id,operation_id) VALUES(?1,?2)",
+                    params![v.space_id().as_str(), v.id().as_str()],
+                )
+                .map_err(sql_backend)?;
+                let stored: String = c
+                    .query_row(
+                        "SELECT operation_id FROM space_initializers WHERE space_id=?1",
+                        [v.space_id().as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_backend)?;
+                if stored != v.id().as_str() {
+                    return Err(StoreError::AdmissionRejected {
+                        kind: "Initialize Operation",
+                        id: v.id().to_string(),
+                    });
+                }
+            }
+            (v.actor_id(), v.device_id())
+        }
+        EntityRecord::StepObservation(v) => (v.actor_id(), v.device_id()),
+        _ => return Ok(()),
+    };
+    for (kind, id) in [
+        ("actor", actor.map(|id| id.as_str())),
+        ("device", device.map(|id| id.as_str())),
+    ] {
+        if let Some(id) = id {
+            c.prepare_cached(
+                "INSERT OR IGNORE INTO history_identities(identity_kind,identity_id) VALUES(?1,?2)",
+            )
+            .and_then(|mut statement| statement.execute(params![kind, id]))
+            .map_err(sql_backend)?;
+        }
+    }
+    Ok(())
+}
+
+/// Format 8's fsck: a history record's rows (formats 5 to 7's), written into
+/// the audit's temporary tables by the writer's own code (council s27).
+pub(super) fn insert_history_entity(c: &Connection, e: &EntityRecord) -> Result<()> {
+    insert_entity(c, e)
 }
 
 fn insert_entity(c: &Connection, e: &EntityRecord) -> Result<()> {
@@ -1390,6 +1463,99 @@ pub(super) fn whole_chunk_ids(batch: &WriteBatch) -> std::collections::HashSet<C
 
 /// Format 6 (ADR 0028): what a CAS item needs to be planned as a file
 /// record, from the writer's registered snapshot.
+/// The history records a batch places, and the clock move they take.
+type PlannedHistory = (Vec<super::cas::HistoryPut>, Option<(u64, u64)>);
+
+/// Format 8: the batch's new history records (Operations, then
+/// StepObservations, in batch order), with consecutive sequences from the
+/// clock and the clock move (council s27). Complete: a record the Store
+/// holds with other bytes, or that an unreadable pack may hold, refuses the
+/// batch; one it holds with equal bytes keeps its sequence and is not placed
+/// again.
+fn plan_history(
+    connection: &Connection,
+    cas: &NativeCasWriter<'_>,
+    batch: &WriteBatch,
+) -> Result<PlannedHistory> {
+    let catalog = cas
+        .compact_catalog()
+        .cloned()
+        .ok_or_else(|| native_backend("format 8 CAS writer has no registered catalog"))?;
+    let mut records: Vec<(u8, &str, Vec<u8>, Option<String>)> = Vec::new();
+    for record in batch.entity_records() {
+        if let EntityRecord::Operation(value) = record {
+            records.push((
+                super::cas::OPERATION_KIND,
+                value.id().as_str(),
+                json(value)?.into_bytes(),
+                Some(value.space_id().as_str().to_owned()),
+            ));
+        }
+    }
+    for record in batch.entity_records() {
+        if let EntityRecord::StepObservation(value) = record {
+            records.push((
+                super::cas::OBSERVATION_KIND,
+                value.id().as_str(),
+                json(value)?.into_bytes(),
+                value.space_id().map(|space| space.as_str().to_owned()),
+            ));
+        }
+    }
+    let mut planned = Vec::new();
+    for (code, id, body, space) in records {
+        let key = super::cas::history_key(code, id);
+        match catalog
+            .history_record(cas.reader(), code, &key, None)
+            .map_err(cas_backend)?
+        {
+            Some((stored, _)) if stored == body => {}
+            Some(_) => {
+                return Err(StoreError::Corruption {
+                    message: format!("immutable entity {id} has conflicting payload"),
+                });
+            }
+            None => planned.push((code, key, body, space)),
+        }
+    }
+    if planned.is_empty() {
+        return Ok((Vec::new(), None));
+    }
+    let next: i64 = connection
+        .query_row(
+            "SELECT next_sequence FROM history_clock WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_backend)?;
+    let from = u64::try_from(next)
+        .ok()
+        .filter(|next| *next >= 1 && *next > catalog.max_history_sequence())
+        .ok_or_else(|| StoreError::Corruption {
+            message: "the history clock is behind the registered history".into(),
+        })?;
+    let to = from
+        .checked_add(planned.len() as u64)
+        .filter(|to| *to <= i64::MAX as u64)
+        .ok_or_else(|| StoreError::Corruption {
+            message: "the history clock is exhausted".into(),
+        })?;
+    let records = planned
+        .into_iter()
+        .enumerate()
+        .map(
+            |(position, (code, key, body, space))| super::cas::HistoryPut {
+                code,
+                key,
+                body,
+                sequence: from + position as u64,
+                space,
+            },
+        )
+        .collect();
+    Ok((records, Some((from, to))))
+}
+
 fn plan_file_records(
     cas: &NativeCasWriter<'_>,
     batch: &WriteBatch,
@@ -1457,6 +1623,23 @@ fn register_compact(
         .map_err(sql_backend)?;
         let seq = c.last_insert_rowid();
         horizon.pack_seq = Some(seq);
+        // Format 8: the clock moves with the pack holding the sequences it
+        // gave, by compare-and-set (council s27).
+        if let Some((from, to)) = publication.history_clock {
+            let from = i64::try_from(from).map_err(native_backend)?;
+            let to = i64::try_from(to).map_err(native_backend)?;
+            let moved = c
+                .execute(
+                    "UPDATE history_clock SET next_sequence=?2 WHERE singleton=1 AND next_sequence=?1",
+                    params![from, to],
+                )
+                .map_err(sql_backend)?;
+            if moved != 1 {
+                return Err(StoreError::Corruption {
+                    message: "the history clock moved under the batch".into(),
+                });
+            }
+        }
         // A small pack's image commits with its registration (council s7
         // Q1): durable with the batch, no file.
         if let Some(image) = &publication.inline {
@@ -1734,10 +1917,10 @@ fn update_gc_roots(
     batch: &WriteBatch,
     complete_before: bool,
     bitmap_admissions: bool,
-    moved_worktrees: Option<&[MovedWorktree]>,
+    moved_worktrees: Option<(&[MovedWorktree], &[MovedHeads])>,
 ) -> Result<()> {
-    if let Some(moved) = moved_worktrees {
-        update_mutable_roots_without_views(c, moved)?;
+    if let Some((moved, heads)) = moved_worktrees {
+        update_mutable_roots_without_views(c, moved, heads)?;
     } else {
         update_mutable_roots(c)?;
     }
@@ -1764,6 +1947,51 @@ pub(super) struct MovedWorktree {
     worktree: String,
     operation: String,
     roots: Vec<String>,
+}
+
+/// Format 8: the Operation heads a batch replaces in one Space (the expected
+/// ones), and the heads it sets with each one's resulting View.
+pub(super) type MovedHeads = (Vec<String>, Vec<(String, String)>);
+
+/// The Operation heads `batch` moves, each new head's View read from the
+/// batch or `reader`.
+fn moved_head_roots(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<Vec<MovedHeads>> {
+    let mut moved = Vec::new();
+    for mutation in batch.mutations() {
+        let StoreMutation::OperationHeads(change) = mutation else {
+            continue;
+        };
+        let retired = change
+            .expected_head_ids()
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect();
+        let mut heads = Vec::new();
+        for head in change.new_head_ids() {
+            let carried = batch
+                .entity_records()
+                .iter()
+                .find_map(|record| match record {
+                    EntityRecord::Operation(value) if value.id() == head => {
+                        Some(value.resulting_view_id().clone())
+                    }
+                    _ => None,
+                });
+            let view = match carried {
+                Some(view) => view,
+                None => reader
+                    .get_operation(head)?
+                    .ok_or_else(|| StoreError::Corruption {
+                        message: format!("Operation head {head} cannot be read"),
+                    })?
+                    .resulting_view_id()
+                    .clone(),
+            };
+            heads.push((head.as_str().to_owned(), view.as_str().to_owned()));
+        }
+        moved.push((retired, heads));
+    }
+    Ok(moved)
 }
 
 /// The Worktrees `batch` moves (an active Operation compare-and-swap, or a
@@ -1873,17 +2101,37 @@ fn update_mutable_roots(c: &Connection) -> Result<()> {
 /// from SQL; a Worktree's roots replaced only when this batch moved it (a
 /// Worktree's roots follow its active Operation alone, and Operations and
 /// Views never change).
-fn update_mutable_roots_without_views(c: &Connection, moved: &[MovedWorktree]) -> Result<()> {
+fn update_mutable_roots_without_views(
+    c: &Connection,
+    moved: &[MovedWorktree],
+    moved_heads: &[MovedHeads],
+) -> Result<()> {
     c.execute_batch(
-        "DELETE FROM gc_roots WHERE root_kind IN ('current_view','operation_head','pin');
+        "DELETE FROM gc_roots WHERE root_kind IN ('current_view','pin');
          INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
            SELECT 'current_view',space_id,repository_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM current_repository_views;
-         INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
-           SELECT 'operation_head',operation_id,resulting_view_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM operation_heads JOIN operations USING(operation_id);
          INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms)
            SELECT 'pin',pin_id,object_id,CAST(unixepoch('subsec')*1000 AS INTEGER) FROM object_pins;",
     )
     .map_err(sql_backend)?;
+    // Operation heads: replaced for the Spaces whose heads the batch moves
+    // (an Operation's View never changes).
+    for (retired, heads) in moved_heads {
+        for operation in retired {
+            c.prepare_cached(
+                "DELETE FROM gc_roots WHERE root_kind='operation_head' AND root_id=?1",
+            )
+            .and_then(|mut statement| statement.execute(params![operation]))
+            .map_err(sql_backend)?;
+        }
+        for (operation, view) in heads {
+            c.prepare_cached(
+                "INSERT OR IGNORE INTO gc_roots(root_kind,root_id,object_id,created_at_ms) VALUES('operation_head',?1,?2,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            )
+            .and_then(|mut statement| statement.execute(params![operation, view]))
+            .map_err(sql_backend)?;
+        }
+    }
     for worktree in moved {
         // A Worktree record carried again does not replace the stored one:
         // its roots are those of the Operation it is now on.
@@ -1921,6 +2169,11 @@ fn update_immutable_roots(
     let now = "CAST(unixepoch('subsec')*1000 AS INTEGER)";
     for record in batch.entity_records() {
         let (statements, id): (&[&str], &str) = match record {
+            // Format 8: history roots are derived when fsck or GC runs
+            // (council s25, s27); only mutable roots are stored.
+            EntityRecord::Operation(_) | EntityRecord::StepObservation(_) if bitmap_admissions => {
+                continue;
+            }
             EntityRecord::Operation(value) => (
                 &[
                     "SELECT 'retained_operation',operation_id,resulting_view_id,{now} FROM operations WHERE operation_id=?1",

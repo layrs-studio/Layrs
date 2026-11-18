@@ -125,7 +125,6 @@ pub fn validate(layout: &NativeStoreLayout, record: &Journal) -> CompactionResul
         .ok_or("compaction backup name")?;
     if report.schema_version != "layrs.metadata-compaction.v1"
         || report.history_deleted
-        || !report.restart_history_traversal
         || report.backup_directory.parent() != Some(layout.repair_backups_dir())
         || !name.starts_with("compaction-")
         || name.len() > 80

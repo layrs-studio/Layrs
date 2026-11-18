@@ -308,6 +308,42 @@ impl<'store> NativeScmReader<'store> {
         self.cas.read(id).map(Some).map_err(cas_read_error)
     }
 
+    /// Format 8: whether Operations and StepObservations are pack records
+    /// (council s27).
+    pub(super) fn history_in_packs(&self) -> bool {
+        !self.cas.object_projections()
+    }
+
+    /// Format 8: a history record's payload, read through the catalog with
+    /// the durable horizon. Complete: a record an unreadable pack may hold is
+    /// an error, never "absent". Its bytes must be the canonical encoding of
+    /// what they decode to; the caller checks the decoded id.
+    pub(super) fn history_payload<T>(
+        &self,
+        code: u8,
+        id: &str,
+        kind: &'static str,
+    ) -> Result<Option<T>>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let catalog = self.catalog()?;
+        let key = super::cas::history_key(code, id);
+        let Some((body, _)) = catalog
+            .history_record(&self.cas, code, &key, self.horizon.as_ref())
+            .map_err(cas_read_error)?
+        else {
+            return Ok(None);
+        };
+        let payload = std::str::from_utf8(&body)
+            .map_err(|_| corruption(format!("{kind} {id} is not UTF-8")))?;
+        let value: T = decode_payload(payload, kind, id)?;
+        if canonical_json(&value).map_err(|error| corruption(error.to_string()))? != body {
+            return Err(corruption(format!("{kind} {id} is not canonical")));
+        }
+        Ok(Some(value))
+    }
+
     fn entity_payload<T>(
         &self,
         table: &'static str,

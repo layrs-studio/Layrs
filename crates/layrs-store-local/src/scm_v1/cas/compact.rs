@@ -1608,6 +1608,39 @@ impl NativeCas {
                     .explicit(ordinal)
                     .ok_or_else(|| pack2::pack2_corruption(&loaded.path, "pack record vanished"))?;
                 let id = *id;
+                // A history record (packs v4) keeps its sequence and Space; a
+                // duplicate must be equal, bytes and sequence (council s27).
+                if pack2::is_history_code(code) {
+                    let entry = index
+                        .history
+                        .iter()
+                        .find(|entry| entry.ordinal as usize == ordinal)
+                        .ok_or_else(|| {
+                            pack2::pack2_corruption(&loaded.path, "history record has no entry")
+                        })?;
+                    let body = pack2::record_body(raw, location, code, &loaded.path)?;
+                    open.builder
+                        .add_history_record(
+                            sink,
+                            code,
+                            id,
+                            body,
+                            entry.sequence,
+                            index.space_of(entry).map(str::to_owned),
+                        )
+                        .map_err(|error| {
+                            if error.kind() == io::ErrorKind::InvalidData {
+                                CopyFailure::Source(pack2::pack2_corruption(
+                                    &loaded.path,
+                                    error.to_string(),
+                                ))
+                            } else {
+                                write(error)
+                            }
+                        })?;
+                    explicit_written.insert((code, id));
+                    return Ok(());
+                }
                 if explicit_written.contains(&(code, id)) {
                     return Ok(());
                 }
@@ -2425,6 +2458,168 @@ impl RegisteredCatalog {
         self.contains_with(id, false)
     }
 
+    /// The history record of `code` and `key` with its sequence, from the
+    /// packs before `horizon` (all of them without one). Complete (council
+    /// s27): an unreadable pack that may hold it, a damaged block, or two
+    /// registered copies that differ is an error, never an answer.
+    pub(crate) fn history_record(
+        &self,
+        cas: &NativeCas,
+        code: u8,
+        key: &[u8; 32],
+        horizon: Option<&DurableHorizon>,
+    ) -> CasResult<Option<(Vec<u8>, u64)>> {
+        let mut found: Option<(Vec<u8>, u64)> = None;
+        for (position, registered) in self.packs.iter().enumerate() {
+            if horizon
+                .and_then(|horizon| horizon.pack_seq)
+                .is_some_and(|seq| registered.seq >= seq)
+            {
+                continue;
+            }
+            let index = &registered.pack.index;
+            let Some(ordinal) = index.find(code, key) else {
+                continue;
+            };
+            let vanished = || pack2::pack2_corruption(&self_path(), "history record vanished");
+            let sequence = index
+                .history
+                .iter()
+                .find(|entry| entry.ordinal as usize == ordinal)
+                .map(|entry| entry.sequence)
+                .ok_or_else(vanished)?;
+            let (_, _, location) = index.explicit(ordinal).ok_or_else(vanished)?;
+            let body = self.body(cas, position, code, location)?;
+            match &found {
+                None => found = Some((body, sequence)),
+                Some((other, other_sequence)) => {
+                    if *other != body || *other_sequence != sequence {
+                        return Err(pack2::pack2_corruption(
+                            &self_path(),
+                            "two registered copies of a history record differ",
+                        ));
+                    }
+                }
+            }
+        }
+        if found.is_none() {
+            self.complete(|| Ok(vec![super::keys::explicit_key(code, key)]), ())?;
+        }
+        Ok(found)
+    }
+
+    /// The history records of `code` in `space`, in sequence order (equal
+    /// copies once), from the packs before `horizon`. Complete: an
+    /// unreadable pack that may hold history of `space` is an error.
+    pub(crate) fn history_in_space(
+        &self,
+        cas: &NativeCas,
+        code: u8,
+        space: &str,
+        horizon: Option<&DurableHorizon>,
+    ) -> CasResult<Vec<(u64, Vec<u8>)>> {
+        self.complete(|| Ok(vec![super::keys::space_history_key(space)]), ())?;
+        let mut records: BTreeMap<u64, ([u8; 32], Vec<u8>)> = BTreeMap::new();
+        for (position, registered) in self.packs.iter().enumerate() {
+            if horizon
+                .and_then(|horizon| horizon.pack_seq)
+                .is_some_and(|seq| registered.seq >= seq)
+            {
+                continue;
+            }
+            let index = &registered.pack.index;
+            let Ok(table) = index
+                .spaces
+                .binary_search_by(|name| name.as_str().cmp(space))
+            else {
+                continue;
+            };
+            for entry in &index.history {
+                if entry.space != Some(table as u32) {
+                    continue;
+                }
+                let vanished = || pack2::pack2_corruption(&self_path(), "history record vanished");
+                let (kind, key, location) = index
+                    .explicit(entry.ordinal as usize)
+                    .ok_or_else(vanished)?;
+                if kind != code {
+                    continue;
+                }
+                let body = self.body(cas, position, code, location)?;
+                match records.get(&entry.sequence) {
+                    None => {
+                        records.insert(entry.sequence, (*key, body));
+                    }
+                    Some((other_key, other)) if other_key == key && *other == body => {}
+                    Some(_) => {
+                        return Err(pack2::pack2_corruption(
+                            &self_path(),
+                            "two history records share a sequence",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(records
+            .into_iter()
+            .map(|(sequence, (_, body))| (sequence, body))
+            .collect())
+    }
+
+    /// Every history record of the readable packs: (code, key, sequence,
+    /// body), equal copies once; a record that cannot be read, or two
+    /// copies of a key that differ, is an error of the list (fsck).
+    pub(crate) fn all_history(&self, cas: &NativeCas) -> (Vec<HistoryCopy>, Vec<CasError>) {
+        let mut records: BTreeMap<(u8, [u8; 32]), (u64, Vec<u8>)> = BTreeMap::new();
+        let mut errors = Vec::new();
+        for (position, registered) in self.packs.iter().enumerate() {
+            let index = &registered.pack.index;
+            for entry in &index.history {
+                let Some((code, key, location)) = index.explicit(entry.ordinal as usize) else {
+                    errors.push(pack2::pack2_corruption(
+                        &self_path(),
+                        "history record vanished",
+                    ));
+                    continue;
+                };
+                let body = match self.body(cas, position, code, location) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        errors.push(error);
+                        continue;
+                    }
+                };
+                match records.get(&(code, *key)) {
+                    None => {
+                        records.insert((code, *key), (entry.sequence, body));
+                    }
+                    Some((sequence, other)) if *sequence == entry.sequence && *other == body => {}
+                    Some(_) => errors.push(pack2::pack2_corruption(
+                        &self_path(),
+                        "two registered copies of a history record differ",
+                    )),
+                }
+            }
+        }
+        (
+            records
+                .into_iter()
+                .map(|((code, key), (sequence, body))| (code, key, sequence, body))
+                .collect(),
+            errors,
+        )
+    }
+
+    /// The highest history sequence of the readable packs (0: none).
+    pub(crate) fn max_history_sequence(&self) -> u64 {
+        self.packs
+            .iter()
+            .flat_map(|registered| registered.pack.index.history.iter())
+            .map(|entry| entry.sequence)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// `placements`, but the copies `horizon` excludes.
     fn durable_placements(
         &self,
@@ -2868,6 +3063,8 @@ impl RegisteredCatalog {
                         }
                     }
                     Some(_) => {}
+                    // History records (packs v4) are read by `all_history`.
+                    None if pack2::is_history_code(code) => {}
                     None => errors.push(pack2::pack2_corruption(&self_path(), "pack record kind")),
                 }
             }
@@ -3596,6 +3793,22 @@ pub(crate) struct CompactPublication {
     /// Its keys row (council s17, B1b).
     pub(crate) keys: Option<super::keys::PackKeys>,
     pub(crate) loose: Vec<LooseInstall>,
+    /// Format 8: the history clock's move, (from, to), registered with the
+    /// pack (council s27).
+    pub(crate) history_clock: Option<(u64, u64)>,
+}
+
+/// A registered history record: (code, key, sequence, body).
+pub(crate) type HistoryCopy = (u8, [u8; 32], u64, Vec<u8>);
+
+/// A history record a format 8 batch places in its pack.
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryPut {
+    pub(crate) code: u8,
+    pub(crate) key: [u8; 32],
+    pub(crate) body: Vec<u8>,
+    pub(crate) sequence: u64,
+    pub(crate) space: Option<String>,
 }
 
 /// Format 6 state of one `put_ordered` batch.
@@ -3607,9 +3820,25 @@ pub(super) struct CompactBatch {
     files: HashSet<[u8; 32]>,
     loose: Vec<LooseInstall>,
     publication: Option<CompactPublication>,
+    history: Vec<HistoryPut>,
+    history_clock: Option<(u64, u64)>,
 }
 
 impl NativeCas {
+    /// Format 8: the history records of the next `put_ordered` batch, after
+    /// `plan_file_records`, with the clock move they take (council s27).
+    pub(crate) fn plan_history(
+        &self,
+        records: Vec<HistoryPut>,
+        clock: Option<(u64, u64)>,
+    ) -> CasResult<()> {
+        self.compact_state(|batch| {
+            batch.history = records;
+            batch.history_clock = clock;
+            Ok(())
+        })
+    }
+
     /// Format 6: plans the file records of the next `put_ordered` batch.
     pub(crate) fn plan_file_records(&self, plan: FileRecordPlan) -> CasResult<()> {
         let mut batch = self
@@ -3883,14 +4112,41 @@ impl NativeCas {
     /// every worker finished cleanly and before the batch's durability step,
     /// and records what SQLite must register.
     pub(super) fn finish_compact_batch(&self) -> CasResult<()> {
-        let (open, loose) =
-            self.compact_state(|batch| Ok((batch.pack.take(), std::mem::take(&mut batch.loose))))?;
+        let (mut open, loose, history, history_clock) = self.compact_state(|batch| {
+            Ok((
+                batch.pack.take(),
+                std::mem::take(&mut batch.loose),
+                std::mem::take(&mut batch.history),
+                batch.history_clock.take(),
+            ))
+        })?;
+        if !history.is_empty() {
+            if open.is_none() {
+                open = Some(self.open_new_pack(self.inline_pack_limit())?);
+            }
+            if let Some(open) = open.as_mut() {
+                let path = open.path.clone();
+                for record in history {
+                    open.builder
+                        .add_history_record(
+                            &mut open.sink,
+                            record.code,
+                            record.key,
+                            &record.body,
+                            record.sequence,
+                            record.space,
+                        )
+                        .map_err(|error| io_error("write CAS pack", &path, error))?;
+                }
+            }
+        }
         let mut publication = CompactPublication {
             pack: None,
             inline: None,
             stats: None,
             keys: None,
             loose,
+            history_clock,
         };
         if let Some(open) = open {
             let (pack, inline, stats, keys) = self.publish_pack2(open)?;
@@ -4472,6 +4728,15 @@ fn scrub_record(
                     Err(pack2::pack2_corruption(&loaded.path, "entry vanished")),
                 );
             };
+            // A history record (packs v4): its block is verified here; its
+            // id, key and canonical bytes by fsck's history projection.
+            if pack2::is_history_code(kind) {
+                let name = format!("history:{}", pack2::digest_text(digest));
+                let checked = raw.map_err(Clone::clone).and_then(|block| {
+                    pack2::record_body(block, location, kind, &loaded.path).map(|_| ())
+                });
+                return (name.clone(), name, checked);
+            }
             let Some(object_kind) = pack2::kind_of_code(kind) else {
                 return (
                     "pack entry".into(),

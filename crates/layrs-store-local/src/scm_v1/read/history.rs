@@ -30,6 +30,9 @@ impl NativeScmReader<'_> {
         if snapshot.is_some_and(|s| s.space_id != *space || s.watermark < 0 || s.count > 100_000) {
             return Err(corruption("invalid observation snapshot scope or bounds"));
         }
+        if self.history_in_packs() {
+            return self.observation_projection_in_packs(space, snapshot);
+        }
         // Release the connection guard before using the typed reader again.
         let (watermark, rows) = {
             let connection = self.connection()?;
@@ -120,6 +123,89 @@ impl NativeScmReader<'_> {
             space_id: space.clone(),
             watermark,
             count: rows.len(),
+            digest: digest.finalize().to_hex().to_string(),
+        };
+        if snapshot.is_some_and(|expected| expected != &rebuilt) {
+            return Err(corruption(
+                "observation snapshot changed; restart history query",
+            ));
+        }
+        Ok(ObservationProjection {
+            snapshot: rebuilt,
+            by_step,
+        })
+    }
+
+    /// Format 8: the Space's observations in history sequence order, the
+    /// watermark a sequence (council s27). Complete: an unreadable pack that
+    /// may hold the Space's history fails the query, never a partial page.
+    /// The digest (domain v2) hashes each sequence and canonical payload;
+    /// consolidation and metadata compaction leave it unchanged.
+    fn observation_projection_in_packs(
+        &self,
+        space: &SpaceId,
+        snapshot: Option<&ObservationSnapshot>,
+    ) -> Result<ObservationProjection> {
+        let catalog = self.catalog()?;
+        let records = catalog
+            .history_in_space(
+                &self.cas,
+                crate::scm_v1::cas::OBSERVATION_KIND,
+                space.as_str(),
+                self.horizon.as_ref(),
+            )
+            .map_err(cas_read_error)?;
+        let watermark = match snapshot {
+            Some(snapshot) => snapshot.watermark,
+            None => records.last().map_or(0, |(sequence, _)| {
+                i64::try_from(*sequence).unwrap_or(i64::MAX)
+            }),
+        };
+        let records: Vec<&(u64, Vec<u8>)> = records
+            .iter()
+            .filter(|(sequence, _)| {
+                i64::try_from(*sequence).is_ok_and(|sequence| sequence <= watermark)
+            })
+            .collect();
+        let bytes: usize = records.iter().map(|(_, body)| body.len()).sum();
+        if records.len() > 100_000 || bytes > 64 * 1024 * 1024 {
+            return Err(StoreError::AdmissionBudgetExceeded {
+                resource: "history observations",
+                limit: 100_000,
+            });
+        }
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"layrs-local-observation-snapshot-v2\0");
+        digest.update(space.as_str().as_bytes());
+        let mut by_step: BTreeMap<StepId, Vec<StepObservation>> = BTreeMap::new();
+        for (sequence, body) in &records {
+            let payload =
+                std::str::from_utf8(body).map_err(|_| corruption("observation is not UTF-8"))?;
+            let record: StepObservation =
+                decode_payload(payload, "StepObservation", space.as_str())?;
+            if canonical_json(&record).map_err(|error| corruption(error.to_string()))? != *body {
+                return Err(corruption("observation is not canonical"));
+            }
+            if record.space_id() != Some(space)
+                || !self.object_admitted_to_space(
+                    &StoreObjectId::Step(record.step_id().clone()),
+                    space,
+                )?
+            {
+                return Err(corruption("observation projection scope mismatch"));
+            }
+            digest.update(&sequence.to_le_bytes());
+            digest.update(&(body.len() as u64).to_le_bytes());
+            digest.update(body);
+            by_step
+                .entry(record.step_id().clone())
+                .or_default()
+                .push(record);
+        }
+        let rebuilt = ObservationSnapshot {
+            space_id: space.clone(),
+            watermark,
+            count: records.len(),
             digest: digest.finalize().to_hex().to_string(),
         };
         if snapshot.is_some_and(|expected| expected != &rebuilt) {

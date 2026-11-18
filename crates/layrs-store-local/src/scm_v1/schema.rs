@@ -87,18 +87,21 @@ pub fn schema_v3_checksum() -> String {
     blake3::hash(SCHEMA_V3_SQL.as_bytes()).to_hex().to_string()
 }
 
-/// Store format 8 baseline, draft 2 (council s25, phase 2a): v3 without
+/// Store format 8 baseline, draft 4 (council s25, s27): v3 without
 /// `space_object_admissions` (every object kind is admitted by the pack
 /// bitmaps or `space_loose_admissions`), without the object projections
-/// (the canonical records are the only source) and without the unused
-/// `pending_*` tables. Drafts change until format 8 is frozen; a Store of an
-/// earlier draft is refused.
+/// (the canonical records are the only source), without the unused
+/// `pending_*` tables, and without the history tables (Operations and
+/// StepObservations are pack records, sequenced by `history_clock`;
+/// `space_initializers` and `history_identities` answer what must stay
+/// complete). Drafts change until format 8 is frozen; a Store of an earlier
+/// draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft3";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft4";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "5b4baeb18f68852464a7c7cb7fe0604f5ecae04c3e207e3103d1f6f473365020";
+    "c9004b71883c128cfedb8005d62f6473c93f555cace01db857945dc21cfed1c3";
 pub const SCHEMA_V4_FINGERPRINT: &str =
-    "8a7d85cfa95719f7f1bfa345d0f2f6a62f7d4a71b5ab2b3907e5e20b7184b6b9";
+    "400317ca27dc7fffef0ec9a6c00861247b98018e7ba7531d438e3134586d09ae";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
 
 pub fn schema_v4_checksum() -> String {
@@ -187,7 +190,8 @@ pub const BASELINE_V2: Baseline = Baseline {
 
 /// The v3 tables but `space_object_admissions`, the object projections
 /// (`objects`, `object_edges`, `steps`, `step_parents`, `repository_views`
-/// and its child tables) and the unused `pending_*` tables.
+/// and its child tables), the unused `pending_*` tables and the history
+/// tables; plus the history clock, initializers and identities.
 pub const REQUIRED_TABLES_V4: &[&str] = &[
     "meta",
     "migrations",
@@ -203,11 +207,6 @@ pub const REQUIRED_TABLES_V4: &[&str] = &[
     "space_pack_admissions",
     "loose_objects",
     "space_loose_admissions",
-    "step_observations",
-    "operations",
-    "operation_parents",
-    "operation_rewrites",
-    "operation_rewrite_targets",
     "worktrees",
     "markers",
     "marker_proofs",
@@ -222,6 +221,9 @@ pub const REQUIRED_TABLES_V4: &[&str] = &[
     "sync_cursors",
     "object_pins",
     "gc_roots",
+    "history_clock",
+    "space_initializers",
+    "history_identities",
 ];
 
 pub const BASELINE_V4: Baseline = Baseline {

@@ -8,6 +8,27 @@ use crate::scm_v1::cas::{AuditEvent, RegisteredCatalog, is_content};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// A history record's typed form, its bytes canonical.
+fn decode_history(code: u8, body: &[u8]) -> Result<layrs_store::scm::EntityRecord, String> {
+    use layrs_store::scm::EntityRecord;
+    let record = if code == crate::scm_v1::cas::OPERATION_KIND {
+        serde_json::from_slice(body).map(EntityRecord::Operation)
+    } else {
+        serde_json::from_slice(body).map(EntityRecord::StepObservation)
+    }
+    .map_err(|error| format!("history record does not decode: {error}"))?;
+    let canonical = match &record {
+        EntityRecord::Operation(value) => layrs_core::scm::canonical_json(value),
+        EntityRecord::StepObservation(value) => layrs_core::scm::canonical_json(value),
+        _ => unreachable!("decoded as history"),
+    }
+    .map_err(|error| error.to_string())?;
+    if canonical != body {
+        return Err("history record is not canonical".into());
+    }
+    Ok(record)
+}
+
 /// Format 8's derived tables: the format 7 projections it does not store,
 /// rebuilt per fsck run in this connection's temporary schema (no foreign
 /// keys: fsck reports what they would refuse).
@@ -68,6 +89,47 @@ CREATE TEMP TABLE IF NOT EXISTS repository_view_releases (
     release_id TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
     PRIMARY KEY (repository_view_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS operations (
+    operation_id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL,
+    resulting_view_id TEXT NOT NULL,
+    operation_kind TEXT NOT NULL,
+    actor_id TEXT,
+    device_id TEXT,
+    created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TEMP TABLE IF NOT EXISTS operation_parents (
+    operation_id TEXT NOT NULL,
+    parent_operation_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (operation_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS operation_rewrites (
+    operation_id TEXT NOT NULL,
+    old_step_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (operation_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS operation_rewrite_targets (
+    operation_id TEXT NOT NULL,
+    old_step_id TEXT NOT NULL,
+    new_step_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (operation_id, old_step_id, ordinal)
+);
+CREATE TEMP TABLE IF NOT EXISTS step_observations (
+    observation_id TEXT PRIMARY KEY,
+    step_id TEXT NOT NULL,
+    space_id TEXT,
+    operation_id TEXT,
+    worktree_id TEXT,
+    actor_id TEXT,
+    device_id TEXT,
+    observed_at TEXT NOT NULL,
+    capture_reason TEXT NOT NULL,
+    payload_json TEXT NOT NULL
 );
 CREATE TEMP TABLE IF NOT EXISTS repository_view_worktrees (
     repository_view_id TEXT NOT NULL,
@@ -150,6 +212,65 @@ impl Context<'_> {
             crate::scm_v1::repository::insert_history_projection(self.connection, object)
                 .map_err(native)?;
         }
+        self.project_history_entities()
+    }
+
+    /// Format 8: every history record (Operations, StepObservations) of the
+    /// readable packs, checked (its key is its id's, its bytes canonical)
+    /// and written into this run's temporary tables by the writer's own row
+    /// code, so the entity, graph and GC checks run as before (council s27).
+    fn project_history_entities(&mut self) -> Result<(), FsckError> {
+        let native = |error: layrs_store::scm::StoreError| FsckError::Native(error.to_string());
+        let Some((cas, catalog)) = self.compact_catalog() else {
+            return Ok(());
+        };
+        let (records, errors) = catalog.all_history(&cas);
+        for error in errors {
+            self.finding(
+                FsckFindingCode::CasCorruption,
+                FsckSeverity::Error,
+                None,
+                None,
+                None,
+                format!("{}: {error}", error.code()),
+            );
+        }
+        for (code, key, _sequence, body) in records {
+            if !self.consume_cpu(1) {
+                return Ok(());
+            }
+            let budget = self.byte_budget_remaining;
+            if !self.reserve_bytes(body.len() as u64, budget, "history record") {
+                return Ok(());
+            }
+            let record = match decode_history(code, &body) {
+                Ok(record) => record,
+                Err(message) => {
+                    self.finding(
+                        FsckFindingCode::CasCorruption,
+                        FsckSeverity::Error,
+                        None,
+                        None,
+                        None,
+                        message,
+                    );
+                    continue;
+                }
+            };
+            if crate::scm_v1::cas::history_key(code, record.id_str()) != key {
+                self.finding(
+                    FsckFindingCode::CasCorruption,
+                    FsckSeverity::Error,
+                    None,
+                    None,
+                    Some(record.id_str().to_owned()),
+                    "history record is filed under another id's key",
+                );
+                continue;
+            }
+            crate::scm_v1::repository::insert_history_entity(self.connection, &record)
+                .map_err(native)?;
+        }
         Ok(())
     }
 
@@ -222,7 +343,7 @@ impl Context<'_> {
             let rows: Vec<(String, String)> = {
                 let mut statement = self
                     .connection
-                    .prepare(&format!("SELECT {key}, {column} FROM main.{table}"))?;
+                    .prepare(&format!("SELECT {key}, {column} FROM {table}"))?;
                 let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
                 rows.collect::<rusqlite::Result<_>>()?
             };
@@ -865,22 +986,35 @@ impl Context<'_> {
     }
 }
 
-/// Whether an unreadable registered pack may hold the object named `id`,
-/// whatever its kind: its keys row does not exclude it as any of them.
+/// Whether an unreadable registered pack may hold the object or history
+/// record (packs v4) named `id`, whatever its kind: its keys row does not
+/// exclude it as any of them.
 fn may_be_unreadable(catalog: &RegisteredCatalog, id: &str) -> bool {
     use layrs_store::scm::StoreObjectKind;
-    [
-        StoreObjectKind::ChunkRaw,
-        StoreObjectKind::FileManifest,
-        StoreObjectKind::Tree,
-        StoreObjectKind::Symlink,
-        StoreObjectKind::Tombstone,
-        StoreObjectKind::Step,
-        StoreObjectKind::RepositoryView,
-        StoreObjectKind::Conflict,
-        StoreObjectKind::Product,
+    let history = [
+        crate::scm_v1::cas::OPERATION_KIND,
+        crate::scm_v1::cas::OBSERVATION_KIND,
     ]
     .into_iter()
-    .filter_map(|kind| super::parse_object_id(kind, id))
-    .any(|object| catalog.may_hold_unreadably(&object).unwrap_or(true))
+    .any(|code| {
+        let key = crate::scm_v1::cas::history_key(code, id);
+        catalog
+            .unknown_to(|| Ok(vec![crate::scm_v1::cas::keys::explicit_key(code, &key)]))
+            .map_or(true, |unknown| unknown.is_some())
+    });
+    history
+        || [
+            StoreObjectKind::ChunkRaw,
+            StoreObjectKind::FileManifest,
+            StoreObjectKind::Tree,
+            StoreObjectKind::Symlink,
+            StoreObjectKind::Tombstone,
+            StoreObjectKind::Step,
+            StoreObjectKind::RepositoryView,
+            StoreObjectKind::Conflict,
+            StoreObjectKind::Product,
+        ]
+        .into_iter()
+        .filter_map(|kind| super::parse_object_id(kind, id))
+        .any(|object| catalog.may_hold_unreadably(&object).unwrap_or(true))
 }

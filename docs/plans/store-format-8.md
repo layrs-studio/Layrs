@@ -380,3 +380,30 @@ and runs the format 8 suites):
    initializer beside a lost pack, replay after a lost response, conflicting
    duplicate sequences, history-only packs, corrupt blocks, budgets, paging
    across append, consolidation and compaction); then council review.
+
+## Phase 2b progress (2026-11-18)
+
+- Step 1 (`182409a`): packs v4, history section, Space keys, version gate.
+- Steps 2 to 4, 7 and 8 (in progress, uncommitted at this note): schema v4
+  draft 4 (the five history tables dropped; `history_clock`,
+  `space_initializers`, `history_identities`); the writer plans the batch's
+  new history records before `BEGIN` (complete lookup through the session
+  catalog, clock read on the writer, sequences in batch order), the pack
+  carries them, `register_compact` moves the clock by compare-and-set, a
+  replay places none; Initialize and identity rows; no stored history GC
+  roots; Operation-head roots in Rust for the Spaces a batch moves; readers
+  (point reads through the catalog with the horizon, initializer and
+  identity tables, observation projection by sequence, snapshot digest v2);
+  consolidation copies sequences and refuses differing copies; fsck reads
+  every history record (key and canonical bytes checked), rebuilds the five
+  tables as temporary tables with the writer's row code, derives history
+  roots for reachability, treats a history id an unreadable pack may hold
+  as unknown.
+- Still to do in 2b: history references (writer and fsck: Worktree, heads,
+  publications, recovery plans, observations to Operations, Operation
+  parents); fsck checks of sequence density and the clock, of the two
+  tables against the records, of one Initialize per Space; consolidation's
+  explicit inventory proof (today by construction: sequences come from the
+  sources, and the builder refuses a differing duplicate); the client and
+  compaction cursor flag; the council's test list; measurement; council
+  review.

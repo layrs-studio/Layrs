@@ -78,7 +78,12 @@ fn observation_projection_rejects_oversized_row_population_before_decoding() {
     let dir = Directory::new();
     let store = scm_v1::init(&dir.0, StoreId::parse("store:history-budget").unwrap()).unwrap();
     let path = store.layout().sqlite_path().to_owned();
+    // Format 8 keeps observations in packs: no SQL rows to inject.
+    let history_in_packs = store.format_version() == scm_v1::HISTORY_FORMAT_VERSION;
     drop(store);
+    if history_in_packs {
+        return;
+    }
     // Deliberate corruption injection in the storage layer. Missing references
     // must not make a huge source allocate/decode before enforcing row limits.
     let connection = rusqlite::Connection::open(path).unwrap();

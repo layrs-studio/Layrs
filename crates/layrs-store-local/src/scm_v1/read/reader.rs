@@ -228,6 +228,19 @@ impl ScmReader for NativeScmReader<'_> {
     }
 
     fn get_step_observation(&self, id: &ObservationId) -> Result<Option<StepObservation>> {
+        if self.history_in_packs() {
+            let value: Option<StepObservation> = self.history_payload(
+                crate::scm_v1::cas::OBSERVATION_KIND,
+                id.as_str(),
+                "StepObservation",
+            )?;
+            if value.as_ref().is_some_and(|value| value.id() != id) {
+                return Err(corruption(format!(
+                    "StepObservation {id} decodes to another id"
+                )));
+            }
+            return Ok(value);
+        }
         let value = self.entity_payload(
             "step_observations",
             "observation_id",
@@ -257,6 +270,14 @@ impl ScmReader for NativeScmReader<'_> {
     }
 
     fn get_operation(&self, id: &OperationId) -> Result<Option<Operation>> {
+        if self.history_in_packs() {
+            let value: Option<Operation> =
+                self.history_payload(crate::scm_v1::cas::OPERATION_KIND, id.as_str(), "Operation")?;
+            if value.as_ref().is_some_and(|value| value.id() != id) {
+                return Err(corruption(format!("Operation {id} decodes to another id")));
+            }
+            return Ok(value);
+        }
         let value = self.entity_payload("operations", "operation_id", id.as_str(), "Operation")?;
         if let Some(value) = &value {
             self.validate_operation_projection(value)?;
@@ -652,18 +673,26 @@ impl ScmReader for NativeScmReader<'_> {
         if self.identities.actor_exists(id) {
             return Ok(true);
         }
-        let sources = self.tagged_ids(
+        // Format 8: the history's actors are in `history_identities`.
+        let history = if self.history_in_packs() {
+            "SELECT 'identity', identity_id FROM history_identities \
+                    WHERE identity_kind = 'actor' AND identity_id = ?1"
+        } else {
             "SELECT 'operation', operation_id FROM operations WHERE actor_id = ?1 \
-             UNION ALL SELECT 'observation', observation_id FROM step_observations WHERE actor_id = ?1 \
+             UNION ALL SELECT 'observation', observation_id FROM step_observations WHERE actor_id = ?1"
+        };
+        let sources = self.tagged_ids(
+            &format!("{history} \
              UNION ALL SELECT 'marker', marker_id FROM markers WHERE json_extract(payload_json, '$.createdBy') = ?1 \
              UNION ALL SELECT 'release', release_id FROM releases WHERE json_extract(payload_json, '$.createdBy') = ?1 \
              UNION ALL SELECT 'publication', release_publication_id FROM release_publications \
                        WHERE json_extract(payload_json, '$.publishedBy') = ?1 \
-             ORDER BY 1, 2",
+             ORDER BY 1, 2"),
             id.as_str(),
         )?;
         for (kind, source) in sources {
             let matches = match kind.as_str() {
+                "identity" => source == id.as_str(),
                 "operation" => self
                     .get_operation(&OperationId::parse(source).map_err(core_corruption)?)?
                     .is_some_and(|value| value.actor_id() == Some(id)),
@@ -694,16 +723,25 @@ impl ScmReader for NativeScmReader<'_> {
         if self.identities.device_exists(id) {
             return Ok(true);
         }
-        let sources = self.tagged_ids(
+        let history = if self.history_in_packs() {
+            "SELECT 'identity', identity_id FROM history_identities \
+                    WHERE identity_kind = 'device' AND identity_id = ?1"
+        } else {
             "SELECT 'operation', operation_id FROM operations WHERE device_id = ?1 \
-             UNION ALL SELECT 'observation', observation_id FROM step_observations WHERE device_id = ?1 \
+             UNION ALL SELECT 'observation', observation_id FROM step_observations WHERE device_id = ?1"
+        };
+        let sources = self.tagged_ids(
+            &format!(
+                "{history} \
              UNION ALL SELECT 'publication', release_publication_id FROM release_publications \
                        WHERE json_extract(payload_json, '$.deviceId') = ?1 \
-             ORDER BY 1, 2",
+             ORDER BY 1, 2"
+            ),
             id.as_str(),
         )?;
         for (kind, source) in sources {
             let matches = match kind.as_str() {
+                "identity" => source == id.as_str(),
                 "operation" => self
                     .get_operation(&OperationId::parse(source).map_err(core_corruption)?)?
                     .is_some_and(|value| value.device_id() == Some(id)),
@@ -792,9 +830,11 @@ impl ScmReader for NativeScmReader<'_> {
 
     fn initializer_in_space(&self, space_id: &SpaceId) -> Result<Option<Operation>> {
         let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT operation_id FROM operations \
+        // Format 8: one row per Space, complete beside any unreadable pack.
+        let sql = if self.history_in_packs() {
+            "SELECT operation_id FROM space_initializers WHERE space_id = ?1 LIMIT 2"
+        } else {
+            "SELECT operation_id FROM operations \
                  WHERE (space_id = ?1 AND operation_kind = 'initialize') \
                     OR (space_id = ?1 \
                         AND json_extract(payload_json, '$.kind') = 'initialize') \
@@ -802,9 +842,9 @@ impl ScmReader for NativeScmReader<'_> {
                         AND operation_kind = 'initialize') \
                     OR (json_extract(payload_json, '$.spaceId') = ?1 \
                         AND json_extract(payload_json, '$.kind') = 'initialize') \
-                 ORDER BY operation_id LIMIT 2",
-            )
-            .map_err(sqlite_backend)?;
+                 ORDER BY operation_id LIMIT 2"
+        };
+        let mut statement = connection.prepare(sql).map_err(sqlite_backend)?;
         let ids = statement
             .query_map([space_id.as_str()], |row| row.get::<_, String>(0))
             .map_err(sqlite_backend)?
