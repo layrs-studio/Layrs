@@ -42,7 +42,8 @@ pub(crate) fn rfc3339_to_epoch_millis(value: &str) -> Result<i64> {
 /// `applied_transactions.receipt_json` stores this complete receipt so an
 /// idempotent retry can reconstruct the original outcome without recomputing
 /// it from mutable projections. SQLite guarantees that the value is JSON;
-/// this boundary guarantees its exact canonical representation.
+/// this boundary guarantees its exact canonical representation. Format 8
+/// keeps a compact receipt instead (`ApplyBatchReceipt::compact_bytes`).
 pub(crate) fn canonical_receipt_json<T: serde::Serialize>(receipt: &T) -> Result<String> {
     String::from_utf8(
         canonical_json(receipt)

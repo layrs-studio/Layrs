@@ -95,14 +95,15 @@ pub fn schema_v3_checksum() -> String {
 /// StepObservations are pack records, sequenced by `history_clock`;
 /// `space_initializers` and `history_identities` answer what must stay
 /// complete). Draft 5: history section entries carry their record's body
-/// digest (packs v4 changed, schema unchanged). Drafts change until format 8
-/// is frozen; a Store of an earlier draft is refused.
+/// digest (packs v4 changed, schema unchanged). Draft 6: compact replay
+/// receipts (phase 2c). Drafts change until format 8 is frozen; a Store of
+/// an earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft5";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft6";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "c9004b71883c128cfedb8005d62f6473c93f555cace01db857945dc21cfed1c3";
+    "fda9e81e112d7570438a9286a17528decf55a76b2bc00fe885e76b2968f6139c";
 pub const SCHEMA_V4_FINGERPRINT: &str =
-    "400317ca27dc7fffef0ec9a6c00861247b98018e7ba7531d438e3134586d09ae";
+    "0e1b2117a5a6d20d310b8a637203cbb1b7286c081028204ef35869edae35876d";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
 
 pub fn schema_v4_checksum() -> String {

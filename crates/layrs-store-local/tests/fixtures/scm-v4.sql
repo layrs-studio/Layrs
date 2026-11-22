@@ -13,15 +13,15 @@ CREATE TABLE migrations (
     applied_at_ms INTEGER NOT NULL CHECK (applied_at_ms >= 0)
 ) STRICT;
 
+-- Format 8 (council s25, phase 2c): compact replay receipts. The request
+-- digest is its 32 bytes; the receipt is a version, the outcome and the four
+-- counts as LEB128 (the transaction id and digest are the row's own).
 CREATE TABLE applied_transactions (
     transaction_id TEXT PRIMARY KEY CHECK (length(transaction_id) > 0),
-    request_digest TEXT NOT NULL CHECK (length(request_digest) = 71),
-    -- Complete ApplyBatch replay receipt encoded as RFC 8785 JCS. SQLite
-    -- enforces valid JSON; the repository write boundary enforces canonical
-    -- bytes before insertion and again before replay.
-    receipt_json TEXT NOT NULL CHECK (json_valid(receipt_json)),
+    request_digest BLOB NOT NULL CHECK (length(request_digest) = 32),
+    receipt BLOB NOT NULL CHECK (length(receipt) BETWEEN 6 AND 42),
     applied_at_ms INTEGER NOT NULL CHECK (applied_at_ms >= 0)
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE stores (
     store_id TEXT PRIMARY KEY CHECK (length(store_id) > 0 AND instr(store_id, char(0)) = 0),

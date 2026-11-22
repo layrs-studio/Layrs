@@ -4,7 +4,7 @@
 //! A pending capture is resolved from the repository's committed receipt. If no
 //! receipt exists, recovery abandons that *attempt*, preserving every user file.
 //! It never reconstructs an unaccepted capture from a later filesystem state.
-use super::{sqlite::validate_canonical_receipt_json, write_batch::ApplyBatchReceipt};
+use super::write_batch::ApplyBatchReceipt;
 use crate::secure_fs::{PinnedDirectory, PinnedFile};
 use layrs_core::scm::{OperationId, StepId, StoreId, WorktreeId};
 use layrs_store::scm::{StoreMutation, WriteBatch};
@@ -1060,22 +1060,18 @@ fn acceptance_receipt_matches(
     expected_receipt: &ApplyBatchReceipt,
 ) -> io::Result<bool> {
     store.verify_filesystem_identity()?;
-    let row: Option<(String, String)> = store
-        .connection()
-        .map_err(io::Error::other)?
-        .query_row(
-            "SELECT request_digest,receipt_json FROM applied_transactions WHERE transaction_id=?1",
-            [transaction_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(io::Error::other)
-        .journal_context("read committed capture receipt")?;
+    let compact = store.format_version() == super::HISTORY_FORMAT_VERSION;
+    let row = super::repository::read_receipt(
+        &*store.connection().map_err(io::Error::other)?,
+        transaction_id,
+        compact,
+    )
+    .map_err(io::Error::other)
+    .journal_context("read committed capture receipt")?;
     let Some((digest, receipt)) = row else {
         return Ok(false);
     };
-    let value = validate_canonical_receipt_json(&receipt).map_err(io::Error::other)?;
-    let receipt: ApplyBatchReceipt = serde_json::from_value(value).map_err(io::Error::other)?;
+    let receipt = receipt.map_err(io::Error::other)?;
     if digest != request_digest || &receipt != expected_receipt {
         return Err(invalid(
             "VFS acceptance receipt does not match prepared transaction",

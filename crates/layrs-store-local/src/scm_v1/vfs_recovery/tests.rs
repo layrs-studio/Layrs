@@ -1,5 +1,95 @@
 use super::*;
 
+/// Whether `store` keeps compact receipts (format 8, phase 2c).
+fn compact_receipts(store: &super::super::NativeStoreExclusive) -> bool {
+    store.format_version() == super::super::HISTORY_FORMAT_VERSION
+}
+
+fn digest_bytes(digest: &str) -> Vec<u8> {
+    let hex = digest.strip_prefix("blake3:").unwrap();
+    (0..32)
+        .map(|at| u8::from_str_radix(&hex[2 * at..2 * at + 2], 16).unwrap())
+        .collect()
+}
+
+/// Seeds an accepted receipt in the store's own encoding.
+fn insert_receipt(
+    store: &super::super::NativeStoreExclusive,
+    connection: &rusqlite::Connection,
+    transaction_id: &str,
+    request_digest: &str,
+    receipt: &super::super::write_batch::ApplyBatchReceipt,
+) {
+    if compact_receipts(store) {
+        connection
+            .execute(
+                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,0)",
+                rusqlite::params![transaction_id, digest_bytes(request_digest), receipt.compact_bytes()],
+            )
+            .unwrap();
+    } else {
+        connection
+            .execute(
+                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,0)",
+                rusqlite::params![
+                    transaction_id,
+                    request_digest,
+                    String::from_utf8(layrs_core::scm::canonical_json(receipt).unwrap()).unwrap(),
+                ],
+            )
+            .unwrap();
+    }
+}
+
+fn set_receipt_digest(
+    store: &super::super::NativeStoreExclusive,
+    connection: &rusqlite::Connection,
+    transaction_id: &str,
+    request_digest: &str,
+) {
+    if compact_receipts(store) {
+        connection
+            .execute(
+                "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
+                rusqlite::params![digest_bytes(request_digest), transaction_id],
+            )
+            .unwrap();
+    } else {
+        connection
+            .execute(
+                "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
+                rusqlite::params![request_digest, transaction_id],
+            )
+            .unwrap();
+    }
+}
+
+fn set_receipt(
+    store: &super::super::NativeStoreExclusive,
+    connection: &rusqlite::Connection,
+    transaction_id: &str,
+    receipt: &super::super::write_batch::ApplyBatchReceipt,
+) {
+    if compact_receipts(store) {
+        connection
+            .execute(
+                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
+                rusqlite::params![receipt.compact_bytes(), transaction_id],
+            )
+            .unwrap();
+    } else {
+        connection
+            .execute(
+                "UPDATE applied_transactions SET receipt_json=?1 WHERE transaction_id=?2",
+                rusqlite::params![
+                    String::from_utf8(layrs_core::scm::canonical_json(receipt).unwrap()).unwrap(),
+                    transaction_id,
+                ],
+            )
+            .unwrap();
+    }
+}
+
 #[test]
 fn export_verification_checks_cancellation_between_bounded_blocks() {
     let bytes = vec![0x63; 128 * 1024];
@@ -199,10 +289,13 @@ fn activation_replay_requires_exact_receipt_and_never_infers_legacy_baseline() {
         .unwrap();
     let committed = super::super::open_exclusive(&store_root).unwrap();
     let connection = committed.begin_write_connection().unwrap();
-    connection.execute("INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,0)", rusqlite::params![
-        expected.transaction_id, expected.request_digest,
-        String::from_utf8(layrs_core::scm::canonical_json(&expected.receipt).unwrap()).unwrap(),
-    ]).unwrap();
+    insert_receipt(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &expected.request_digest,
+        &expected.receipt,
+    );
     drop(connection);
     drop(committed);
     drop(journal); // After acceptance, before acknowledgment: exact Operation survives.
@@ -234,15 +327,12 @@ fn activation_replay_requires_exact_receipt_and_never_infers_legacy_baseline() {
         expected.request_digest,
         format!("blake3:{}", "0".repeat(64))
     );
-    connection
-        .execute(
-            "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
-            rusqlite::params![
-                format!("blake3:{}", "0".repeat(64)),
-                expected.transaction_id,
-            ],
-        )
-        .unwrap();
+    set_receipt_digest(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &format!("blake3:{}", "0".repeat(64)),
+    );
     drop(connection);
     drop(committed);
     assert!(
@@ -314,10 +404,13 @@ fn legacy_capture_below_capacity_requires_receipt_for_replayed_lineage() {
     assert!(journal.state().provider_capture_baseline().is_none());
     let committed = super::super::open_exclusive(&store_root).unwrap();
     let connection = committed.begin_write_connection().unwrap();
-    connection.execute("INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,0)", rusqlite::params![
-        expected.transaction_id, expected.request_digest,
-        String::from_utf8(layrs_core::scm::canonical_json(&expected.receipt).unwrap()).unwrap(),
-    ]).unwrap();
+    insert_receipt(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &expected.request_digest,
+        &expected.receipt,
+    );
     drop(connection);
     drop(committed);
     assert_eq!(
@@ -339,15 +432,12 @@ fn legacy_capture_below_capacity_requires_receipt_for_replayed_lineage() {
         expected.request_digest,
         format!("blake3:{}", "0".repeat(64))
     );
-    connection
-        .execute(
-            "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
-            rusqlite::params![
-                format!("blake3:{}", "0".repeat(64)),
-                expected.transaction_id
-            ],
-        )
-        .unwrap();
+    set_receipt_digest(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &format!("blake3:{}", "0".repeat(64)),
+    );
     drop(connection);
     drop(committed);
     assert!(
@@ -356,12 +446,12 @@ fn legacy_capture_below_capacity_requires_receipt_for_replayed_lineage() {
     );
     let committed = super::super::open_exclusive(&store_root).unwrap();
     let connection = committed.begin_write_connection().unwrap();
-    connection
-        .execute(
-            "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
-            rusqlite::params![expected.request_digest, expected.transaction_id],
-        )
-        .unwrap();
+    set_receipt_digest(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &expected.request_digest,
+    );
     drop(connection);
     drop(committed);
     assert_eq!(
@@ -512,10 +602,13 @@ fn exhausted_legacy_pending_journal_reopens_and_resolves_exact_receipt_once() {
     let mut bad_value = serde_json::to_value(&bad_receipt).unwrap();
     bad_value["mutationCount"] = serde_json::json!(99);
     bad_receipt = serde_json::from_value(bad_value).unwrap();
-    connection.execute("INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,0)", rusqlite::params![
-        intent.transaction_id, intent.request_digest,
-        String::from_utf8(layrs_core::scm::canonical_json(&bad_receipt).unwrap()).unwrap(),
-    ]).unwrap();
+    insert_receipt(
+        &committed,
+        &connection,
+        &intent.transaction_id,
+        &intent.request_digest,
+        &bad_receipt,
+    );
     drop(connection);
     drop(committed);
     assert!(journal.resolve_capture(&NoVfsJournalFaults).is_err());
@@ -523,16 +616,12 @@ fn exhausted_legacy_pending_journal_reopens_and_resolves_exact_receipt_once() {
     assert!(journal.state().pending_capture.is_some());
     let committed = super::super::open_exclusive(&store_root).unwrap();
     let connection = committed.begin_write_connection().unwrap();
-    connection
-        .execute(
-            "UPDATE applied_transactions SET receipt_json=?1 WHERE transaction_id=?2",
-            rusqlite::params![
-                String::from_utf8(layrs_core::scm::canonical_json(&intent.receipt).unwrap())
-                    .unwrap(),
-                intent.transaction_id,
-            ],
-        )
-        .unwrap();
+    set_receipt(
+        &committed,
+        &connection,
+        &intent.transaction_id,
+        &intent.receipt,
+    );
     drop(connection);
     drop(committed);
     assert_eq!(
@@ -578,12 +667,12 @@ fn exhausted_legacy_pending_journal_reopens_and_resolves_exact_receipt_once() {
     let committed = super::super::open_exclusive(&store_root).unwrap();
     let connection = committed.begin_write_connection().unwrap();
     assert_ne!(intent.request_digest, format!("blake3:{}", "0".repeat(64)));
-    connection
-        .execute(
-            "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
-            rusqlite::params![format!("blake3:{}", "0".repeat(64)), intent.transaction_id,],
-        )
-        .unwrap();
+    set_receipt_digest(
+        &committed,
+        &connection,
+        &intent.transaction_id,
+        &format!("blake3:{}", "0".repeat(64)),
+    );
     drop(connection);
     drop(committed);
     assert!(open(false).is_err());

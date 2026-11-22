@@ -631,7 +631,7 @@ impl NativeScmRepository {
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
         // objects supplied by the losing request. This is safe by contract:
         // no metadata points at them and normal reachability GC may remove them.
-        if let Some(outcome) = replay(connection, batch)? {
+        if let Some(outcome) = replay(connection, batch, !cas.reader().object_projections())? {
             return Ok(outcome);
         }
         self.hit(RepositoryFaultPoint::AfterReplayCheck)?;
@@ -774,11 +774,23 @@ impl NativeScmRepository {
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
-        let receipt_json = canonical_receipt_json(&receipt).map_err(schema_backend)?;
-        guard.execute(
-            "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
-            params![batch.transaction_id().as_str(), batch.request_digest().to_string(), receipt_json],
-        ).map_err(sql_backend)?;
+        if projections {
+            let receipt_json = canonical_receipt_json(&receipt).map_err(schema_backend)?;
+            guard.execute(
+                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+                params![batch.transaction_id().as_str(), batch.request_digest().to_string(), receipt_json],
+            ).map_err(sql_backend)?;
+        } else {
+            // Format 8: a compact receipt (council s25, phase 2c).
+            guard.execute(
+                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+                params![
+                    batch.transaction_id().as_str(),
+                    &batch.request_digest().as_bytes()[..],
+                    receipt.compact_bytes()
+                ],
+            ).map_err(sql_backend)?;
+        }
         if let Some((completion, clock)) = completing {
             let (id, owner) = self
                 .materialization_permit
@@ -952,33 +964,81 @@ pub(crate) fn precheck_mutations(connection: &Mutex<Connection>, batch: &WriteBa
     Ok(())
 }
 
-fn replay(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<Option<ApplyBatchOutcome>> {
+fn replay(
+    connection: &Mutex<Connection>,
+    batch: &WriteBatch,
+    compact_receipts: bool,
+) -> Result<Option<ApplyBatchOutcome>> {
     let guard = connection.lock().map_err(|_| poisoned())?;
-    let row: Option<(String, String)> = guard
-        .query_row(
-            "SELECT request_digest,receipt_json FROM applied_transactions WHERE transaction_id=?1",
-            [batch.transaction_id().as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(sql_backend)?;
-    let Some((digest, receipt_json)) = row else {
+    let Some((digest, receipt)) =
+        read_receipt(&guard, batch.transaction_id().as_str(), compact_receipts)
+            .map_err(sql_backend)?
+    else {
         return Ok(None);
     };
+    // The digest is compared before the receipt is decoded.
     if digest != batch.request_digest().to_string() {
         return Err(StoreError::TransactionReplayMismatch {
             transaction_id: batch.transaction_id().clone(),
         });
     }
-    let value = validate_canonical_receipt_json(&receipt_json).map_err(schema_backend)?;
-    let receipt: ApplyBatchReceipt =
-        serde_json::from_value(value).map_err(|error| StoreError::Corruption {
-            message: format!("invalid typed applied transaction receipt: {error}"),
-        })?;
+    let receipt = receipt.map_err(|message| StoreError::Corruption { message })?;
     receipt.validate(batch.transaction_id(), batch.request_digest(), batch)?;
     Ok(Some(ApplyBatchOutcome::AlreadyApplied {
         request_digest: batch.request_digest(),
     }))
+}
+
+/// A stored receipt: its request digest (`blake3:` hex) and the decoded
+/// receipt, or why it does not decode.
+pub(super) type StoredReceipt = (String, std::result::Result<ApplyBatchReceipt, String>);
+
+/// The receipt of `transaction_id`: canonical JCS in formats 5 to 7, compact
+/// in format 8 (`compact`).
+pub(super) fn read_receipt(
+    connection: &Connection,
+    transaction_id: &str,
+    compact: bool,
+) -> rusqlite::Result<Option<StoredReceipt>> {
+    if compact {
+        let row: Option<(Vec<u8>, Vec<u8>)> = connection
+            .query_row(
+                "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_id=?1",
+                [transaction_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((digest, bytes)) = row else {
+            return Ok(None);
+        };
+        // The schema keeps 32 bytes; other lengths never equal a digest.
+        let digest = digest
+            .iter()
+            .fold(String::from("blake3:"), |mut text, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "{byte:02x}");
+                text
+            });
+        let receipt = ApplyBatchReceipt::from_compact(transaction_id, &digest, &bytes);
+        return Ok(Some((digest, receipt)));
+    }
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT request_digest,receipt_json FROM applied_transactions WHERE transaction_id=?1",
+            [transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((digest, receipt_json)) = row else {
+        return Ok(None);
+    };
+    let receipt = validate_canonical_receipt_json(&receipt_json)
+        .map_err(|error| error.to_string())
+        .and_then(|value| {
+            serde_json::from_value(value)
+                .map_err(|error| format!("invalid typed applied transaction receipt: {error}"))
+        });
+    Ok(Some((digest, receipt)))
 }
 
 fn ensure_immutables(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<()> {

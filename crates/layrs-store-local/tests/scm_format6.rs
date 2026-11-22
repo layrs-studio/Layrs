@@ -1098,6 +1098,74 @@ fn a_replay_beside_its_lost_history_pack_takes_no_sequence() {
     assert_eq!(clock(), before);
 }
 
+/// Format 8 keeps compact receipts (phase 2c): a replay decodes them; another
+/// request digest is a replay mismatch before the receipt is decoded; a
+/// receipt that does not decode exactly, or disagrees with the batch, is
+/// corruption.
+#[test]
+fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
+    let root = TestRoot::new("compact-receipt");
+    create(&root.0, "compact-receipt", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (_lane, batch) = Lane::begin("compact-receipt", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    assert!(repository.apply_batch(&batch).unwrap().was_replay());
+    drop(repository);
+    let id = batch.transaction_id().as_str().to_owned();
+    let (digest, original): (Vec<u8>, Vec<u8>) = sql(&root.0)
+        .query_row(
+            "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(digest, batch.request_digest().as_bytes().to_vec());
+    assert_eq!(original[..2], [1, 1]);
+    assert!(
+        original[2..].iter().all(|byte| *byte < 0x7f),
+        "{original:?}"
+    );
+    let set = |digest: &[u8], receipt: &[u8]| {
+        let connection = sql(&root.0);
+        connection
+            .execute(
+                "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
+                rusqlite::params![digest, receipt, id],
+            )
+            .unwrap();
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+    };
+    let replay = || NativeScmRepository::new(&root.0).apply_batch(&batch);
+    set(&[0; 32], &[9, 9, 0, 0, 0, 0]);
+    assert_eq!(replay().unwrap_err().code(), "transaction_replay_mismatch");
+    let last = original.len() - 1;
+    let mut padded = original.clone();
+    padded[last] |= 0x80;
+    padded.push(0);
+    let mut miscounted = original.clone();
+    miscounted[2] += 1;
+    let mut versioned = original.clone();
+    versioned[0] = 2;
+    let mut outcome = original.clone();
+    outcome[1] = 0;
+    for damaged in [
+        padded,
+        miscounted,
+        versioned,
+        outcome,
+        [original.as_slice(), &[0]].concat(),
+    ] {
+        set(&digest, &damaged);
+        assert_eq!(replay().unwrap_err().code(), "corruption", "{damaged:?}");
+    }
+    set(&digest, &original);
+    assert!(replay().unwrap().was_replay());
+    assert_fsck_clean(&root.0);
+}
+
 /// Format 8: history records are never admitted; fsck reports a bitmap
 /// that admits one (council s28).
 #[test]

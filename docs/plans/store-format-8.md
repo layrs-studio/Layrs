@@ -502,3 +502,34 @@ reuse, the horizon with a batch's own Operation, a damaged history block,
 paging across consolidation, a large observation population in format 8)
 and the explicit consolidation inventory proof stay open for before the
 default flip (2e).
+
+## Phase 2c: compact receipts (2026-11-23)
+
+Format 8's `applied_transactions` keeps the request digest as its 32 bytes
+and the receipt as a version byte, the outcome byte and the four counts in
+LEB128 (`ApplyBatchReceipt::compact_bytes`, 6 to 42 bytes, `WITHOUT ROWID`).
+The transaction id and the digest are the row's own, so decoding
+(`from_compact`) rebuilds the same `ApplyBatchReceipt` that formats 5 to 7
+keep as JCS, and only the canonical encoding decodes (no padded varints, no
+trailing bytes, the tenth byte holds bit 63 only). Replay and VFS recovery
+read both through `repository::read_receipt`; replay compares the digest
+before it decodes the receipt, as before (another digest is a replay
+mismatch, a damaged receipt is corruption). Schema v4 draft 6.
+
+Not done from the s25 sketch: the reversible binary transaction key. Ids are
+`transaction:<uuid>` (48 bytes); a 17-byte key would save about 31 bytes per
+receipt (31 KB at 1,000 Steps) but changes the joins fsck makes on
+`updated_by_transaction_id`. Kept for later, measured below.
+
+Freezing schema v4 and packs v4 moves after phase 3: the binary Tree and
+history codecs change pack records again.
+
+Measurement (100 files, 1,000 Steps, release CLI, format 8): `.layrs`
+1328 KiB (1.7 MiB at 2b), of which packs 971 KiB and `layrs.sqlite3`
+297 KiB; `applied_transactions` 94 bytes per row (421 KB of JCS before).
+git: 12.5 MiB as left, 796 KiB after `git gc`. What remains is the packs
+(Trees in canonical JSON, history records) and SQLite's per-table pages.
+
+Tests: `compact_receipts_round_trip_and_refuse_other_encodings` (unit),
+`format_8_replays_from_compact_receipts_and_refuses_damaged_ones`; the VFS
+recovery tests seed receipts in the Store's own encoding.
