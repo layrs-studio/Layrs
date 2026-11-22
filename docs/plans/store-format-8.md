@@ -486,3 +486,19 @@ Opus: the round 1 fixes are complete and correct as written. Fixed:
 - A history record that does not decode is unknown, not missing (Opus).
 - Tests: each section entry commits to its record's bytes (unit); a
   recovery journal names a stored Operation, an unknown one is refused.
+
+## Council s28 r3 (2026-11-23, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 6/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 6/10 | 7/10 | 8/10 (ship) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 8/10 (ship) |
+
+No P0, P1 or P2. Opus's two P3 (a misplaced doc comment, the schema
+comment's draft number) are fixed. Phase 2b is reviewed; the council's
+remaining test list (a replaced block at file level, `AfterAllCas` sequence
+reuse, the horizon with a batch's own Operation, a damaged history block,
+paging across consolidation, a large observation population in format 8)
+and the explicit consolidation inventory proof stay open for before the
+default flip (2e).

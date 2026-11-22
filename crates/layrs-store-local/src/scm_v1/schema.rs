@@ -87,15 +87,16 @@ pub fn schema_v3_checksum() -> String {
     blake3::hash(SCHEMA_V3_SQL.as_bytes()).to_hex().to_string()
 }
 
-/// Store format 8 baseline, draft 4 (council s25, s27): v3 without
+/// Store format 8 baseline, draft 5 (council s25, s27, s28): v3 without
 /// `space_object_admissions` (every object kind is admitted by the pack
 /// bitmaps or `space_loose_admissions`), without the object projections
 /// (the canonical records are the only source), without the unused
 /// `pending_*` tables, and without the history tables (Operations and
 /// StepObservations are pack records, sequenced by `history_clock`;
 /// `space_initializers` and `history_identities` answer what must stay
-/// complete). Drafts change until format 8 is frozen; a Store of an earlier
-/// draft is refused.
+/// complete). Draft 5: history section entries carry their record's body
+/// digest (packs v4 changed, schema unchanged). Drafts change until format 8
+/// is frozen; a Store of an earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
 pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft5";
 pub const SCHEMA_V4_CHECKSUM: &str =

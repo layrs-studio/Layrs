@@ -1470,8 +1470,6 @@ pub(super) fn whole_chunk_ids(batch: &WriteBatch) -> std::collections::HashSet<C
         .collect()
 }
 
-/// Format 6 (ADR 0028): what a CAS item needs to be planned as a file
-/// record, from the writer's registered snapshot.
 /// The history records a batch places, and the clock move they take.
 type PlannedHistory = (Vec<super::cas::HistoryPut>, Option<(u64, u64)>);
 
@@ -1565,6 +1563,8 @@ fn plan_history(
     Ok((records, Some((from, to))))
 }
 
+/// Format 6 (ADR 0028): what a CAS item needs to be planned as a file
+/// record, from the writer's registered snapshot.
 fn plan_file_records(
     cas: &NativeCasWriter<'_>,
     batch: &WriteBatch,
