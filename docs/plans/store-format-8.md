@@ -415,3 +415,46 @@ history packs 919 KiB, SQLite 752 KiB, of which `applied_transactions`
 as left, 0.78 MiB after `git gc`. Next: 2c (compact receipts, about 100 B
 each by the s25 decision) and phase 3 (binary Tree codec; history records
 could take a binary codec too).
+
+## Council s28 r1 (code review of 2b, 2026-11-22)
+
+| Member | Verdict | Score |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | ship after fixes | 6/10 |
+| GPT-6.1 Sol (max) | ship after fixes | 6/10 |
+| Claude Opus 5.5 (xhigh) | ship after fixes | 7/10 |
+
+Opus found the sequences and clock, replay, horizon and formats 5 to 7
+sound. Confirmed and fixed:
+
+- Recovery journals (P1 Sol, P2 Astra, Opus): `create` and
+  `create_and_claim` check the plan's Operation through the catalog in
+  format 8 (complete lookup), before the plan is inserted.
+- A point lookup is complete even when a readable copy is found: an
+  unreadable pack that may hold the key refuses (Astra, Sol).
+- fsck reads history through a streamed visit, each read authorized
+  against its budgets first; checks every record's key, canonical bytes
+  and section Space against its body; reports a key registered in two
+  packs, identical or not; a body that cannot be read makes its record
+  unknown (per-record uncertainty, density not judged) instead of
+  missing (all three).
+- Admission bits on history ordinals: fsck reports them, consolidation
+  refuses to remap them (all three).
+- Consolidation decodes every history body it copies (key, canonical
+  bytes, Space) before retiring the sources, and compares Space with
+  sequence and bytes for a duplicate (Opus, Astra, Sol).
+- The observation projection is bounded before any body is read (count
+  and stored bytes at or below the watermark, from the section and the
+  locations) and checks each decoded id against its key (all three).
+- A per-pack table finds a history record's section entry (Opus).
+- An abandoned batch drops its history plan (Opus).
+- Tests: a replay beside its lost history pack takes no sequence; fsck
+  reports an admitted history record; the CLI compaction test expects
+  format 8 cursors to survive.
+
+Kept (P3, Opus): the compaction journal accepts either cursor flag (the
+layout does not know the format; the flag is advisory). Still missing
+from the s27 test list: sequence reuse after an unregistered pack
+(`AfterAllCas`), the horizon with a batch's own Operation, a damaged
+history block, paging across append and consolidation, the large
+observation population in format 8.

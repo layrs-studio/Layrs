@@ -1069,6 +1069,87 @@ fn a_replay_takes_no_history_sequence() {
     }
 }
 
+/// Format 8: a replay is decided by its receipt, even when the pack holding
+/// the batch's history is lost; it places no record and the clock does not
+/// move (council s27, s28).
+#[test]
+fn a_replay_beside_its_lost_history_pack_takes_no_sequence() {
+    let root = TestRoot::new("replay-lost");
+    create(&root.0, "replay-lost", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (_lane, batch) = Lane::begin("replay-lost", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    let clock = || -> i64 {
+        sql(&root.0)
+            .query_row("SELECT next_sequence FROM history_clock", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    let before = clock();
+    let lost = registered_packs(&root.0).remove(0);
+    fs::remove_file(root.0.join("objects/packs").join(lost)).unwrap();
+    forget_loaded_packs();
+    let mut repository = NativeScmRepository::new(&root.0);
+    assert!(repository.apply_batch(&batch).unwrap().was_replay());
+    drop(repository);
+    assert_eq!(clock(), before);
+}
+
+/// Format 8: history records are never admitted; fsck reports a bitmap
+/// that admits one (council s28).
+#[test]
+fn fsck_reports_an_admitted_history_record() {
+    let root = TestRoot::new("history-bit");
+    create(&root.0, "history-bit", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (_lane, batch) = Lane::begin("history-bit", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    assert_fsck_clean(&root.0);
+    {
+        let connection = sql(&root.0);
+        let (space, seq, bitmap): (String, i64, Vec<u8>) = connection
+            .query_row(
+                "SELECT space_id, pack_seq, bitmap FROM space_pack_admissions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let entries: i64 = connection
+            .query_row(
+                "SELECT entries FROM cas_packs WHERE pack_seq=?1",
+                [seq],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // Every in-range bit: the pack's history records among them.
+        let mut full = vec![0xff_u8; bitmap.len()];
+        if entries % 8 != 0 {
+            let last = full.len() - 1;
+            full[last] = (1_u8 << (entries % 8)) - 1;
+        }
+        connection
+            .execute(
+                "UPDATE space_pack_admissions SET bitmap=?1 WHERE space_id=?2 AND pack_seq=?3",
+                rusqlite::params![full, space, seq],
+            )
+            .unwrap();
+    }
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("admits a history record")),
+        "{:#?}",
+        report.findings
+    );
+}
+
 /// An Operation id the Store holds names one payload forever: a batch
 /// carrying other bytes under it is refused (formats 7 and 8; in 8 by the
 /// history records' complete lookup, council s27).

@@ -8,27 +8,6 @@ use crate::scm_v1::cas::{AuditEvent, RegisteredCatalog, is_content};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// A history record's typed form, its bytes canonical.
-fn decode_history(code: u8, body: &[u8]) -> Result<layrs_store::scm::EntityRecord, String> {
-    use layrs_store::scm::EntityRecord;
-    let record = if code == crate::scm_v1::cas::OPERATION_KIND {
-        serde_json::from_slice(body).map(EntityRecord::Operation)
-    } else {
-        serde_json::from_slice(body).map(EntityRecord::StepObservation)
-    }
-    .map_err(|error| format!("history record does not decode: {error}"))?;
-    let canonical = match &record {
-        EntityRecord::Operation(value) => layrs_core::scm::canonical_json(value),
-        EntityRecord::StepObservation(value) => layrs_core::scm::canonical_json(value),
-        _ => unreachable!("decoded as history"),
-    }
-    .map_err(|error| error.to_string())?;
-    if canonical != body {
-        return Err("history record is not canonical".into());
-    }
-    Ok(record)
-}
-
 /// Format 8's derived tables: the format 7 projections it does not store,
 /// rebuilt per fsck run in this connection's temporary schema (no foreign
 /// keys: fsck reports what they would refuse).
@@ -161,10 +140,23 @@ impl Context<'_> {
         // Charged to the row budget as it is expanded, before anything else
         // reads it (council s26 r2).
         let mut work = self.cpu_budget_remaining;
+        let mut history_bits = Vec::new();
         let admitted = catalog
-            .non_content_admissions(self.connection, self.row_limit, &mut work)
+            .non_content_admissions(
+                self.connection,
+                self.row_limit,
+                &mut work,
+                &mut history_bits,
+            )
             .map_err(|error| FsckError::Native(error.to_string()))?;
         self.cpu_budget_remaining = work;
+        for (space, pack) in history_bits {
+            self.error(
+                FsckFindingCode::AdmissionClosureBroken,
+                Some(space),
+                format!("pack {pack} admits a history record (never admitted)"),
+            );
+        }
         let Some(admitted) = admitted.filter(|admitted| admitted.len() <= self.row_limit) else {
             self.exhaust_cpu();
             return Ok(());
@@ -224,54 +216,72 @@ impl Context<'_> {
         let Some((cas, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
-        let (records, errors) = catalog.all_history(&cas);
-        for error in errors {
-            self.finding(
-                FsckFindingCode::CasCorruption,
-                FsckSeverity::Error,
-                None,
-                None,
-                None,
-                format!("{}: {error}", error.code()),
-            );
-        }
-        let mut sequences = Vec::with_capacity(records.len());
-        for (code, key, sequence, body) in records {
-            if !self.consume_cpu(1) {
-                return Ok(());
+        // Streamed, each read authorized first (council s28).
+        let mut sequences = Vec::new();
+        let mut failure: Option<FsckError> = None;
+        let completed = catalog.visit_history(&cas, |step| match step {
+            crate::scm_v1::cas::HistoryStep::Authorize(bytes) => {
+                let budget = self.byte_budget_remaining;
+                self.consume_cpu(1) && self.reserve_bytes(bytes, budget, "history record")
             }
-            sequences.push(sequence);
-            let budget = self.byte_budget_remaining;
-            if !self.reserve_bytes(body.len() as u64, budget, "history record") {
-                return Ok(());
-            }
-            let record = match decode_history(code, &body) {
-                Ok(record) => record,
-                Err(message) => {
-                    self.finding(
+            crate::scm_v1::cas::HistoryStep::Record((code, key, sequence, space, body)) => {
+                sequences.push(sequence);
+                match crate::scm_v1::cas::decode_history_record(code, &key, &body, space.as_deref())
+                {
+                    Ok(record) => {
+                        if let Err(error) = crate::scm_v1::repository::insert_history_entity(
+                            self.connection,
+                            &record,
+                        ) {
+                            failure.get_or_insert(native(error));
+                        }
+                    }
+                    Err(message) => self.finding(
                         FsckFindingCode::CasCorruption,
                         FsckSeverity::Error,
                         None,
                         None,
-                        None,
+                        Some(crate::scm_v1::cas::pack2_digest_text(&key)),
                         message,
-                    );
-                    continue;
+                    ),
                 }
-            };
-            if crate::scm_v1::cas::history_key(code, record.id_str()) != key {
+                true
+            }
+            crate::scm_v1::cas::HistoryStep::Unreadable {
+                code,
+                key,
+                sequence,
+                error,
+            } => {
+                sequences.push(sequence);
+                self.unknown_history.insert((code, key));
                 self.finding(
                     FsckFindingCode::CasCorruption,
                     FsckSeverity::Error,
                     None,
                     None,
-                    Some(record.id_str().to_owned()),
-                    "history record is filed under another id's key",
+                    Some(crate::scm_v1::cas::pack2_digest_text(&key)),
+                    format!("{}: {error}", error.code()),
                 );
-                continue;
+                true
             }
-            crate::scm_v1::repository::insert_history_entity(self.connection, &record)
-                .map_err(native)?;
+            crate::scm_v1::cas::HistoryStep::Duplicate { code, key } => {
+                self.finding(
+                    FsckFindingCode::CasCorruption,
+                    FsckSeverity::Error,
+                    None,
+                    None,
+                    Some(crate::scm_v1::cas::pack2_digest_text(&key)),
+                    format!("history record of kind {code} is registered in two packs"),
+                );
+                true
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if !completed {
+            return Ok(());
         }
         self.check_history_clock(sequences)?;
         self.check_history_tables()
@@ -611,7 +621,10 @@ impl Context<'_> {
     /// pack holds, so a check whose expectation comes from them cannot tell
     /// missing from unknown (council s18 r3, s26 r1).
     pub(super) fn history_incomplete(&self) -> bool {
-        self.audit.bitmap_admissions() && (self.compact_damaged || self.compact_audit_failed)
+        self.audit.bitmap_admissions()
+            && (self.compact_damaged
+                || self.compact_audit_failed
+                || !self.unknown_history.is_empty())
     }
 
     /// Whether `id` may be a record of an unreadable pack, in format 8
@@ -620,6 +633,18 @@ impl Context<'_> {
         // A record this run read, and its admission bits, are known.
         if !self.history_incomplete() || self.object_ids.contains_key(id) {
             return false;
+        }
+        // A history record whose body could not be read.
+        if [
+            crate::scm_v1::cas::OPERATION_KIND,
+            crate::scm_v1::cas::OBSERVATION_KIND,
+        ]
+        .into_iter()
+        .any(|code| {
+            self.unknown_history
+                .contains(&(code, crate::scm_v1::cas::history_key(code, id)))
+        }) {
+            return true;
         }
         match self.compact_catalog() {
             Some((_, catalog)) => may_be_unreadable(&catalog, id),

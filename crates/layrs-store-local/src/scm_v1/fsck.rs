@@ -396,6 +396,9 @@ struct Context<'a> {
     /// Format 6: a registered pack is unreadable; answers that depend on
     /// the whole catalog are not judged (the audit reports the pack once).
     compact_damaged: bool,
+    /// Format 8: history records whose body cannot be read (code, key):
+    /// unknown, not missing (council s28).
+    unknown_history: std::collections::HashSet<(u8, [u8; 32])>,
     compact_lookup_reported: bool,
     /// Format 6: objects rows whose only copy may be in an unreadable
     /// pack; their edges are not compared (their sources are unknowable).
@@ -424,6 +427,7 @@ impl<'a> Context<'a> {
             compact_audit: None,
             compact_audit_failed: false,
             compact_damaged: false,
+            unknown_history: std::collections::HashSet::new(),
             compact_lookup_reported: false,
             unreadable_sources: BTreeSet::new(),
             max_findings,

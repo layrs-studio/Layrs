@@ -2106,13 +2106,15 @@ impl PackFileHold {
 }
 
 mod pack2;
-pub(crate) use pack2::{OBSERVATION_KIND, OPERATION_KIND, history_key};
+pub(crate) use pack2::digest_text as pack2_digest_text;
+pub(crate) use pack2::{OBSERVATION_KIND, OPERATION_KIND, history_key, is_history_code};
 mod packs;
 mod paths;
 use codec::*;
 pub(crate) use compact::{
-    AuditEvent, CompactPublication, DurableHorizon, FileManifestEntry, FileRecordPlan, HistoryPut,
-    Placement, RegisteredCatalog, SpaceAdmissions, check_bitmap, set_bit,
+    AuditEvent, CompactPublication, DurableHorizon, FileManifestEntry, FileRecordPlan,
+    HistoryBounds, HistoryPut, HistoryStep, Placement, RegisteredCatalog, SpaceAdmissions,
+    check_bitmap, decode_history_record, set_bit,
 };
 
 /// Content kinds: in format 6 they have no `objects` row.

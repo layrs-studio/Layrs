@@ -54,6 +54,7 @@ impl<'store> NativeRecovery<'store> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_plan_operation(&transaction, &self.cas, plan)?;
         let outcome = insert_plan(&transaction, plan)?;
         transaction.commit()?;
         self.hit(RecoveryFaultPoint::AfterCreateCommit)?;
@@ -77,6 +78,7 @@ impl<'store> NativeRecovery<'store> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_plan_operation(&transaction, &self.cas, plan)?;
         if insert_plan(&transaction, plan)? != MutationOutcome::Applied {
             return Err(RecoveryError::ReplayMismatch {
                 idempotency_key: plan.idempotency_key.clone(),
@@ -779,6 +781,37 @@ pub(crate) fn complete_in_transaction(
     )?;
     if changed != 1 {
         return Err(RecoveryError::OwnerMismatch(id.clone()));
+    }
+    Ok(())
+}
+
+/// Format 8 keeps no `operations` table, hence no foreign key from a
+/// journal to its Operation: the Operation a plan names must be a registered
+/// history record (complete: an unreadable pack that may hold it refuses;
+/// council s27, s28).
+fn check_plan_operation(
+    transaction: &rusqlite::Transaction<'_>,
+    cas: &crate::scm_v1::cas::NativeCasWriter<'_>,
+    plan: &RecoveryPlan,
+) -> RecoveryResult<()> {
+    let Some(operation) = plan.operation_id.as_ref() else {
+        return Ok(());
+    };
+    if cas.reader().object_projections() {
+        return Ok(());
+    }
+    let catalog = crate::scm_v1::cas::RegisteredCatalog::load(transaction, cas.reader())
+        .map_err(RecoveryError::Cas)?;
+    let key =
+        crate::scm_v1::cas::history_key(crate::scm_v1::cas::OPERATION_KIND, operation.as_str());
+    let found = catalog
+        .history_record(cas.reader(), crate::scm_v1::cas::OPERATION_KIND, &key, None)
+        .map_err(RecoveryError::Cas)?;
+    if found.is_none() {
+        return Err(RecoveryError::InvalidInput {
+            field: "operation_id",
+            reason: format!("Operation {operation} is not in this Store"),
+        });
     }
     Ok(())
 }

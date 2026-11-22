@@ -200,7 +200,14 @@ fn cli_compacts_from_nested_checkout_and_resumes_a_fenced_store_without_losing_h
     fs::write(fixture.0.join("file"), b"unrecorded").unwrap();
     let report = run(&nested, &["compact"], true);
     assert_eq!(report["historyDeleted"], false);
-    assert_eq!(report["restartHistoryTraversal"], true);
+    // Format 8 cursors are history sequences, which compaction keeps.
+    let format = layrs_store_local::scm_v1::open(workspace.store_root())
+        .unwrap()
+        .format_version();
+    assert_eq!(
+        report["restartHistoryTraversal"],
+        format != layrs_store_local::scm_v1::HISTORY_FORMAT_VERSION
+    );
     assert!(report["retainedRows"].as_u64().unwrap() > 0);
     assert!(
         Path::new(report["backupDirectory"].as_str().unwrap())

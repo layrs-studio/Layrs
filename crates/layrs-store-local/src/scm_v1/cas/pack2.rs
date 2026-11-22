@@ -276,6 +276,8 @@ pub(super) struct Pack2Index {
     pub(super) history: Vec<HistoryEntry>,
     /// Packs v4: the Space ids the history section names, sorted.
     pub(super) spaces: Vec<String>,
+    /// Packs v4: each history record's entry in `history`, by ordinal.
+    history_by_ordinal: std::collections::HashMap<u32, u32>,
 }
 
 /// A history record's section entry: its explicit ordinal, its sequence in
@@ -308,6 +310,12 @@ fn search(ids: &[[u8; 32]], fanout: &[u32; 257], id: &[u8; 32]) -> Option<usize>
 }
 
 impl Pack2Index {
+    /// The section entry of the history record at explicit `ordinal`.
+    pub(crate) fn history_entry(&self, ordinal: usize) -> Option<&HistoryEntry> {
+        let position = *self.history_by_ordinal.get(&u32::try_from(ordinal).ok()?)?;
+        self.history.get(position as usize)
+    }
+
     /// A history entry's Space id.
     pub(crate) fn space_of(&self, entry: &HistoryEntry) -> Option<&str> {
         entry
@@ -499,7 +507,7 @@ pub(super) fn hex_digest(hex: &str) -> Option<[u8; 32]> {
     Some(digest)
 }
 
-pub(super) fn digest_text(digest: &[u8; 32]) -> String {
+pub(crate) fn digest_text(digest: &[u8; 32]) -> String {
     let mut text = String::with_capacity(71);
     text.push_str("blake3:");
     for byte in digest {
@@ -938,6 +946,11 @@ fn decode_checked(
         return Err(pack2_corruption(path, "pack metadata has trailing bytes"));
     }
     let file_fanout = fanout_of(files.iter().map(|file| &file.file_id));
+    let history_by_ordinal = history
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| (entry.ordinal, position as u32))
+        .collect();
     Ok(Pack2Index {
         version,
         file_len,
@@ -953,6 +966,7 @@ fn decode_checked(
         fileid_section,
         history,
         spaces,
+        history_by_ordinal,
     })
 }
 
@@ -1304,10 +1318,13 @@ pub(super) struct Pack2Builder {
     fileid: Vec<([u8; 32], [u8; 32], u64)>,
     /// History records: (kind code, key, sequence, Space).
     history: Vec<(u8, [u8; 32], u64, Option<String>)>,
-    /// Each history record's sequence and body digest, by (code, key): a
-    /// second copy must equal the first (consolidation).
-    history_copies: std::collections::HashMap<(u8, [u8; 32]), (u64, [u8; 32])>,
+    /// Each history record's sequence, body digest and Space, by (code,
+    /// key): a second copy must equal the first (consolidation).
+    history_copies: HistoryCopies,
 }
+
+/// A pack's history copies by (code, key): (sequence, body digest, Space).
+type HistoryCopies = std::collections::HashMap<(u8, [u8; 32]), (u64, [u8; 32], Option<String>)>;
 
 /// What `Pack2Builder::finish` wrote, for the reread check and registration.
 #[derive(Debug)]
@@ -1375,7 +1392,7 @@ impl Pack2Builder {
         }
         let digest = *blake3::hash(body).as_bytes();
         if let Some(copy) = self.history_copies.get(&(code, key)) {
-            if *copy == (sequence, digest) {
+            if *copy == (sequence, digest, space.clone()) {
                 return Ok(false);
             }
             return Err(io::Error::new(
@@ -1385,8 +1402,9 @@ impl Pack2Builder {
         }
         let location = self.place(out, code, body, None)?;
         self.explicit.push((code, key, location));
-        self.history.push((code, key, sequence, space));
-        self.history_copies.insert((code, key), (sequence, digest));
+        self.history.push((code, key, sequence, space.clone()));
+        self.history_copies
+            .insert((code, key), (sequence, digest, space));
         Ok(true)
     }
 

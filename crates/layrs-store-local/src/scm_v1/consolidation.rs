@@ -827,6 +827,12 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
                 if !super::cas::compact::bit(bitmap, old as u64) {
                     continue;
                 }
+                // History records are never admitted (council s27, s28).
+                if crate::scm_v1::cas::is_history_code(pack.identities[old].0) {
+                    return Err(format!(
+                        "{space} admissions of pack {seq} admit a history record"
+                    ));
+                }
                 let renamed = consolidation
                     .identities
                     .get(usize::try_from(*new).map_err(|error| error.to_string())?);

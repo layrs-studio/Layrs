@@ -147,44 +147,51 @@ impl NativeScmReader<'_> {
         snapshot: Option<&ObservationSnapshot>,
     ) -> Result<ObservationProjection> {
         let catalog = self.catalog()?;
+        // Bounded before any body is read (council s28): the section and the
+        // record lengths decide.
         let records = catalog
             .history_in_space(
                 &self.cas,
                 crate::scm_v1::cas::OBSERVATION_KIND,
                 space.as_str(),
                 self.horizon.as_ref(),
+                crate::scm_v1::cas::HistoryBounds {
+                    watermark: snapshot
+                        .map(|snapshot| u64::try_from(snapshot.watermark).unwrap_or(0)),
+                    max_records: 100_000,
+                    max_bytes: 64 * 1024 * 1024,
+                },
             )
-            .map_err(cas_read_error)?;
+            .map_err(cas_read_error)?
+            .ok_or(StoreError::AdmissionBudgetExceeded {
+                resource: "history observations",
+                limit: 100_000,
+            })?;
         let watermark = match snapshot {
             Some(snapshot) => snapshot.watermark,
-            None => records.last().map_or(0, |(sequence, _)| {
+            None => records.last().map_or(0, |(sequence, _, _)| {
                 i64::try_from(*sequence).unwrap_or(i64::MAX)
             }),
         };
-        let records: Vec<&(u64, Vec<u8>)> = records
-            .iter()
-            .filter(|(sequence, _)| {
-                i64::try_from(*sequence).is_ok_and(|sequence| sequence <= watermark)
-            })
-            .collect();
-        let bytes: usize = records.iter().map(|(_, body)| body.len()).sum();
-        if records.len() > 100_000 || bytes > 64 * 1024 * 1024 {
-            return Err(StoreError::AdmissionBudgetExceeded {
-                resource: "history observations",
-                limit: 100_000,
-            });
-        }
         let mut digest = blake3::Hasher::new();
         digest.update(b"layrs-local-observation-snapshot-v2\0");
         digest.update(space.as_str().as_bytes());
         let mut by_step: BTreeMap<StepId, Vec<StepObservation>> = BTreeMap::new();
-        for (sequence, body) in &records {
+        for (sequence, key, body) in &records {
             let payload =
                 std::str::from_utf8(body).map_err(|_| corruption("observation is not UTF-8"))?;
             let record: StepObservation =
                 decode_payload(payload, "StepObservation", space.as_str())?;
             if canonical_json(&record).map_err(|error| corruption(error.to_string()))? != *body {
                 return Err(corruption("observation is not canonical"));
+            }
+            // Its id is the one its key names (council s28).
+            if crate::scm_v1::cas::history_key(
+                crate::scm_v1::cas::OBSERVATION_KIND,
+                record.id().as_str(),
+            ) != *key
+            {
+                return Err(corruption("observation is filed under another id's key"));
             }
             if record.space_id() != Some(space)
                 || !self.object_admitted_to_space(
