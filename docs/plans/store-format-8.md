@@ -407,3 +407,11 @@ and runs the format 8 suites):
   sources, and the builder refuses a differing duplicate); the client and
   compaction cursor flag; the council's test list; measurement; council
   review.
+
+Measured after phase 2b (`411fbe6`, release, 1,000 Steps of a 100-file
+folder): Store 1.7 MiB (5.5 before 2b, 11.1 in format 7): objects and
+history packs 919 KiB, SQLite 752 KiB, of which `applied_transactions`
+421 KB of rows (plus its index) and inline pack images 63 KB. git: 12.5 MiB
+as left, 0.78 MiB after `git gc`. Next: 2c (compact receipts, about 100 B
+each by the s25 decision) and phase 3 (binary Tree codec; history records
+could take a binary codec too).
