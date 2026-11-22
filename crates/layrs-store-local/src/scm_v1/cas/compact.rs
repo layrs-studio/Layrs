@@ -1022,6 +1022,7 @@ impl LoadedPack {
                     id,
                     sequence: entry.sequence,
                     space: index.space_of(entry),
+                    digest: &entry.digest,
                 }),
                 None => ordinals.push(Ordinal::Explicit {
                     kind_code: *code,
@@ -1615,6 +1616,12 @@ impl NativeCas {
                         pack2::pack2_corruption(&loaded.path, "history record has no entry")
                     })?;
                     let body = pack2::record_body(raw, location, code, &loaded.path)?;
+                    if !pack2::history_body_matches(entry, body) {
+                        return Err(CopyFailure::Source(pack2::pack2_corruption(
+                            &loaded.path,
+                            "a history record's bytes differ from its index",
+                        )));
+                    }
                     // Consolidation retires the sources: a copied history
                     // record must decode to the id its key names, in
                     // canonical bytes, in the Space its entry names (council
@@ -2484,12 +2491,16 @@ impl RegisteredCatalog {
                 continue;
             };
             let vanished = || pack2::pack2_corruption(&self_path(), "history record vanished");
-            let sequence = index
-                .history_entry(ordinal)
-                .map(|entry| entry.sequence)
-                .ok_or_else(vanished)?;
+            let entry = index.history_entry(ordinal).ok_or_else(vanished)?;
+            let sequence = entry.sequence;
             let (_, _, location) = index.explicit(ordinal).ok_or_else(vanished)?;
             let body = self.body(cas, position, code, location)?;
+            if !pack2::history_body_matches(entry, &body) {
+                return Err(pack2::pack2_corruption(
+                    &self_path(),
+                    "a history record's bytes differ from its index",
+                ));
+            }
             match &found {
                 None => found = Some((body, sequence)),
                 Some((other, other_sequence)) => {
@@ -2561,6 +2572,7 @@ impl RegisteredCatalog {
             }
         }
         let mut records: BTreeMap<u64, ([u8; 32], Vec<u8>)> = BTreeMap::new();
+        let mut sequences_of: HashMap<[u8; 32], u64> = HashMap::new();
         for (position, registered) in self.packs.iter().enumerate() {
             if !wanted.iter().any(|(pack, _, _)| *pack == position) {
                 continue;
@@ -2594,6 +2606,20 @@ impl RegisteredCatalog {
                     continue;
                 }
                 let body = self.body(cas, position, code, location)?;
+                if !pack2::history_body_matches(entry, &body) {
+                    return Err(pack2::pack2_corruption(
+                        &self_path(),
+                        "a history record's bytes differ from its index",
+                    ));
+                }
+                if let Some(other) = sequences_of.insert(*key, entry.sequence) {
+                    if other != entry.sequence {
+                        return Err(pack2::pack2_corruption(
+                            &self_path(),
+                            "a history record is registered at two sequences",
+                        ));
+                    }
+                }
                 match records.get(&entry.sequence) {
                     None => {
                         records.insert(entry.sequence, (*key, body));
@@ -2639,7 +2665,17 @@ impl RegisteredCatalog {
                 if !visit(HistoryStep::Authorize(u64::from(location.length))) {
                     return false;
                 }
-                match self.body(cas, position, code, location) {
+                let body = self.body(cas, position, code, location).and_then(|body| {
+                    if pack2::history_body_matches(entry, &body) {
+                        Ok(body)
+                    } else {
+                        Err(pack2::pack2_corruption(
+                            &self_path(),
+                            "a history record's bytes differ from its index",
+                        ))
+                    }
+                });
+                match body {
                     Ok(body) => {
                         visit(HistoryStep::Record((
                             code,

@@ -259,6 +259,11 @@ impl NativeFsck {
         }
         if audit.bitmap_admissions() {
             context.project_history_records()?;
+            // A budget spent while history was read leaves its tables
+            // partial: nothing after may judge them (council s28 r2).
+            if context.work_truncated {
+                return Ok(context.finish());
+            }
             context.check_history_references()?;
         }
         if context.compact {

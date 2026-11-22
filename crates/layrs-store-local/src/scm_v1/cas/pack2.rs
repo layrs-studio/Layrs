@@ -287,6 +287,15 @@ pub(crate) struct HistoryEntry {
     pub(crate) ordinal: u32,
     pub(crate) sequence: u64,
     pub(crate) space: Option<u32>,
+    /// The record body's blake3: a history id is not a content address, so
+    /// the registered index digest commits to the bytes through this
+    /// (council s25, s28 r2). Every read checks it.
+    pub(crate) digest: [u8; 32],
+}
+
+/// Whether `body` is the one a history entry commits to.
+pub(crate) fn history_body_matches(entry: &HistoryEntry, body: &[u8]) -> bool {
+    *blake3::hash(body).as_bytes() == entry.digest
 }
 
 fn fanout_of<'a>(ids: impl Iterator<Item = &'a [u8; 32]>) -> Box<[u32; 257]> {
@@ -1012,6 +1021,7 @@ fn decode_history(
         let sequence = reader.varint(i64::MAX as u64)?;
         let space = reader.varint(spaces.len() as u64)? as u32;
         let space = space.checked_sub(1);
+        let digest = reader.id()?;
         let is_history = history_runs
             .iter()
             .any(|run| (run.start..run.end).contains(&(ordinal as usize)));
@@ -1037,6 +1047,7 @@ fn decode_history(
             ordinal,
             sequence,
             space,
+            digest,
         });
     }
     Ok((history, spaces))
@@ -1316,8 +1327,8 @@ pub(super) struct Pack2Builder {
     explicit: Vec<(u8, [u8; 32], Location)>,
     files: Vec<(FileRecord, [u8; 32])>,
     fileid: Vec<([u8; 32], [u8; 32], u64)>,
-    /// History records: (kind code, key, sequence, Space).
-    history: Vec<(u8, [u8; 32], u64, Option<String>)>,
+    /// History records: (kind code, key, sequence, Space, body digest).
+    history: Vec<(u8, [u8; 32], u64, Option<String>, [u8; 32])>,
     /// Each history record's sequence, body digest and Space, by (code,
     /// key): a second copy must equal the first (consolidation).
     history_copies: HistoryCopies,
@@ -1402,7 +1413,8 @@ impl Pack2Builder {
         }
         let location = self.place(out, code, body, None)?;
         self.explicit.push((code, key, location));
-        self.history.push((code, key, sequence, space.clone()));
+        self.history
+            .push((code, key, sequence, space.clone(), digest));
         self.history_copies
             .insert((code, key), (sequence, digest, space));
         Ok(true)
@@ -1687,6 +1699,7 @@ impl Pack2Builder {
                     &mut metadata,
                     entry.space.map_or(0, |space| u64::from(space) + 1),
                 );
+                metadata.extend_from_slice(&entry.digest);
             }
         }
         let keys = self.keys(&section, &history.0, &history.1)?;
@@ -1727,7 +1740,7 @@ impl Pack2Builder {
         spaces.dedup();
         let mut sequences = std::collections::HashSet::with_capacity(self.history.len());
         let mut entries = Vec::with_capacity(self.history.len());
-        for (code, key, sequence, space) in &self.history {
+        for (code, key, sequence, space, digest) in &self.history {
             let ordinal = self
                 .explicit
                 .binary_search_by(|entry| (entry.0, entry.1).cmp(&(*code, *key)))
@@ -1748,6 +1761,7 @@ impl Pack2Builder {
                 ordinal: ordinal as u32,
                 sequence: *sequence,
                 space,
+                digest: *digest,
             });
         }
         entries.sort_unstable_by_key(|entry| {
@@ -1786,6 +1800,7 @@ impl Pack2Builder {
                         .space
                         .and_then(|space| spaces.get(space as usize))
                         .map(String::as_str),
+                    digest: &entry.digest,
                 }),
                 None => ordinals.push(Ordinal::Explicit {
                     kind_code: *code,
@@ -2005,6 +2020,14 @@ mod tests {
                 (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
             ]
         );
+        // Each entry commits to its record's bytes (council s28 r2).
+        for entry in &index.history {
+            let (code, _, location) = index.explicit(entry.ordinal as usize).unwrap();
+            let block = read_block(&file, &path, &index, location.block).unwrap();
+            let body = record_body(&block, location, code, &path).unwrap();
+            assert!(history_body_matches(entry, body));
+            assert!(!history_body_matches(entry, b"another body"));
+        }
         let _ = fs::remove_file(&path);
 
         // A pack v3 refuses a history record; two records may not share a

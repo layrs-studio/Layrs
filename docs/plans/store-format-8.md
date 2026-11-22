@@ -458,3 +458,31 @@ from the s27 test list: sequence reuse after an unregistered pack
 (`AfterAllCas`), the horizon with a batch's own Operation, a damaged
 history block, paging across append and consolidation, the large
 observation population in format 8.
+
+## Council s28 r2 (2026-11-22)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 6/10 |
+| GPT-6.1 Sol (max) | 6/10 | 7/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 |
+
+Opus: the round 1 fixes are complete and correct as written. Fixed:
+
+- History payload integrity (P0 Astra, P2 Sol): the chair's deviation was
+  wrong. A history id is not a content address, and the registered index
+  digest covered block geometry, not bytes: a block replaced by a valid one
+  of the same geometry went unseen. Each history section entry now carries
+  its body's blake3 (32 bytes), committed by the registered index digest and
+  by the keys digest; every read (point lookup, Space query, fsck visit,
+  consolidation copy) checks it. Schema v4 draft 5 (packs v4 changed).
+- A Worktree root whose active Operation is unknown is unknown (Astra,
+  Sol).
+- The recovery check decodes the record and requires that Operation in
+  canonical bytes (Astra).
+- A Space query refuses a key registered at two sequences (Astra, Opus).
+- fsck stops when its budget runs out while history is read, before
+  judging references against partial tables (Opus P2).
+- A history record that does not decode is unknown, not missing (Opus).
+- Tests: each section entry commits to its record's bytes (unit); a
+  recovery journal names a stored Operation, an unknown one is refused.

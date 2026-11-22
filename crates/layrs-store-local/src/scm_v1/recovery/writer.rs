@@ -807,11 +807,21 @@ fn check_plan_operation(
     let found = catalog
         .history_record(cas.reader(), crate::scm_v1::cas::OPERATION_KIND, &key, None)
         .map_err(RecoveryError::Cas)?;
-    if found.is_none() {
+    let Some((body, _)) = found else {
         return Err(RecoveryError::InvalidInput {
             field: "operation_id",
             reason: format!("Operation {operation} is not in this Store"),
         });
+    };
+    // The record must be that Operation, in canonical bytes (council s28 r2).
+    let decoded: layrs_core::scm::Operation = serde_json::from_slice(&body)
+        .map_err(|error| RecoveryError::Corruption(format!("Operation {operation}: {error}")))?;
+    let canonical = layrs_core::scm::canonical_json(&decoded)
+        .map_err(|error| RecoveryError::Corruption(error.to_string()))?;
+    if decoded.id() != operation || canonical != body {
+        return Err(RecoveryError::Corruption(format!(
+            "the record filed as Operation {operation} is another"
+        )));
     }
     Ok(())
 }

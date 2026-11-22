@@ -1150,6 +1150,57 @@ fn fsck_reports_an_admitted_history_record() {
     );
 }
 
+/// Format 8 keeps no `operations` table, hence no foreign key from a
+/// recovery journal to its Operation: the journal checks it itself (council
+/// s28): an unknown Operation is refused, a stored one accepted.
+#[test]
+fn a_recovery_journal_names_a_stored_operation() {
+    use layrs_store_local::scm_v1::{
+        NativeRecovery, RecoveryId, RecoveryPathPlan, RecoveryPathRole, RecoveryPlan, RecoveryType,
+    };
+    let root = TestRoot::new("recovery-operation");
+    create(&root.0, "recovery-operation", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("recovery-operation", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    let store_id: String = sql(&root.0)
+        .query_row("SELECT store_id FROM stores", [], |row| row.get(0))
+        .unwrap();
+    sql(&root.0)
+        .execute(
+            "INSERT INTO worktrees(worktree_id, store_id, space_id, active_operation_id,
+             checkout_root, filesystem_identity, payload_json, created_at_ms)
+             VALUES ('worktree:recovery', ?1, ?2, ?3, 'C:/checkout/recovery', 'identity:recovery', '{}', 0)",
+            rusqlite::params![store_id, lane.space.id().as_str(), lane.head.as_str()],
+        )
+        .unwrap();
+    let plan = |id: &str, operation: &str| {
+        RecoveryPlan::new(
+            RecoveryId::parse(id).unwrap(),
+            id,
+            layrs_core::scm::WorktreeId::parse("worktree:recovery").unwrap(),
+            Some(OperationId::parse(operation).unwrap()),
+            RecoveryType::Materialize,
+            serde_json::json!({"intent": "test"}),
+            vec![RecoveryPathPlan::new("a.txt", RecoveryPathRole::Destination, None).unwrap()],
+            10,
+        )
+        .unwrap()
+    };
+    let mut store = open_exclusive(&root.0).unwrap();
+    let mut recovery = NativeRecovery::new(&mut store).unwrap();
+    assert!(
+        recovery
+            .create(&plan("recovery:missing", "operation:missing"))
+            .is_err()
+    );
+    recovery
+        .create(&plan("recovery:stored", lane.head.as_str()))
+        .unwrap();
+}
+
 /// An Operation id the Store holds names one payload forever: a batch
 /// carrying other bytes under it is refused (formats 7 and 8; in 8 by the
 /// history records' complete lookup, council s27).

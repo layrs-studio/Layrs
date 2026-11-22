@@ -236,14 +236,18 @@ impl Context<'_> {
                             failure.get_or_insert(native(error));
                         }
                     }
-                    Err(message) => self.finding(
-                        FsckFindingCode::CasCorruption,
-                        FsckSeverity::Error,
-                        None,
-                        None,
-                        Some(crate::scm_v1::cas::pack2_digest_text(&key)),
-                        message,
-                    ),
+                    Err(message) => {
+                        // Its true content is unknown, not missing.
+                        self.unknown_history.insert((code, key));
+                        self.finding(
+                            FsckFindingCode::CasCorruption,
+                            FsckSeverity::Error,
+                            None,
+                            None,
+                            Some(crate::scm_v1::cas::pack2_digest_text(&key)),
+                            message,
+                        );
+                    }
                 }
                 true
             }

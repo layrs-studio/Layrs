@@ -552,6 +552,16 @@ impl Context<'_> {
                         self.history_unknowable(root) || self.history_unknowable(object)
                     }
                     "worktree" => {
+                        // Its active Operation first: one an unreadable pack
+                        // or block may hold leaves its roots unknown (s28 r2).
+                        let active = self
+                            .connection
+                            .query_row(
+                                "SELECT active_operation_id FROM worktrees WHERE worktree_id=?1",
+                                [root],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?;
                         let view = self
                             .connection
                             .query_row(
@@ -560,7 +570,8 @@ impl Context<'_> {
                                 |row| row.get::<_, String>(0),
                             )
                             .optional()?;
-                        view.is_some_and(|view| self.history_unknowable(&view))
+                        active.is_some_and(|active| self.history_unknowable(&active))
+                            || view.is_some_and(|view| self.history_unknowable(&view))
                             || self.history_unknowable(object)
                     }
                     _ => false,

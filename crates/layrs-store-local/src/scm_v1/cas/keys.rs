@@ -81,6 +81,7 @@ pub(crate) enum Ordinal<'a> {
         id: &'a [u8; 32],
         sequence: u64,
         space: Option<&'a str>,
+        digest: &'a [u8; 32],
     },
 }
 
@@ -116,10 +117,12 @@ impl Ordinal<'_> {
                 id,
                 sequence,
                 space,
+                digest,
             } => {
                 out.extend_from_slice(&[4, *kind_code]);
                 out.extend_from_slice(*id);
                 out.extend_from_slice(&sequence.to_le_bytes());
+                out.extend_from_slice(*digest);
                 match space {
                     Some(space) => {
                         out.push(1);
