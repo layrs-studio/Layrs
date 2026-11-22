@@ -1328,11 +1328,15 @@ pub(super) struct Pack2Builder {
     files: Vec<(FileRecord, [u8; 32])>,
     fileid: Vec<([u8; 32], [u8; 32], u64)>,
     /// History records: (kind code, key, sequence, Space, body digest).
-    history: Vec<(u8, [u8; 32], u64, Option<String>, [u8; 32])>,
+    history: Vec<HistoryRecord>,
     /// Each history record's sequence, body digest and Space, by (code,
     /// key): a second copy must equal the first (consolidation).
     history_copies: HistoryCopies,
 }
+
+/// A history record of a pack being built: (code, key, sequence, Space,
+/// body digest).
+type HistoryRecord = (u8, [u8; 32], u64, Option<String>, [u8; 32]);
 
 /// A pack's history copies by (code, key): (sequence, body digest, Space).
 type HistoryCopies = std::collections::HashMap<(u8, [u8; 32]), (u64, [u8; 32], Option<String>)>;
