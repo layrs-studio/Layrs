@@ -224,6 +224,10 @@ impl Context<'_> {
                 let budget = self.byte_budget_remaining;
                 self.consume_cpu(1) && self.reserve_bytes(bytes, budget, "history record")
             }
+            crate::scm_v1::cas::HistoryStep::Expand(bytes) => {
+                let budget = self.byte_budget_remaining;
+                self.reserve_bytes(bytes, budget, "history record")
+            }
             crate::scm_v1::cas::HistoryStep::Record((code, key, sequence, space, body)) => {
                 sequences.push(sequence);
                 match crate::scm_v1::cas::decode_history_record(code, &key, &body, space.as_deref())

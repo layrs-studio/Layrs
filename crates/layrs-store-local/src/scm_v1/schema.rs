@@ -100,10 +100,11 @@ pub fn schema_v3_checksum() -> String {
 /// their block table and their history entries carry no digest (phase 3a,
 /// schema unchanged). Draft 8: Tree records are binary (phase 3b, schema
 /// unchanged). Draft 9: Step, RepositoryView, Operation and StepObservation
-/// records are binary (phase 3c, schema unchanged). Drafts change until format 8 is frozen; a Store of an
+/// records are binary (phase 3c, schema unchanged). Draft 10: their
+/// dictionaries gain the rewrite map's keys (council s33). Drafts change until format 8 is frozen; a Store of an
 /// earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft9";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft10";
 pub const SCHEMA_V4_CHECKSUM: &str =
     "aa0cad80ca675783fb88b2a1d57d8585b05ad410b7f0967db5b731b5a44e67f2";
 pub const SCHEMA_V4_FINGERPRINT: &str =

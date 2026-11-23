@@ -15,6 +15,14 @@ pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// `canonical_json` of a JSON value already built, without converting it
+/// again.
+pub fn canonical_json_value(value: &Value) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    encode_value(value, &mut output)?;
+    Ok(output)
+}
+
 fn encode_value(value: &Value, output: &mut Vec<u8>) -> Result<()> {
     match value {
         Value::Null => output.extend_from_slice(b"null"),

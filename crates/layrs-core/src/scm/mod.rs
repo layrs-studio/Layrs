@@ -23,7 +23,7 @@ pub use admission::{
     validate_repository_view_admission_beside, validate_step_admission,
     validate_step_observation_admission, validate_tree_admission, validate_worktree_admission,
 };
-pub use canonical::{canonical_json, domain_separated_bytes};
+pub use canonical::{canonical_json, canonical_json_value, domain_separated_bytes};
 pub use content::{
     BASE_CHUNK_BYTES, Chunk, ChunkingDescriptor, FileChunk, FileManifest, FileManifestBuilder,
     FileManifestVerifier, FileState, MAX_FIXED_CHUNK_BYTES, WHOLE_MAX_BYTES, capture_chunking,

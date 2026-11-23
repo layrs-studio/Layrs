@@ -340,7 +340,8 @@ pub(super) fn history_canonical(
     path: &Path,
 ) -> CasResult<Vec<u8>> {
     if pack2::record_codec(version, code) == pack2::CODEC_BINARY {
-        decode_value_binary(body, None)
+        let limit = pack2::max_record_body(version, code) as u64;
+        decode_value_binary(body, None, limit)
             .ok_or_else(|| pack2::pack2_corruption(path, "binary history record does not decode"))
     } else {
         Ok(body.to_vec())
@@ -361,7 +362,8 @@ pub(super) fn validate_pack_record(
             decode_tree_binary(expected, body)
         }
         pack2::CODEC_BINARY => {
-            let canonical = decode_value_binary(body, Some(expected.as_str()))
+            let limit = pack2::max_record_body(version, pack2::kind_code(expected.kind()));
+            let canonical = decode_value_binary(body, Some(expected.as_str()), limit as u64)
                 .ok_or_else(|| corruption(expected, "binary record does not decode"))?;
             validate_stored_bytes(expected, &canonical, whole_files)
         }

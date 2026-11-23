@@ -1289,9 +1289,13 @@ fn replace_history_block(image: &mut [u8]) -> bool {
     false
 }
 
-/// How many blocks of a pack v4 image hold the record of `kind` and `key`
-/// (0 or 1), from its metadata.
-fn record_blocks(image: &[u8], kind: u8, key: &[u8; 32]) -> usize {
+/// The blocks of a pack v4 image holding records of `kind` (only the one
+/// of `key` when given), from its metadata.
+fn record_blocks(
+    image: &[u8],
+    kind: u8,
+    key: Option<&[u8; 32]>,
+) -> std::collections::BTreeSet<usize> {
     let footer = image.len() - 72;
     let at = |range: std::ops::Range<usize>| {
         u64::from_le_bytes(image[range].try_into().unwrap()) as usize
@@ -1318,6 +1322,7 @@ fn record_blocks(image: &[u8], kind: u8, key: &[u8; 32]) -> usize {
         varint(metadata, &mut cursor);
         cursor += 32;
     }
+    let mut blocks = std::collections::BTreeSet::new();
     for _ in 0..varint(metadata, &mut cursor) {
         let run_kind = metadata[cursor];
         cursor += 1;
@@ -1327,15 +1332,15 @@ fn record_blocks(image: &[u8], kind: u8, key: &[u8; 32]) -> usize {
             .collect();
         cursor += 32 * count;
         for found in keys {
+            let block = varint(metadata, &mut cursor);
             varint(metadata, &mut cursor);
             varint(metadata, &mut cursor);
-            varint(metadata, &mut cursor);
-            if run_kind == kind && found == key {
-                return 1;
+            if run_kind == kind && key.is_none_or(|key| found == key) {
+                blocks.insert(block);
             }
         }
     }
-    0
+    blocks
 }
 
 /// How many blocks of a pack v4 image hold `needle` in their raw bytes.
@@ -1728,35 +1733,20 @@ fn history_paging_decompresses_each_consolidated_block_once() {
         projection.by_step.values().map(Vec::len).sum::<usize>(),
         OBSERVATIONS
     );
-    // Each block holding the Space's observations is read once, and the
-    // block of the Step they observe (its envelope ends with its id).
-    let count = |needle: &[u8]| -> usize {
-        registered_packs(&root.0)
-            .iter()
-            .map(|name| {
-                blocks_holding(
-                    &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
-                    needle,
-                )
-            })
-            .sum()
-    };
-    let holding = count(b"observation:paging-");
+    // Exactly the blocks holding the Space's observations and the observed
+    // Step's record, each read once (from the packs' metadata).
     let step_key = step.digest_bytes();
-    let step_blocks: usize = registered_packs(&root.0)
-        .iter()
-        .map(|name| {
-            record_blocks(
-                &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
-                6,
-                &step_key,
-            )
-        })
-        .sum();
-    assert!(holding >= 2 && step_blocks == 1, "{holding} {step_blocks}");
+    let (mut holding, mut touched) = (0, 0);
+    for name in registered_packs(&root.0) {
+        let image = fs::read(root.0.join("objects/packs").join(name)).unwrap();
+        let mut blocks = record_blocks(&image, 12, None);
+        holding += blocks.len();
+        blocks.extend(record_blocks(&image, 6, Some(&step_key)));
+        touched += blocks.len();
+    }
+    assert!(holding >= 2, "{holding}");
     assert_eq!(
-        read,
-        holding + step_blocks,
+        read, touched,
         "{read} blocks read for {OBSERVATIONS} observations"
     );
     drop(reader);

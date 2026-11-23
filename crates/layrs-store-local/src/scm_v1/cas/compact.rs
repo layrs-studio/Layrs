@@ -1093,9 +1093,12 @@ impl LoadedPack {
             for (_, ordinal, code, location) in group {
                 let body = pack2::record_body(&raw, *location, *code, index.version, &self.path)?;
                 if pack2::record_codec(index.version, *code) == pack2::CODEC_BINARY {
-                    let expanded = binary_expanded_len(*code, None, body).ok_or_else(|| {
-                        pack2::pack2_corruption(&self.path, "binary history record does not walk")
-                    })?;
+                    let Some(expanded) = binary_expanded_len(*code, None, body) else {
+                        return Ok(RebuiltKeys::HistoryUnreadable(pack2::pack2_corruption(
+                            &self.path,
+                            "binary history record does not walk",
+                        )));
+                    };
                     extra = extra.saturating_add(expanded.saturating_sub(body.len() as u64));
                 }
                 bodies.push((*ordinal, *code, body));
@@ -1104,7 +1107,10 @@ impl LoadedPack {
                 return Ok(RebuiltKeys::Incomplete);
             }
             for (ordinal, code, body) in bodies {
-                let canonical = history_canonical(index.version, code, body, &self.path)?;
+                let canonical = match history_canonical(index.version, code, body, &self.path) {
+                    Ok(canonical) => canonical,
+                    Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
+                };
                 digests.insert(ordinal, pack2::history_digest(&canonical));
             }
         }
@@ -2867,11 +2873,21 @@ impl RegisteredCatalog {
                 if kind != code {
                     continue;
                 }
-                let body = self.history_body(cas, position, code, location)?;
-                decoded = decoded.saturating_add(body.len() as u64);
+                // The canonical bytes it will hold are bounded before the
+                // record is decoded (council s33).
+                let raw = self.history_raw_body(cas, position, code, location)?;
+                let expanded = if pack2::binary_trees(index.version) {
+                    binary_expanded_len(code, None, &raw).ok_or_else(|| {
+                        pack2::pack2_corruption(&self_path(), "binary history record does not walk")
+                    })?
+                } else {
+                    raw.len() as u64
+                };
+                decoded = decoded.saturating_add(expanded);
                 if decoded > bounds.max_bytes {
                     return Ok(None);
                 }
+                let body = history_canonical(index.version, code, &raw, &registered.pack.path)?;
                 if let Some(other) = sequences_of.insert(*key, entry.sequence) {
                     if other != entry.sequence {
                         return Err(pack2::pack2_corruption(
@@ -2933,7 +2949,7 @@ impl RegisteredCatalog {
                         .then(|| binary_expanded_len(code, None, raw))
                         .flatten()
                         .map_or(0, |expanded| expanded.saturating_sub(raw.len() as u64));
-                    if extra > 0 && !visit(HistoryStep::Authorize(extra)) {
+                    if extra > 0 && !visit(HistoryStep::Expand(extra)) {
                         return false;
                     }
                 }
@@ -3026,8 +3042,8 @@ impl RegisteredCatalog {
     }
 
     /// Stored byte length of `id`'s first copy, from metadata only: the
-    /// canonical length, except a packs-v4 Tree's binary body, which expands
-    /// when decoded (`expanded_length`).
+    /// canonical length, except a packs-v4 binary body (a Tree, Step, View
+    /// or history record), which expands when decoded (`expanded_length`).
     pub(crate) fn stored_length(&self, id: &StoreObjectId) -> CasResult<Option<u64>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
             return self.complete(|| object_keys(id), None);
@@ -3036,8 +3052,8 @@ impl RegisteredCatalog {
     }
 
     /// What reading `id` may cost: the sum, over the copies that can be
-    /// sized, of each one's decoded size (a binary Tree's exact expansion,
-    /// else its stored length). A read decodes copies in order until one
+    /// sized, of each one's decoded size (a binary record's exact
+    /// expansion, else its stored length). A read decodes copies in order until one
     /// is `id`, so a copy that decodes as another Tree is paid for as well
     /// as the sound one after it (council s32 r2 and r3: budgets charge
     /// expanded sizes, and sizing follows the read's fallback). An error
@@ -4328,6 +4344,9 @@ fn check_history_body(
 pub(crate) enum HistoryStep {
     /// May `bytes` of the next record be read? (`false` stops the visit.)
     Authorize(u64),
+    /// May the record just read grow by `bytes` when decoded (its
+    /// canonical form, phase 3c)? A byte charge only.
+    Expand(u64),
     /// A record read: (code, key, sequence, Space, body).
     Record(HistoryCopy),
     /// A record whose body cannot be read: unknown, not missing.
@@ -4449,7 +4468,9 @@ impl NativeCas {
                 let own = object_id.to_string();
                 let binary = encode_value_binary(&bytes, Some(&own))
                     .ok_or_else(|| corruption(&object_id, "record is not JSON"))?;
-                if decode_value_binary(&binary, Some(&own)).as_deref() != Some(&bytes[..]) {
+                let limit =
+                    pack2::max_record_body(version, pack2::kind_code(object_id.kind())) as u64;
+                if decode_value_binary(&binary, Some(&own), limit).as_deref() != Some(&bytes[..]) {
                     return Err(corruption(&object_id, "binary record does not decode back"));
                 }
                 Some(binary)
@@ -5099,8 +5120,11 @@ impl RegisteredCatalog {
                     // authorizes the difference first (council s32).
                     if let (Ok(block), pack2::RecordRef::Explicit(ordinal)) = (&raw, record) {
                         if let Some((code, _, location)) = loaded.index.explicit(ordinal) {
+                            // History records are decoded and charged by
+                            // fsck's history visit, not here.
                             if pack2::record_codec(loaded.index.version, code)
                                 == pack2::CODEC_BINARY
+                                && !pack2::is_history_code(code)
                             {
                                 let extra = pack2::record_body(
                                     block,

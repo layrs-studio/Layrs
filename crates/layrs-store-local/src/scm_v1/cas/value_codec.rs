@@ -32,8 +32,11 @@ const MAX_DEPTH: usize = 32;
 /// Integers spelled as such: those every JSON number renders exactly.
 const INTEGER_MAX: i64 = (1 << 53) - 1;
 
-/// Object keys by index + 1 (0: the key follows as text). Part of the
-/// format: append only while format 8 is a draft.
+/// Object keys by index + 1 (0: the key follows as text). These three
+/// tables are part of the format: any change to them changes the one
+/// encoding of existing values (a key or word once spelled as text would
+/// now have an index), so it needs a new draft; `tables_are_pinned` holds
+/// their hash.
 const KEYS: &[&str] = &[
     "activeLayerId",
     "actorId",
@@ -48,9 +51,11 @@ const KEYS: &[&str] = &[
     "markerIds",
     "materializedTreeId",
     "metadata",
+    "newStepIds",
     "objectId",
     "observationId",
     "observedAt",
+    "oldStepId",
     "operationId",
     "parentOperationIds",
     "parentStepIds",
@@ -70,7 +75,7 @@ const KEYS: &[&str] = &[
     "worktrees",
 ];
 
-/// Common string values by index.
+/// Common string values by index (part of the format, as `KEYS`).
 const WORDS: &[&str] = &[
     "layrs.cas-envelope.v1",
     "layrs.step.v1",
@@ -114,7 +119,7 @@ const WORDS: &[&str] = &[
     "Initialize",
 ];
 
-/// `<prefix>:<uuid>` ids by prefix code.
+/// `<prefix>:<uuid>` ids by prefix code (part of the format, as `KEYS`).
 const PREFIXES: &[&str] = &[
     "operation",
     "observation",
@@ -462,7 +467,9 @@ impl Reader<'_> {
             NUMBER => Value::Number(serde_json::from_str(self.text()?).ok()?),
             ARRAY => {
                 let count = self.count()?;
-                let mut values = Vec::with_capacity(count);
+                // The walk already bounded the size: no large reservation
+                // on a count alone.
+                let mut values = Vec::with_capacity(count.min(1024));
                 for _ in 0..count {
                     values.push(self.value(depth + 1)?);
                 }
@@ -471,15 +478,20 @@ impl Reader<'_> {
             OBJECT => {
                 let count = self.count()?;
                 let mut map = Map::new();
+                let mut previous: Option<String> = None;
                 for _ in 0..count {
                     let key = match usize::try_from(self.varint()?).ok()? {
                         0 => self.text()?.to_owned(),
                         index => (*KEYS.get(index - 1)?).to_owned(),
                     };
-                    let value = self.value(depth + 1)?;
-                    if map.insert(key, value).is_some() {
+                    // Keys strictly increasing by bytes: one order whatever
+                    // the map keeps (council s33).
+                    if previous.as_ref().is_some_and(|previous| key <= *previous) {
                         return None;
                     }
+                    previous = Some(key.clone());
+                    let value = self.value(depth + 1)?;
+                    map.insert(key, value);
                 }
                 Value::Object(map)
             }
@@ -489,9 +501,14 @@ impl Reader<'_> {
 }
 
 /// The canonical JSON bytes a binary record body decodes to, or `None`:
-/// malformed, or not the one encoding of its value (re-encoded and
-/// compared). The caller validates the bytes as the record they claim.
-pub(super) fn decode_value_binary(body: &[u8], own: Option<&str>) -> Option<Vec<u8>> {
+/// malformed, larger than `limit` once canonical, or not the one encoding
+/// of its value (re-encoded and compared). The whole body is walked and
+/// sized before any value is built (council s33). The caller validates the
+/// bytes as the record they claim.
+pub(super) fn decode_value_binary(body: &[u8], own: Option<&str>, limit: u64) -> Option<Vec<u8>> {
+    if value_binary_expanded_len(body, own)? > limit {
+        return None;
+    }
     let mut reader = Reader {
         bytes: body,
         at: 0,
@@ -506,7 +523,7 @@ pub(super) fn decode_value_binary(body: &[u8], own: Option<&str>) -> Option<Vec<
     if again != body {
         return None;
     }
-    layrs_core::scm::canonical_json(&value).ok()
+    layrs_core::scm::canonical_json_value(&value).ok()
 }
 
 /// A string's bytes once escaped by serde_json (and so by JCS), quotes
@@ -612,7 +629,7 @@ mod tests {
     fn round_trip(canonical: &[u8], own: Option<&str>) {
         let body = encode_value_binary(canonical, own).unwrap();
         assert_eq!(
-            decode_value_binary(&body, own).unwrap(),
+            decode_value_binary(&body, own, u64::MAX).unwrap(),
             canonical,
             "{}",
             String::from_utf8_lossy(canonical)
@@ -649,6 +666,22 @@ mod tests {
         );
     }
 
+    /// The three dictionaries are part of the format (council s33): a
+    /// change to them needs a new draft, and this hash with it.
+    #[test]
+    fn tables_are_pinned() {
+        let mut hasher = blake3::Hasher::new();
+        for table in [KEYS, WORDS, PREFIXES] {
+            for entry in table {
+                hasher.update(entry.as_bytes());
+                hasher.update(&[0]);
+            }
+            hasher.update(&[1]);
+        }
+        assert_eq!(hasher.finalize().to_hex().as_str(), PINNED_TABLES);
+    }
+    const PINNED_TABLES: &str = "b3b858ffa5bed20f6aacd9abe6db78b448391872666f4f1030cbcd188bffadb9";
+
     /// Only the one encoding of a value decodes; random damage never
     /// panics, and whatever decodes re-encodes to itself.
     #[test]
@@ -672,15 +705,29 @@ mod tests {
             text.extend_from_slice(b"Capture Worktree");
             text
         });
-        assert!(decode_value_binary(&text_word, None).is_none());
-        assert!(decode_value_binary(&[body.as_slice(), &[0]].concat(), None).is_none());
+        assert!(decode_value_binary(&text_word, None, u64::MAX).is_none());
+        assert!(decode_value_binary(&[body.as_slice(), &[0]].concat(), None, u64::MAX).is_none());
         let padded = [vec![OBJECT, 0x85, 0x00], body[2..].to_vec()].concat();
-        assert!(decode_value_binary(&padded, None).is_none());
+        assert!(decode_value_binary(&padded, None, u64::MAX).is_none());
         let duplicate = [OBJECT, 2, 8, NULL, 8, NULL];
-        assert!(decode_value_binary(&duplicate, None).is_none());
+        // Keys out of order.
+        let reversed = [OBJECT, 2, 9, NULL, 8, NULL];
+        assert!(decode_value_binary(&reversed, None, u64::MAX).is_none());
+        // Many values then a trailing byte: refused by the walk, before any
+        // value is built (council s33); and a body past its limit.
+        let mut many = vec![ARRAY];
+        put_varint(&mut many, 100_000);
+        many.extend(std::iter::repeat_n(OWN_ID, 100_000));
+        let own = Some("blake3:0000000000000000000000000000000000000000000000000000000000000000");
+        assert!(value_binary_expanded_len(&many, own).is_some());
+        assert!(decode_value_binary(&[many.as_slice(), &[0]].concat(), own, u64::MAX).is_none());
+        let canonical = value_binary_expanded_len(&many, own).unwrap();
+        assert!(decode_value_binary(&many, own, canonical - 1).is_none());
+        assert!(decode_value_binary(&many, own, canonical).is_some());
+        assert!(decode_value_binary(&duplicate, None, u64::MAX).is_none());
         // Too deep.
         let deep: Vec<u8> = std::iter::repeat_n([ARRAY, 1], 40).flatten().collect();
-        assert!(decode_value_binary(&[deep, vec![NULL]].concat(), None).is_none());
+        assert!(decode_value_binary(&[deep, vec![NULL]].concat(), None, u64::MAX).is_none());
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = || {
             state ^= state >> 12;
@@ -698,7 +745,7 @@ mod tests {
                 }
                 _ => damaged.insert(at, next() as u8),
             }
-            if let Some(canonical) = decode_value_binary(&damaged, None) {
+            if let Some(canonical) = decode_value_binary(&damaged, None, u64::MAX) {
                 assert_eq!(encode_value_binary(&canonical, None).unwrap(), damaged);
                 assert_eq!(
                     value_binary_expanded_len(&damaged, None).unwrap(),

@@ -1119,3 +1119,49 @@ file records 28; metadata keys 160, file records 44, locations 28, history
 section 12. SQLite's slope is about 177 B/Step (receipts). Next: 3d
 (grouping and block sizes), 3e (receipt key); the gate (0.9 times git)
 likely needs item 4 (shorter keys) too.
+
+## Council s33 r1 (code review of 3c, 2026-11-23)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 (ship after fixes) |
+
+Fixed:
+
+- (P2, all three) The decoder built values before the body was known to be
+  well formed or small enough: a malformed body could allocate its
+  expansion, uncharged, before it was refused. `decode_value_binary` now
+  walks and sizes the whole body first and refuses a canonical form past
+  the record limit (`max_record_body` of its kind and version) before
+  building anything; arrays reserve at most 1,024 slots up front. Tests:
+  100,000 own ids then a trailing byte are refused by the walk; a body one
+  byte over its limit is refused.
+- (P2, all three) `history_in_space` charged its canonical bound after
+  decoding: it now sizes the raw body, checks the running total, then
+  decodes.
+- (P2 Opus) The history writer checked the binary length against the
+  record limit: it now refuses a canonical body over the limit before
+  encoding, so writers never seal what readers refuse.
+- (P3 Opus) The dictionaries are part of the format: any change needs a
+  new draft (`tables_are_pinned` holds their hash); the rewrite map's keys
+  (`oldStepId`, `newStepIds`) are added (draft 10).
+- (P3 Opus) Object keys must be strictly increasing by bytes when decoded
+  (one order whatever the map type keeps).
+- (P3 Opus) An undecodable history body in a sound block is the pack's
+  damage in the keys check (`HistoryUnreadable`), not a keys row problem.
+- (P3 Opus) fsck charged history growth twice: the audit leaves history
+  records to the history visit, whose growth is a byte charge only
+  (`HistoryStep::Expand`, no CPU unit).
+- (P3 Opus) Decoding renders JCS from the built value without converting
+  it again (`layrs_core::scm::canonical_json_value`).
+- (P3 Opus) Docs (`CODEC_BINARY`, `stored_length`, `expanded_length`); the
+  paging test counts the exact blocks touched (observations and the
+  observed Step, from the packs' metadata).
+
+Kept: one global key table, not one per kind (the decoder needs no kind,
+and the size difference is a byte per key at most). Not done: an
+integration test of `history_in_space` with a limit between the binary and
+canonical sizes (its limits are fixed by the reader; the walk-before-decode
+order is the same as the unit-tested decoder's).

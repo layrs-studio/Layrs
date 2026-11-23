@@ -105,7 +105,7 @@ fn max_raw_block(version: u32) -> usize {
 }
 
 /// The largest body of a record of kind `code` in a pack of `version`.
-fn max_record_body(version: u32, code: u8) -> usize {
+pub(super) fn max_record_body(version: u32, code: u8) -> usize {
     if version >= PACK2_VERSION_LARGE_TREES
         && (code == kind_code(StoreObjectKind::Tree) || is_history_code(code))
     {
@@ -130,8 +130,9 @@ const MAX_METADATA_BYTES: u64 = 512 * 1024 * 1024;
 /// Kind code of a file record (codes 1..=9 are `StoreObjectKind`s).
 pub(super) const FILE_KIND: u8 = 10;
 const CODEC_CANONICAL: u8 = 0;
-/// Packs v4 (phase 3b, council s30): a Tree record in its binary form
-/// (`codec::encode_tree_binary`).
+/// Packs v4 (phases 3b and 3c, council s30): a record in its binary form
+/// (`codec::encode_tree_binary` for Trees, `value_codec` for Steps, Views
+/// and history records).
 pub(super) const CODEC_BINARY: u8 = 1;
 
 /// The one codec a record of kind `code` has in a pack of `version`: in
@@ -1470,10 +1471,18 @@ impl Pack2Builder {
         let digest = history_digest(body);
         // Packs v4 store it binary (phase 3c), decoded back to `body` before
         // it is written (council s30).
+        // Readers refuse a canonical form past the record limit: so does the
+        // writer, before encoding (council s33).
+        let limit = max_record_body(self.version, code);
+        if body.len() > limit {
+            return Err(io::Error::other(
+                "a history record exceeds the pack record limit",
+            ));
+        }
         let stored = if record_codec(self.version, code) == CODEC_BINARY {
             let binary = encode_value_binary(body, None)
                 .ok_or_else(|| io::Error::other("a history record is not JSON"))?;
-            if decode_value_binary(&binary, None).as_deref() != Some(body) {
+            if decode_value_binary(&binary, None, limit as u64).as_deref() != Some(body) {
                 return Err(io::Error::other("a history record does not decode back"));
             }
             std::borrow::Cow::Owned(binary)
