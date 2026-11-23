@@ -99,17 +99,29 @@ const TREE_EXECUTABLE: u8 = 8;
 const TREE_ENTRY_MIN: usize = 1 + 1 + 1 + 1 + 32;
 /// The longest valid entry name: 255 Unicode scalars of up to 4 bytes.
 const TREE_NAME_MAX: usize = 255 * 4;
-/// A Tree envelope's bytes beside its entries (278), and an entry's beside
-/// its escaped name (149 with its comma, for the longest target spelling),
-/// rounded up: bounds the randomized test checks against the encoder.
-const TREE_ENVELOPE_BYTES: u64 = 288;
-const TREE_ENTRY_BYTES: u64 = 152;
+/// A Tree envelope's bytes beside its entries; an entry's beside its name
+/// and target (40 with `"executable":false`, 39 with `true`); each target
+/// spelling's bytes. Exact (council s32 r2): the randomized test checks
+/// them against the encoder.
+const TREE_ENVELOPE_BYTES: u64 = 278;
+const TREE_ENTRY_BYTES: u64 = 40;
+fn tree_target_bytes(kind: u8) -> Option<u64> {
+    Some(match kind {
+        TREE_FILE | TREE_TREE => 98,
+        TREE_CONFLICT => 106,
+        TREE_SYMLINK => 104,
+        TREE_TOMBSTONE => 108,
+        _ => return None,
+    })
+}
 
-/// A name's bytes once escaped in JCS (a bound: a control byte as `\u00XX`).
+/// A name's bytes once escaped as serde_json (and so JCS) writes it: `"`
+/// and `\`, and `\b \t \n \f \r`, as two bytes; other control bytes as
+/// `\u00XX`; everything else as is.
 fn escaped_len(name: &[u8]) -> u64 {
     name.iter()
         .map(|byte| match byte {
-            b'"' | b'\\' => 2,
+            b'"' | b'\\' | 0x08 | 0x09 | 0x0a | 0x0c | 0x0d => 2,
             0..=0x1f => 6,
             _ => 1,
         })
@@ -133,7 +145,9 @@ fn walk_tree_binary(
     for _ in 0..count {
         let shared = usize::try_from(take_varint(body, &mut at)?).ok()?;
         let suffix = usize::try_from(take_varint(body, &mut at)?).ok()?;
-        if shared > name.len() || suffix == 0 || shared + suffix > TREE_NAME_MAX {
+        // `shared` is within the previous name, so `TREE_NAME_MAX - shared`
+        // cannot underflow, and nothing is added before it is bounded.
+        if shared > name.len() || suffix == 0 || suffix > TREE_NAME_MAX - shared {
             return None;
         }
         let end = at.checked_add(suffix).filter(|end| *end <= body.len())?;
@@ -148,16 +162,29 @@ fn walk_tree_binary(
     (at == body.len()).then_some(count)
 }
 
-/// A bound on the canonical (JCS) envelope a binary Tree record expands
-/// to: what budgets charge for it, and what its decoder refuses past the
-/// pack Tree limit (council s32). `None` for a malformed body.
+/// Whether a binary Tree body may be a pack record: its expansion bound is
+/// within the pack Tree limit, which is what its decoder accepts (council
+/// s32 r2). A Tree past it is written loose, in JCS.
+pub(super) fn binary_tree_fits_pack(body: &[u8]) -> bool {
+    tree_binary_expanded_len(body)
+        .is_some_and(|expanded| expanded <= pack2::MAX_TREE_RECORD_BYTES as u64)
+}
+
+/// The canonical (JCS) envelope a binary Tree record decodes to, its exact
+/// length: what budgets charge for it, and what decides whether it fits a
+/// pack, as its JCS length does in format 7 (council s32). `None` for a
+/// malformed body (an unknown tag among them).
 pub(super) fn tree_binary_expanded_len(body: &[u8]) -> Option<u64> {
     let mut expanded = TREE_ENVELOPE_BYTES;
-    walk_tree_binary(body, |name, _, _| {
-        expanded = expanded.saturating_add(escaped_len(name) + TREE_ENTRY_BYTES);
+    let count = walk_tree_binary(body, |name, tag, _| {
+        let entry = TREE_ENTRY_BYTES - u64::from(tag & TREE_EXECUTABLE != 0)
+            + tree_target_bytes(tag & !TREE_EXECUTABLE)?
+            + escaped_len(name);
+        expanded = expanded.saturating_add(entry);
         Some(())
     })?;
-    Some(expanded)
+    // The commas between entries.
+    Some(expanded.saturating_add(count.saturating_sub(1)))
 }
 
 /// Packs v4 (format 8, phase 3b, council s30): a Tree record's body. The
@@ -216,8 +243,8 @@ pub(super) fn decode_tree_binary(
     let bad = |reason: &str| corruption(expected, format!("binary Tree record: {reason}"));
     // Shape and size first, with one bounded buffer: no entry is built for a
     // body whose canonical form would not fit a pack (it belongs loose).
-    let expanded = tree_binary_expanded_len(body).ok_or_else(|| bad("malformed entries"))?;
-    if expanded > pack2::MAX_TREE_RECORD_BYTES as u64 {
+    tree_binary_expanded_len(body).ok_or_else(|| bad("malformed entries"))?;
+    if !binary_tree_fits_pack(body) {
         return Err(bad("its canonical form exceeds the pack Tree limit"));
     }
     let mut entries: Vec<TreeEntry> = Vec::new();
@@ -866,6 +893,13 @@ mod tree_binary_fuzz {
         "\"",
         "\u{1}",
         "\t",
+        "\n",
+        "\r",
+        "\u{8}",
+        "\u{c}",
+        "\\",
+        "\u{1f}",
+        "\u{7f}",
     ];
 
     fn name(rng: &mut Rng) -> String {
@@ -923,7 +957,7 @@ mod tree_binary_fuzz {
             );
             let expanded = tree_binary_expanded_len(&body).unwrap();
             let actual = tree_envelope(&tree).unwrap().len() as u64;
-            assert!(expanded >= actual, "{expanded} < {actual}");
+            assert_eq!(expanded, actual);
             for _ in 0..8 {
                 let mut damaged = body.clone();
                 match rng.below(4) {
@@ -980,6 +1014,21 @@ mod tree_binary_fuzz {
         assert!(tree_binary_bounds(&body).is_none());
         assert!(tree_binary_expanded_len(&body).is_none());
         let id = StoreObjectId::Tree(Tree::new(vec![]).unwrap().id().clone());
+        assert!(decode_tree_binary(&id, &body).is_err());
+        // A suffix length of u64::MAX after a valid first name: refused, no
+        // overflow (council s32 r2).
+        let mut body = Vec::new();
+        put_varint(&mut body, 2);
+        put_varint(&mut body, 0);
+        put_varint(&mut body, 1);
+        body.push(b'a');
+        body.push(TREE_FILE);
+        body.extend_from_slice(&[7; 32]);
+        put_varint(&mut body, 1);
+        put_varint(&mut body, u64::MAX);
+        body.extend_from_slice(&[0; 64]);
+        assert!(tree_binary_bounds(&body).is_none());
+        assert!(tree_binary_expanded_len(&body).is_none());
         assert!(decode_tree_binary(&id, &body).is_err());
     }
 }

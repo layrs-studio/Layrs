@@ -1955,6 +1955,79 @@ fn fsck_charges_a_binary_tree_its_expanded_size() {
         "{:#?}",
         report.findings
     );
+    // With 8 MiB, the audit's charge fits; the logical pass charges the
+    // expanded size again and stops there (council s32 r2).
+    let report = fsck_existing(&root.0, FsckOptions { max_findings: 2 }).unwrap();
+    assert!(report.is_truncated(), "{:#?}", report.findings);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("CAS object")),
+        "{:#?}",
+        report.findings
+    );
+}
+
+/// Council s32 r2: fsck sizes and reads a binary Tree through its sound
+/// copy when the first one is damaged, as reads do. A later Step names the
+/// Tree as its root: fsck reports the damaged copy, never the Tree missing.
+#[test]
+fn fsck_reads_a_binary_tree_through_its_sound_copy() {
+    let root = TestRoot::new("tree-two-copies");
+    create(&root.0, "tree-two-copies", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("tree-two-copies", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    // The empty Tree, alone in its pack (it names nothing, so no closure
+    // reads the damaged block).
+    let tree = Tree::new(vec![]).unwrap();
+    repository
+        .apply_batch(&carrying(
+            "tree-two-copies-one",
+            lane.space.id(),
+            vec![CanonicalObject::Tree(tree.clone())],
+            false,
+        ))
+        .unwrap();
+    drop(repository);
+    let damaged = flip_located(&root.0, &StoreObjectId::Tree(tree.id().clone()));
+    forget_loaded_packs();
+    // A damaged copy never blocks a write: the Tree is stored again, with
+    // a new Step naming it as root.
+    let mut repository = NativeScmRepository::new(&root.0);
+    let step = Step::new(vec![], tree.id().clone()).unwrap();
+    repository
+        .apply_batch(&carrying(
+            "tree-two-copies-again",
+            lane.space.id(),
+            vec![
+                CanonicalObject::Tree(tree.clone()),
+                CanonicalObject::Step(step),
+            ],
+            false,
+        ))
+        .unwrap();
+    assert_eq!(repository.get_tree(tree.id()).unwrap(), Some(tree.clone()));
+    drop(repository);
+    forget_loaded_packs();
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    let damaged = damaged.file_name().unwrap().to_string_lossy().into_owned();
+    let tree_id = tree.id().to_string();
+    for finding in &report.findings {
+        let names_tree = finding.object_id.as_deref() == Some(tree_id.as_str())
+            || finding.message.contains(&tree_id[7..]);
+        assert!(
+            !names_tree
+                || (finding.code == FsckFindingCode::CasCorruption
+                    && finding
+                        .path
+                        .as_ref()
+                        .is_some_and(|path| path.to_string_lossy().contains(&damaged))),
+            "only the damaged copy is reported for the Tree: {finding:#?}"
+        );
+    }
 }
 
 /// Format 8: history records are never admitted; fsck reports a bitmap

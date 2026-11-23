@@ -1741,7 +1741,11 @@ impl NativeCas {
                 } else {
                     Some(match &object {
                         CanonicalObject::Tree(tree) if pack2::binary_trees(target) => {
-                            encode_tree_binary(tree)
+                            // Decoded back before it is written, as every
+                            // fresh binary Tree (council s32 r2).
+                            let binary = encode_tree_binary(tree);
+                            decode_tree_binary(&object_id, &binary)?;
+                            binary
                         }
                         other => encode_object(other)?,
                     })
@@ -2979,23 +2983,41 @@ impl RegisteredCatalog {
         cas: &NativeCas,
         id: &StoreObjectId,
     ) -> CasResult<Option<u64>> {
-        let Some(placement) = self.placements(id)?.into_iter().next() else {
+        let placements = self.placements(id)?;
+        if placements.is_empty() {
             return self.complete(|| object_keys(id), None);
-        };
-        if let Placement::Record { pack, ordinal } = placement {
-            let loaded = &self.packs[pack].pack;
-            let (code, _, location) = loaded
-                .index
-                .explicit(ordinal)
-                .ok_or_else(|| corruption(id, "pack record vanished"))?;
-            if pack2::record_codec(loaded.index.version, code) == pack2::CODEC_BINARY {
-                let body = self.body(cas, pack, code, location)?;
-                return tree_binary_expanded_len(&body)
-                    .map(Some)
-                    .ok_or_else(|| corruption(id, "binary Tree record: malformed entries"));
+        }
+        // Reads fall back across copies: so does sizing (council s32 r2),
+        // the first copy that can be sized; a damaged one is the audit's.
+        let mut first_error = None;
+        for placement in placements {
+            let sized = match placement {
+                Placement::Record { pack, ordinal } => {
+                    let loaded = &self.packs[pack].pack;
+                    let (code, _, location) = loaded
+                        .index
+                        .explicit(ordinal)
+                        .ok_or_else(|| corruption(id, "pack record vanished"))?;
+                    if pack2::record_codec(loaded.index.version, code) == pack2::CODEC_BINARY {
+                        self.body(cas, pack, code, location).and_then(|body| {
+                            tree_binary_expanded_len(&body).ok_or_else(|| {
+                                corruption(id, "binary Tree record: malformed entries")
+                            })
+                        })
+                    } else {
+                        self.placement_length(id, placement)
+                    }
+                }
+                placement => self.placement_length(id, placement),
+            };
+            match sized {
+                Ok(length) => return Ok(Some(length)),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        self.placement_length(id, placement).map(Some)
+        Err(first_error.unwrap_or_else(|| corruption(id, "no copy could be sized")))
     }
 
     fn placement_length(&self, id: &StoreObjectId, placement: Placement) -> CasResult<u64> {
@@ -4342,14 +4364,23 @@ impl NativeCas {
         // there: encoded once, and decoded back as its id before anything
         // compares or writes it (council s30, s32).
         let version = pack2::version_for_store(self.whole_files, self.bitmap_admissions);
+        let packable = bytes.len() <= pack2::max_packed_bytes(object_id.kind(), self.whole_files);
         let binary = match object {
-            CanonicalObject::Tree(tree) if pack2::binary_trees(version) => {
+            CanonicalObject::Tree(tree) if pack2::binary_trees(version) && packable => {
                 let binary = encode_tree_binary(tree);
-                decode_tree_binary(&object_id, &binary)?;
-                Some(binary)
+                if binary_tree_fits_pack(&binary) {
+                    decode_tree_binary(&object_id, &binary)?;
+                    Some(binary)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
+        // A Tree of packs v4 that has no binary form here goes loose.
+        let loose_tree = matches!(object, CanonicalObject::Tree(_))
+            && pack2::binary_trees(version)
+            && binary.is_none();
         let stored_form: &[u8] = binary.as_deref().unwrap_or(&bytes);
         for placement in catalog.placements(&object_id)? {
             // A copy stored byte for byte as this object's canonical encoding
@@ -4391,7 +4422,7 @@ impl NativeCas {
         if let Some(error @ CasError::ExistingObjectMismatch { .. }) = first_error {
             return Err(error);
         }
-        if bytes.len() > pack2::max_packed_bytes(object_id.kind(), self.whole_files) {
+        if !packable || loose_tree {
             let outcome = match self.verified_existing(object_id.clone(), &bytes)? {
                 Some(outcome) => outcome,
                 None => {

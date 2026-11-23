@@ -899,8 +899,10 @@ Phase 3a is reviewed (three rounds, the last with only these fixes).
   prefix, no trailing byte). `record_body` checks every record header
   against its kind's codec in its pack's version (`record_codec`);
   `validate_pack_record` decodes by codec; clustering keys read binary
-  names; the writer reuses a stored copy equal to the binary form. Loose
-  Trees (over 64 MiB) and formats 5 to 7 keep JCS.
+  names; the writer reuses a stored copy equal to the binary form. A Tree
+  past the pack Tree limit takes the loose path in JCS, as in format 7
+  (where loose installs are capped at 64 MiB too); formats 5 to 7 keep
+  JCS.
 - Tests: `binary_trees_round_trip` (every target kind, executable bits,
   shared prefixes, non-ASCII names, the empty Tree, the bounds) and
   `binary_trees_refuse_other_encodings` (a shorter shared prefix, unsorted
@@ -983,3 +985,59 @@ Latency gate at 10,000 files (format 8, release, two runs each, 3a then
 55-56 / 55-58, three-way merge 222-233 / 203-209, room drop 95-106 /
 96-115: no regression beyond noise; the Store is smaller (1412 against
 1556 KiB after the bench). 99,000 files: not run yet.
+
+## Council s32 r2 (2026-11-23)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 | 7/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 7/10 (ship after fixes; its run hit the
+  Claude usage limit and resumed after the reset) |
+
+Fixed:
+
+- (P2, all three) The expansion was a bound, looser than the JCS length the
+  pack limit is decided on (152 bytes per entry against 139 for a File;
+  every control byte counted 6), so a Tree format 7 packs could abort a
+  format 8 batch. `tree_binary_expanded_len` is now exact: a 278-byte
+  envelope, per entry 40 bytes (39 when executable), the target's spelling
+  (File and Tree 98, Conflict 106, Symlink 104, Tombstone 108), the name as
+  serde_json escapes it (`"`, `\`, ` 	 
+  ` two bytes, other
+  control bytes six) and the commas between entries. The randomized test
+  asserts equality with the encoder over every escape kind. The writer
+  decides pack or loose before the decode-back (`binary_tree_fits_pack`,
+  the decoder's own limit), so the two agree.
+- (P2 Astra, Sol, Opus) `expanded_length` sized only the first copy; fsck
+  then skipped a Tree whose first copy was damaged though reads used its
+  sound one. It now sizes the first copy that can be sized. Test
+  `fsck_reads_a_binary_tree_through_its_sound_copy` (an empty Tree alone in
+  a damaged pack, stored again with a Step naming it as root: fsck reports
+  the damaged copy, never the Tree missing; sizing only the first copy
+  fails it).
+- (P2 Astra, Sol; P3 Opus) `shared + suffix` could overflow on a crafted
+  suffix length: the walker now checks `suffix > TREE_NAME_MAX - shared`;
+  unit case with a `u64::MAX` suffix.
+- (P2 Opus) The consolidation copy's re-encoded binary Tree is decoded back
+  before it is written.
+- (P3 Opus) The fsck test now also exercises the logical pass (8 MiB: the
+  audit's charge fits, the logical pass stops on the Tree; reverting it to
+  `stored_length` fails the test).
+- (P3 Opus) The reuse comparison is with the form this Store writes (not
+  keyed on each placement's version): a binary Tree never equals a JCS
+  body, and `record_body` holds each version to its codec. After 2d, reuse
+  against a v3 copy falls back to decoding; kept for 2d.
+
+Later: a test-support consistency check (`admission.rs`, bounded against
+complete admission) fires when an admitted Tree's closure reads a damaged
+block whose file record the complete resolver does not need; seen while
+writing the two-copy test, not caused by 3b.
+
+Latency gate at 99,000 files (format 8, release, one run each, 3a then 3b
+at e141197, ms): status 49 / 48, step 190 / 199, room new 13,855 / 11,875,
+room step 214 / 214, fast-forward 122 / 121, second merge 118 / 118,
+three-way merge 1,373 / 1,161, room drop 481 / 465; Store 11.5 / 10.7 MB.
+No regression beyond noise. git in the same runs: status 52-53, commit
+213-227, worktree add 33-40 s, fast-forward 127-136, three-way merge
+3.2-3.7 s.
