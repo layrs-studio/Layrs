@@ -885,3 +885,40 @@ one decompress-and-hash pass from fsck.
   hash pass fewer, and history charged once).
 
 Phase 3a is reviewed (three rounds, the last with only these fixes).
+
+## Phase 3b progress (2026-11-23)
+
+- Packs v4 store a Tree record in binary (record codec 1, schema v4
+  draft 8): the entry count, then per entry the length its name shares
+  with the previous name, the rest of the name, a tag (target kind in bits
+  0 to 2, executable in bit 3, others zero) and the target's 32-byte
+  digest. `decode_tree_binary` builds the typed Tree directly (names valid
+  and strictly increasing, known tags, counts bounded by the body before
+  any allocation), requires the id the key names, and requires the body
+  to be the one encoding of that Tree (no padded varint, no shorter shared
+  prefix, no trailing byte). `record_body` checks every record header
+  against its kind's codec in its pack's version (`record_codec`);
+  `validate_pack_record` decodes by codec; clustering keys read binary
+  names; the writer reuses a stored copy equal to the binary form. Loose
+  Trees (over 64 MiB) and formats 5 to 7 keep JCS.
+- Tests: `binary_trees_round_trip` (every target kind, executable bits,
+  shared prefixes, non-ASCII names, the empty Tree, the bounds) and
+  `binary_trees_refuse_other_encodings` (a shorter shared prefix, unsorted
+  and repeated names, an empty suffix, a reserved tag bit, an unknown kind,
+  a padded count, a trailing byte, a truncated digest, a count past the
+  body, an invalid name, another Tree's bytes). Suites: store-local 834/834
+  in formats 8 and 7, client-core 297/297 in format 8.
+
+Measured after 3a and 3b (release CLI, after `layrs maintenance` and
+`git gc`, 100 files):
+
+| Steps | Layrs | packs | `layrs.sqlite3` | git |
+| --- | --- | --- | --- | --- |
+| 1,000 | 1048 KiB (1348 before) | 689 | 306 | 796 KiB |
+| 2,000 | 1964 KiB (2612 before) | 1482 | 420 | 1452 KiB |
+| slope | 938 B/Step (1294) | | | 672 B/Step |
+
+Pack anatomy at 2,000 Steps (stored bytes per Step): Tree 127 (383 before),
+RepositoryView 132, Step 86, Operation 80, StepObservation 78, file records
+16; metadata: keys 158, file records 44, locations 29, history section 12
+(71 before). Next: 3c (the other four kinds), 3d, 3e.
