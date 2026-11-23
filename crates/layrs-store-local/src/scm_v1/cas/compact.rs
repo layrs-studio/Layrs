@@ -31,10 +31,26 @@ const RECENT_BYTES: usize = 16 * 1024 * 1024;
 /// Packs whose file records derived data may name by position
 /// (`file_record_ref`): large ones, which consolidation rarely replaces.
 const REFERENCED_PACK_RECORDS: usize = 4096;
-/// A larger block is never kept: a shared block is at most
-/// `TREE_CLUSTER_BLOCK` raw bytes (the margin is slack); a larger one holds
-/// a single large record, rarely read again.
-const RECENT_BLOCK_MAX: usize = TREE_CLUSTER_BLOCK + 64;
+/// A larger block is kept only when it is a block of Trees of packs v4
+/// (`kept_in_recent`): a shared block is at most `CLUSTER_BLOCK` raw bytes
+/// (the margin is slack); a larger one holds a single large record, rarely
+/// read again.
+const RECENT_BLOCK_MAX: usize = CLUSTER_BLOCK + 64;
+/// A block of Trees of packs v4 is at most `TREE_CLUSTER_BLOCK` raw bytes
+/// (phase 3d).
+const RECENT_TREE_BLOCK_MAX: usize = TREE_CLUSTER_BLOCK + 64;
+
+/// Whether a decompressed block of a pack of `version` joins the recent
+/// blocks: any block up to `RECENT_BLOCK_MAX`, and in packs v4 a block of
+/// Trees up to `RECENT_TREE_BLOCK_MAX` (its first record header starts
+/// with the Tree kind; a group starts a block, so a Tree block holds Trees
+/// only). Packs v1 to v3 keep the bound they had (council s34).
+fn kept_in_recent(version: u32, raw: &[u8]) -> bool {
+    raw.len() <= RECENT_BLOCK_MAX
+        || (version >= pack2::PACK2_VERSION_HISTORY
+            && raw.len() <= RECENT_TREE_BLOCK_MAX
+            && raw.first() == Some(&pack2::kind_code(StoreObjectKind::Tree)))
+}
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
 const HELD_PACKS_MAX: usize = 16;
@@ -168,8 +184,9 @@ fn record_offset(index: &pack2::Pack2Index, record: pack2::RecordRef) -> u32 {
     }
 }
 
-/// A record of a clustered copy: (lineage key, order read, candidate, raw
-/// block, record).
+/// A record of a clustered copy: (lineage key, place, candidate, raw
+/// block, record). The place is the order read, or into packs v4 (block
+/// read, offset in it).
 type ClusterRecord = (ClusterKey, (usize, u32), usize, usize, pack2::RecordRef);
 
 fn cluster_key(
@@ -1306,13 +1323,11 @@ impl NativeCas {
         if raw_total <= self.cluster_max_raw() {
             return self.copy_clustered(catalog, candidates, open, &whole_files);
         }
-        // Past the clustering bound, into packs v4: records keep the order
-        // they were written in, in blocks of `CLUSTER_BLOCK` (phase 3d,
-        // council s30 item 2).
+        // Past the clustering bound, into packs v4: each block's records
+        // keep the order they were written in (phase 3d). Blocks keep the
+        // default target: this copy mixes kinds, and a cold read of one
+        // file would decompress a whole shared block (council s34).
         let written_order = open.builder.version() >= pack2::PACK2_VERSION_HISTORY;
-        if written_order {
-            open.builder.set_block_target(CLUSTER_BLOCK);
-        }
         for &position in candidates {
             // Only what the candidate's own bytes prove (corruption, a wrong
             // id, a registered file missing) names it; a plain I/O failure
@@ -1377,12 +1392,20 @@ impl NativeCas {
     /// `copy_candidates`, clustered: every record of every candidate is read
     /// (each block once, kept in memory), then written in lineage order (by
     /// kind; Trees by their first and last entry names, the versions of one
-    /// folder; each group in the candidates' order, oldest first) into
-    /// blocks of `CLUSTER_BLOCK` raw bytes. Into packs v4 (phase 3d), each
-    /// block's records keep the order they were written in, not their keys'
-    /// order, so the versions of a folder stay in the order they were made,
-    /// and each batch's history records stay together. The same records,
-    /// checks and remap as the plain copy; only their places differ.
+    /// folder; each group in the candidates' order) into blocks of
+    /// `CLUSTER_BLOCK` raw bytes. The same records, checks and remap as the
+    /// plain copy; only their places differ.
+    ///
+    /// Into packs v4 (phase 3d), within a group records keep their places
+    /// in the candidates (candidate, block, offset), not their ordinals'
+    /// order (the ids'), so the versions of a folder stay in the order they
+    /// were written, and each batch's Step, RepositoryView, Operations and
+    /// StepObservations stay together. Candidates come in registration
+    /// order: the order their batches were written, until a consolidation
+    /// of packs that were not adjacent registers older records after newer
+    /// ones (a locality heuristic, not a chronology; council s34). Each
+    /// group starts a block, and Trees share blocks of up to
+    /// `TREE_CLUSTER_BLOCK` raw bytes.
     fn copy_clustered(
         &self,
         catalog: &RegisteredCatalog,
@@ -2347,7 +2370,7 @@ impl RegisteredCatalog {
         // again for each of its records.
         let checked = check
             .then(|| pack2::check_block_hash(&loaded.index, block, &raw, &loaded.path).is_ok());
-        if raw.len() <= RECENT_BLOCK_MAX {
+        if kept_in_recent(loaded.index.version, &raw) {
             if let Ok(mut recent) = self.recent.lock() {
                 recent.push_front(((pack, block), Arc::clone(&raw), checked));
                 let mut bytes = 0;
@@ -4826,6 +4849,12 @@ impl NativeCas {
             }
             if let Some(open) = open.as_mut() {
                 let path = open.path.clone();
+                // After the batch's content records, in plan order
+                // (Operations, then StepObservations): copies into packs v4
+                // keep this order, which places a batch's history next to
+                // its Steps and Views (phase 3d). A batch of several Steps
+                // places its Operations, then its Observations, after all
+                // of them.
                 for record in history {
                     open.builder
                         .add_history_record(
@@ -5703,6 +5732,40 @@ mod recent_block_tests {
         recent.push_front(((0, 8), Arc::clone(&hashed), None));
         mark_checked(&mut recent, (0, 8), &hashed, true);
         assert_eq!(recent[0].2, Some(true));
+    }
+
+    /// Council s34: blocks past 256 KiB join the recent blocks only as
+    /// blocks of Trees of packs v4; packs v1 to v3 keep their bound.
+    #[test]
+    fn only_tree_blocks_of_packs_v4_are_kept_past_the_shared_bound() {
+        use super::{
+            CLUSTER_BLOCK, RECENT_BLOCK_MAX, RECENT_TREE_BLOCK_MAX, TREE_CLUSTER_BLOCK,
+            kept_in_recent, pack2,
+        };
+        use layrs_store::scm::StoreObjectKind;
+        let tree = pack2::kind_code(StoreObjectKind::Tree);
+        let chunk = pack2::kind_code(StoreObjectKind::ChunkRaw);
+        let block = |kind: u8, len: usize| {
+            let mut raw = vec![0_u8; len];
+            raw[0] = kind;
+            raw
+        };
+        let v4 = pack2::PACK2_VERSION_HISTORY;
+        for version in [v4 - 1, v4] {
+            assert!(kept_in_recent(version, &block(chunk, CLUSTER_BLOCK)));
+            assert!(kept_in_recent(version, &block(chunk, RECENT_BLOCK_MAX)));
+            assert!(!kept_in_recent(
+                version,
+                &block(chunk, RECENT_BLOCK_MAX + 1)
+            ));
+            assert!(!kept_in_recent(
+                version,
+                &block(tree, RECENT_TREE_BLOCK_MAX + 1)
+            ));
+        }
+        assert!(!kept_in_recent(v4 - 1, &block(tree, TREE_CLUSTER_BLOCK)));
+        assert!(kept_in_recent(v4, &block(tree, TREE_CLUSTER_BLOCK)));
+        assert!(kept_in_recent(v4, &block(tree, RECENT_TREE_BLOCK_MAX)));
     }
 }
 

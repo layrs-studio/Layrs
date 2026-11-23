@@ -1285,3 +1285,67 @@ Then (Tree blocks, plain copy):
   the clustered run, a Tree block holds Trees only and one passes 256 KiB
   raw (120 files, 80 versions). It fails with Trees at 256 KiB, without the
   block cut between groups, and without the plain copy's order.
+
+Measured at 67a098e (release CLI, 100 files, maintained): 1,000 Steps
+784 KiB (git 796), 2,000 Steps 1380 KiB (git 1448), slope 610 B/Step (git
+668). Layrs is below git on slope and total; the 0.9 gate (601) is 9 B/Step
+away. Per record at 2,000 Steps: Tree 51 B (from 100), file record 9.
+
+## Council s34 r1 (code review of 3d, 2026-11-23)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 8/10 (blocked on the latency gate) |
+| Claude Opus 5.5 (xhigh) | 7/10 (ship after fixes) |
+
+All three: no record lost or unverified, no reader limit broken, the
+bytes written into packs v1 to v3 unchanged; the order written is an
+acceptable layout rule, as an amendment of s30 item 2's wording (grouping
+from the writer's order, not from the records' references), not a
+chronology.
+
+Fixed:
+
+- (P2 Astra, Sol, P3 Opus) The recent-block bound was raised for every
+  pack version, so formats 6 and 7 cached large single-record blocks they
+  skipped before. Now `kept_in_recent`: any block up to 256 KiB + 64 as
+  before, and past it only a block of Trees of packs v4 (its first record
+  is a Tree; a group starts a block), up to 1 MiB + 64. Test:
+  `only_tree_blocks_of_packs_v4_are_kept_past_the_shared_bound`.
+- (P2 Astra; Sol) "Oldest first" was claimed: candidates come in
+  registration order, which is the order their batches were written until
+  a consolidation of packs that were not adjacent registers older records
+  after newer ones. The docs now say a locality heuristic, not a
+  chronology.
+- (P2 Opus) The plain copy (past 64 MiB of candidates, so large Stores)
+  wrote mixed blocks of 256 KiB: a cold read of one file (VFS hydration,
+  diff) would decompress up to 16 times more. It keeps the order written
+  but the default block target; s30's "the copy path past 64 MiB takes the
+  large block target too" is not done until a gate covers single-file
+  reads.
+- (P3 Sol, Opus) Test: each batch also writes a StepObservation, and each
+  batch's Operation and Observation must sit between its Step and View and
+  the next batch's (fails with history kinds out of the batch group); file
+  records are parsed too, so a Tree block holding one fails; raw newlines
+  in string literals replaced by escapes; the same batches twice give the
+  same records (keys digests).
+- (P3 Opus) Docs of `copy_clustered` (block sizes, group cuts, "ordinals'
+  order"), `ClusterRecord`, and the write order at `finish_compact_batch`.
+
+Found while fixing: a batch's pack is written by parallel workers
+(`put_ordered`), so the order of a batch's own records varies between
+runs; before 3d a consolidation normalized it (ordinal order), now it keeps
+it. A consolidation is still a function of its candidates' bytes, but two
+Stores fed the same batches may differ in layout (not in records, ids or
+keys digests).
+
+Not done (later list):
+
+- (P2 Opus) `plan_history` places a batch's Operations, then its
+  Observations (and `WriteBatch` sorts entity records by kind and id), so a
+  batch of several Steps (fetch, clone, import) places its history after all
+  its Steps. Interleaving by Step changes the order sequences are assigned
+  (s27) and needs its own review; the size gate measures one-Step captures.
+- (P3 Opus) Nested lineages and a golden test of packs v3 bytes; cold block
+  reads not deduplicated across threads (pre-existing).
