@@ -134,10 +134,16 @@ const CODEC_CANONICAL: u8 = 0;
 /// (`codec::encode_tree_binary`).
 pub(super) const CODEC_BINARY: u8 = 1;
 
-/// The one codec a record of kind `code` has in a pack of `version`: binary
-/// for Trees in packs v4, canonical JCS (or raw bytes) for everything else.
+/// The one codec a record of kind `code` has in a pack of `version`: in
+/// packs v4, binary for Trees (phase 3b) and for Steps, RepositoryViews,
+/// Operations and StepObservations (phase 3c); canonical JCS (or raw
+/// bytes) for everything else.
 pub(super) fn record_codec(version: u32, code: u8) -> u8 {
-    if version >= PACK2_VERSION_HISTORY && code == kind_code(StoreObjectKind::Tree) {
+    let binary = code == kind_code(StoreObjectKind::Tree)
+        || code == kind_code(StoreObjectKind::Step)
+        || code == kind_code(StoreObjectKind::RepositoryView)
+        || is_history_code(code);
+    if version >= PACK2_VERSION_HISTORY && binary {
         CODEC_BINARY
     } else {
         CODEC_CANONICAL
@@ -1462,6 +1468,18 @@ impl Pack2Builder {
             return Err(io::Error::other("a history sequence is positive"));
         }
         let digest = history_digest(body);
+        // Packs v4 store it binary (phase 3c), decoded back to `body` before
+        // it is written (council s30).
+        let stored = if record_codec(self.version, code) == CODEC_BINARY {
+            let binary = encode_value_binary(body, None)
+                .ok_or_else(|| io::Error::other("a history record is not JSON"))?;
+            if decode_value_binary(&binary, None).as_deref() != Some(body) {
+                return Err(io::Error::other("a history record does not decode back"));
+            }
+            std::borrow::Cow::Owned(binary)
+        } else {
+            std::borrow::Cow::Borrowed(body)
+        };
         if let Some(copy) = self.history_copies.get(&(code, key)) {
             if *copy == (sequence, digest, space.clone()) {
                 return Ok(false);
@@ -1471,7 +1489,7 @@ impl Pack2Builder {
                 "two copies of a history record differ",
             ));
         }
-        let location = self.place(out, code, body, None)?;
+        let location = self.place(out, code, &stored, None)?;
         self.explicit.push((code, key, location));
         self.history
             .push((code, key, sequence, space.clone(), digest));
@@ -2073,7 +2091,7 @@ mod tests {
                     &mut file,
                     code,
                     key,
-                    format!("body {sequence}").as_bytes(),
+                    format!("{{\"n\":{sequence}}}").as_bytes(),
                     sequence,
                     space.map(str::to_owned),
                 )
@@ -2108,7 +2126,11 @@ mod tests {
             let mut block = read_block(&file, &path, &index, location.block).unwrap();
             check_block_hash(&index, location.block, &block, &path).unwrap();
             let body = record_body(&block, location, code, index.version, &path).unwrap();
-            assert_eq!(body, format!("body {}", entry.sequence).as_bytes());
+            // Stored binary (phase 3c), its canonical bytes as written.
+            assert_eq!(
+                history_canonical(index.version, code, body, &path).unwrap(),
+                format!("{{\"n\":{}}}", entry.sequence).as_bytes()
+            );
             let last = block.len() - 1;
             block[last] ^= 1;
             assert!(check_block_hash(&index, location.block, &block, &path).is_err());
@@ -2122,16 +2144,16 @@ mod tests {
         let mut older = Pack2Builder::start_for(&mut sink, true, false).unwrap();
         assert!(
             older
-                .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"x", 1, None)
+                .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"{\"x\":1}", 1, None)
                 .is_err()
         );
         let mut sink = Vec::new();
         let mut twice = Pack2Builder::start_for(&mut sink, true, true).unwrap();
         twice
-            .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"x", 4, None)
+            .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"{\"x\":1}", 4, None)
             .unwrap();
         twice
-            .add_history_record(&mut sink, OBSERVATION_KIND, [2; 32], b"y", 4, None)
+            .add_history_record(&mut sink, OBSERVATION_KIND, [2; 32], b"{\"y\":1}", 4, None)
             .unwrap();
         assert!(twice.finish(&mut sink).is_err());
     }
@@ -2140,13 +2162,15 @@ mod tests {
         raw_digest(object).unwrap()
     }
 
-    /// Phase 3b: each record's header carries its kind's one codec in its
-    /// pack's version; a Tree record in packs v4 is binary, elsewhere JCS,
-    /// and either spelling in the other version is refused.
+    /// Phases 3b and 3c: each record's header carries its kind's one codec
+    /// in its pack's version; Trees, Steps, Views and history records are
+    /// binary in packs v4, the other kinds JCS, and either spelling in the
+    /// other version is refused.
     #[test]
     fn record_headers_carry_the_codec_of_their_version() {
         let tree = kind_code(StoreObjectKind::Tree);
         let step = kind_code(StoreObjectKind::Step);
+        let manifest = kind_code(StoreObjectKind::FileManifest);
         let path = Path::new("pack");
         let location = location_of(0, 0, 3);
         let block = |kind: u8, codec: u8| [vec![kind, codec, 3], b"abc".to_vec()].concat();
@@ -2155,8 +2179,18 @@ mod tests {
             (PACK2_VERSION_HISTORY, tree, CODEC_CANONICAL, false),
             (PACK2_VERSION_LARGE_TREES, tree, CODEC_CANONICAL, true),
             (PACK2_VERSION_LARGE_TREES, tree, CODEC_BINARY, false),
-            (PACK2_VERSION_HISTORY, step, CODEC_CANONICAL, true),
-            (PACK2_VERSION_HISTORY, step, CODEC_BINARY, false),
+            (PACK2_VERSION_HISTORY, step, CODEC_BINARY, true),
+            (PACK2_VERSION_HISTORY, step, CODEC_CANONICAL, false),
+            (PACK2_VERSION_HISTORY, OPERATION_KIND, CODEC_BINARY, true),
+            (
+                PACK2_VERSION_HISTORY,
+                OPERATION_KIND,
+                CODEC_CANONICAL,
+                false,
+            ),
+            (PACK2_VERSION_HISTORY, manifest, CODEC_CANONICAL, true),
+            (PACK2_VERSION_HISTORY, manifest, CODEC_BINARY, false),
+            (PACK2_VERSION_LARGE_TREES, step, CODEC_CANONICAL, true),
         ] {
             assert_eq!(
                 record_body(&block(kind, codec), location, kind, version, path).is_ok(),

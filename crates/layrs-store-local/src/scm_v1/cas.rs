@@ -2121,12 +2121,14 @@ pub(crate) use pack2::digest_text as pack2_digest_text;
 pub(crate) use pack2::{OBSERVATION_KIND, OPERATION_KIND, history_key, is_history_code};
 mod packs;
 mod paths;
+mod value_codec;
 use codec::*;
 pub(crate) use compact::{
     AuditEvent, CompactPublication, DurableHorizon, FileManifestEntry, FileRecordPlan,
     HistoryBounds, HistoryPut, HistoryStep, Placement, RegisteredCatalog, SpaceAdmissions,
     check_bitmap, decode_history_record, set_bit,
 };
+use value_codec::*;
 
 /// Content kinds: in format 6 they have no `objects` row.
 pub(crate) fn is_content(kind: StoreObjectKind) -> bool {

@@ -321,6 +321,32 @@ pub(super) fn tree_binary_bounds(body: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     Some((first.unwrap_or_default(), last))
 }
 
+/// The exact canonical length a binary record of kind `code` decodes to
+/// (`own`: a content record's id text), read without decoding it.
+pub(super) fn binary_expanded_len(code: u8, own: Option<&str>, body: &[u8]) -> Option<u64> {
+    if code == pack2::kind_code(StoreObjectKind::Tree) {
+        tree_binary_expanded_len(body)
+    } else {
+        value_binary_expanded_len(body, own)
+    }
+}
+
+/// A history record's canonical bytes from its body in a pack of
+/// `version` (binary in packs v4, phase 3c).
+pub(super) fn history_canonical(
+    version: u32,
+    code: u8,
+    body: &[u8],
+    path: &Path,
+) -> CasResult<Vec<u8>> {
+    if pack2::record_codec(version, code) == pack2::CODEC_BINARY {
+        decode_value_binary(body, None)
+            .ok_or_else(|| pack2::pack2_corruption(path, "binary history record does not decode"))
+    } else {
+        Ok(body.to_vec())
+    }
+}
+
 /// A pack record's object, decoded from its body as the kind's codec in a
 /// pack of `version` gives it (`pack2::record_codec`): a binary Tree in
 /// packs v4, canonical bytes otherwise.
@@ -331,7 +357,14 @@ pub(super) fn validate_pack_record(
     whole_files: bool,
 ) -> CasResult<CanonicalObject> {
     match pack2::record_codec(version, pack2::kind_code(expected.kind())) {
-        pack2::CODEC_BINARY => decode_tree_binary(expected, body),
+        pack2::CODEC_BINARY if matches!(expected, StoreObjectId::Tree(_)) => {
+            decode_tree_binary(expected, body)
+        }
+        pack2::CODEC_BINARY => {
+            let canonical = decode_value_binary(body, Some(expected.as_str()))
+                .ok_or_else(|| corruption(expected, "binary record does not decode"))?;
+            validate_stored_bytes(expected, &canonical, whole_files)
+        }
         _ => validate_stored_bytes(expected, body, whole_files),
     }
 }

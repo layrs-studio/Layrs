@@ -1246,11 +1246,17 @@ fn replace_history_block(image: &mut [u8]) -> bool {
         } else {
             zstd::bulk::decompress(&stored, raw_len).unwrap()
         };
-        let summary = b"\"summary\":\"";
-        let Some(found) = raw.windows(summary.len()).position(|w| w == summary) else {
+        // Binary records (phase 3c): the Operation's summary "Capture" is a
+        // text value (tag 5, length 7), the observation's id is text too.
+        let summary = b"\x05\x07";
+        let Some(found) = raw
+            .windows(9)
+            .position(|w| w[..2] == summary[..] && &w[2..] == b"Capture")
+        else {
             continue;
         };
-        if !raw.windows(14).any(|w| w == b"\"observationId") {
+        let observation = b"observation:replaced-block";
+        if !raw.windows(observation.len()).any(|w| w == observation) {
             continue;
         }
         let letter = found + summary.len();
@@ -1281,6 +1287,55 @@ fn replace_history_block(image: &mut [u8]) -> bool {
         return true;
     }
     false
+}
+
+/// How many blocks of a pack v4 image hold the record of `kind` and `key`
+/// (0 or 1), from its metadata.
+fn record_blocks(image: &[u8], kind: u8, key: &[u8; 32]) -> usize {
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = &image[meta..meta + meta_len];
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    for _ in 0..varint(metadata, &mut cursor) {
+        cursor += 1;
+        varint(metadata, &mut cursor);
+        varint(metadata, &mut cursor);
+        cursor += 32;
+    }
+    for _ in 0..varint(metadata, &mut cursor) {
+        let run_kind = metadata[cursor];
+        cursor += 1;
+        let count = varint(metadata, &mut cursor);
+        let keys: Vec<&[u8]> = (0..count)
+            .map(|n| &metadata[cursor + 32 * n..cursor + 32 * (n + 1)])
+            .collect();
+        cursor += 32 * count;
+        for found in keys {
+            varint(metadata, &mut cursor);
+            varint(metadata, &mut cursor);
+            varint(metadata, &mut cursor);
+            if run_kind == kind && found == key {
+                return 1;
+            }
+        }
+    }
+    0
 }
 
 /// How many blocks of a pack v4 image hold `needle` in their raw bytes.
@@ -1624,7 +1679,9 @@ fn history_paging_decompresses_each_consolidated_block_once() {
         })
         .unwrap();
     repository.apply_batch(&capture).unwrap();
-    const OBSERVATIONS: usize = 800;
+    // Binary since phase 3c: enough observations to fill several
+    // consolidated blocks.
+    const OBSERVATIONS: usize = 12_000;
     for chunk in 0..4 {
         let observations = (0..OBSERVATIONS / 4)
             .map(|n| {
@@ -1684,8 +1741,18 @@ fn history_paging_decompresses_each_consolidated_block_once() {
             })
             .sum()
     };
-    let holding = count(b"\"observationId\"");
-    let step_blocks = count(format!("\"stepId\":\"{step}\"}}}}").as_bytes());
+    let holding = count(b"observation:paging-");
+    let step_key = step.digest_bytes();
+    let step_blocks: usize = registered_packs(&root.0)
+        .iter()
+        .map(|name| {
+            record_blocks(
+                &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
+                6,
+                &step_key,
+            )
+        })
+        .sum();
     assert!(holding >= 2 && step_blocks == 1, "{holding} {step_blocks}");
     assert_eq!(
         read,
@@ -1764,7 +1831,7 @@ fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
         .map(|name| {
             blocks_holding(
                 &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
-                b"\"observationId\"",
+                b"observation:budget-",
             )
         })
         .sum();

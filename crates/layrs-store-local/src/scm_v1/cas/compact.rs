@@ -1086,9 +1086,26 @@ impl LoadedPack {
                 Ok(raw) => raw,
                 Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
             };
+            // The canonical forms are larger than binary bodies (phase 3c):
+            // their growth is authorized before they are built.
+            let mut bodies = Vec::with_capacity(group.len());
+            let mut extra = 0_u64;
             for (_, ordinal, code, location) in group {
                 let body = pack2::record_body(&raw, *location, *code, index.version, &self.path)?;
-                digests.insert(*ordinal, pack2::history_digest(body));
+                if pack2::record_codec(index.version, *code) == pack2::CODEC_BINARY {
+                    let expanded = binary_expanded_len(*code, None, body).ok_or_else(|| {
+                        pack2::pack2_corruption(&self.path, "binary history record does not walk")
+                    })?;
+                    extra = extra.saturating_add(expanded.saturating_sub(body.len() as u64));
+                }
+                bodies.push((*ordinal, *code, body));
+            }
+            if extra > 0 && !authorize(extra) {
+                return Ok(RebuiltKeys::Incomplete);
+            }
+            for (ordinal, code, body) in bodies {
+                let canonical = history_canonical(index.version, code, body, &self.path)?;
+                digests.insert(ordinal, pack2::history_digest(&canonical));
             }
         }
         for (ordinal, (code, id)) in explicit.iter().enumerate() {
@@ -1693,9 +1710,11 @@ impl NativeCas {
                         pack2::pack2_corruption(&loaded.path, "history record has no entry")
                     })?;
                     // Its block was checked against its registered hash
-                    // (`checked_block`).
-                    let body =
+                    // (`checked_block`); the builder encodes its canonical
+                    // bytes for the target pack's codec.
+                    let stored =
                         pack2::record_body(raw, location, code, index.version, &loaded.path)?;
+                    let body = &history_canonical(index.version, code, stored, &loaded.path)?[..];
                     // Consolidation retires the sources: a copied history
                     // record must decode to the id its key names, in
                     // canonical bytes, in the Space its entry names (council
@@ -1745,6 +1764,14 @@ impl NativeCas {
                             // fresh binary Tree (council s32 r2).
                             let binary = encode_tree_binary(tree);
                             decode_tree_binary(&object_id, &binary)?;
+                            binary
+                        }
+                        other if pack2::record_codec(target, code) == pack2::CODEC_BINARY => {
+                            let canonical = encode_object(other)?;
+                            let own = object_id.to_string();
+                            let binary = encode_value_binary(&canonical, Some(&own))
+                                .ok_or_else(|| corruption(&object_id, "record is not JSON"))?;
+                            validate_pack_record(target, &object_id, &binary, self.whole_files)?;
                             binary
                         }
                         other => encode_object(other)?,
@@ -2330,6 +2357,20 @@ impl RegisteredCatalog {
         kind: u8,
         location: Location,
     ) -> CasResult<Vec<u8>> {
+        let raw = self.history_raw_body(cas, pack, kind, location)?;
+        let loaded = &self.packs[pack].pack;
+        history_canonical(loaded.index.version, kind, &raw, &loaded.path)
+    }
+
+    /// A history record's stored body (binary in packs v4), from a block
+    /// checked against its registered hash.
+    fn history_raw_body(
+        &self,
+        cas: &NativeCas,
+        pack: usize,
+        kind: u8,
+        location: Location,
+    ) -> CasResult<Vec<u8>> {
         let block = self.checked_block(cas, pack, location.block)?;
         let loaded = &self.packs[pack].pack;
         Ok(
@@ -2793,6 +2834,7 @@ impl RegisteredCatalog {
         }
         let mut records: BTreeMap<u64, ([u8; 32], Vec<u8>)> = BTreeMap::new();
         let mut sequences_of: HashMap<[u8; 32], u64> = HashMap::new();
+        let mut decoded = 0_u64;
         for (position, registered) in self.packs.iter().enumerate() {
             if !wanted.iter().any(|(pack, _, _)| *pack == position) {
                 continue;
@@ -2826,6 +2868,10 @@ impl RegisteredCatalog {
                     continue;
                 }
                 let body = self.history_body(cas, position, code, location)?;
+                decoded = decoded.saturating_add(body.len() as u64);
+                if decoded > bounds.max_bytes {
+                    return Ok(None);
+                }
                 if let Some(other) = sequences_of.insert(*key, entry.sequence) {
                     if other != entry.sequence {
                         return Err(pack2::pack2_corruption(
@@ -2879,7 +2925,21 @@ impl RegisteredCatalog {
                 if !visit(HistoryStep::Authorize(u64::from(location.length))) {
                     return false;
                 }
-                let body = self.history_body(cas, position, code, location);
+                // The canonical form is larger: authorized before it is
+                // built (council s32: budgets charge expanded sizes).
+                let raw = self.history_raw_body(cas, position, code, location);
+                if let Ok(raw) = &raw {
+                    let extra = pack2::binary_trees(index.version)
+                        .then(|| binary_expanded_len(code, None, raw))
+                        .flatten()
+                        .map_or(0, |expanded| expanded.saturating_sub(raw.len() as u64));
+                    if extra > 0 && !visit(HistoryStep::Authorize(extra)) {
+                        return false;
+                    }
+                }
+                let body = raw.and_then(|raw| {
+                    history_canonical(index.version, code, &raw, &registered.pack.path)
+                });
                 match body {
                     Ok(body) => {
                         visit(HistoryStep::Record((
@@ -3002,10 +3062,10 @@ impl RegisteredCatalog {
                         .explicit(ordinal)
                         .ok_or_else(|| corruption(id, "pack record vanished"))?;
                     if pack2::record_codec(loaded.index.version, code) == pack2::CODEC_BINARY {
+                        let own = id.to_string();
                         self.body(cas, pack, code, location).and_then(|body| {
-                            tree_binary_expanded_len(&body).ok_or_else(|| {
-                                corruption(id, "binary Tree record: malformed entries")
-                            })
+                            binary_expanded_len(code, Some(&own), &body)
+                                .ok_or_else(|| corruption(id, "binary record: malformed"))
                         })
                     } else {
                         self.placement_length(id, placement)
@@ -4381,6 +4441,19 @@ impl NativeCas {
                     None
                 }
             }
+            // Phase 3c: a Step's and a View's records are binary too,
+            // decoded back to their canonical bytes before they are used.
+            CanonicalObject::Step(_) | CanonicalObject::RepositoryView(_)
+                if pack2::binary_trees(version) && packable =>
+            {
+                let own = object_id.to_string();
+                let binary = encode_value_binary(&bytes, Some(&own))
+                    .ok_or_else(|| corruption(&object_id, "record is not JSON"))?;
+                if decode_value_binary(&binary, Some(&own)).as_deref() != Some(&bytes[..]) {
+                    return Err(corruption(&object_id, "binary record does not decode back"));
+                }
+                Some(binary)
+            }
             _ => None,
         };
         // A Tree of packs v4 that has no binary form here goes loose.
@@ -5037,7 +5110,18 @@ impl RegisteredCatalog {
                                     &loaded.path,
                                 )
                                 .ok()
-                                .and_then(tree_binary_expanded_len)
+                                .and_then(|body| {
+                                    let own = pack2::kind_of_code(code)
+                                        .and_then(|kind| {
+                                            pack2::object_id_of(
+                                                kind,
+                                                loaded.index.explicit(ordinal)?.1,
+                                            )
+                                            .ok()
+                                        })
+                                        .map(|id| id.to_string());
+                                    binary_expanded_len(code, own.as_deref(), body)
+                                })
                                 .map_or(0, |expanded| {
                                     expanded.saturating_sub(u64::from(location.length))
                                 });
