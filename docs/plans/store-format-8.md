@@ -613,3 +613,77 @@ not the tag. The replay test checks fsck before it moves the row's key.
 Phase 2c is reviewed. Later: a format 8 fsck that decodes every receipt;
 the reversible transaction key; the 2d conversion check of each JCS
 receipt against its row.
+
+## Phase 3 design draft (chair, 2026-11-23, for council s30)
+
+Measured at 50e7d8d (release CLI, 100 files, one edit per Step, Layrs after
+`layrs maintenance`, git after `git gc`; `scratchpad/history_slope.py`):
+
+| Steps | Layrs | of which packs | of which `layrs.sqlite3` | git |
+| --- | --- | --- | --- | --- |
+| 1,000 | 1348 KiB | 1044 | 252 | 796 KiB |
+| 2,000 | 2612 KiB | 2112 | 437 | 1436 KiB |
+| slope | 1294 B/Step | 1068 | 185 | 655 B/Step |
+
+The gate (s24) is Layrs maintained at most git after gc, on the slope and
+the total. Layrs is twice git. The entropy of ids explains most of it: a
+Step writes about twenty 32-byte hashes (each record's key, the Step's
+parent and root, the View's Step and Tree, the Operation's View, the
+Observation's Step, two history digests, the file's id), git about seven
+20-byte ones.
+
+Prototype (`scratchpad/packstat`, `repack`): the real records of a
+1,000-Step format 8 Store recoded and repacked offline (zstd 3), pack bytes
+per Step:
+
+| Variant | Trees | other records | content | metadata | total |
+| --- | --- | --- | --- | --- | --- |
+| today (JCS, by kind, 256 KiB blocks, 32-byte keys) | 343 | 394 | 10 | 314 | 1060 |
+| binary codecs, by kind | 89 | 182 | 10 | 314 | 594 |
+| + other records grouped by batch | 89 | 147 | 10 | 314 | 559 |
+| + Tree blocks of 1 MiB raw | 52 | 147 | 10 | 314 | 522 |
+| + one hash per block, no per-record history digest | 52 | 147 | 10 | 250 | 458 |
+| + 16-byte keys | 52 | 147 | 10 | 152 | 361 |
+
+SQLite: receipts are about 145 B/Step (2,001 rows of 102 bytes under random
+UUID keys, so the B-tree is about two-thirds full); the inline packs of the
+unconsolidated tail and the pack key rows make the rest.
+
+Projected slope: packs 458 + SQLite 185 = 643 B/Step without 16-byte keys
+or receipt work (git 655: no margin); with 16-byte keys 546; with receipts
+halved as well, about 470.
+
+Proposal (packs v5, format 8 draft 7; formats 5 to 7 unchanged):
+
+1. Binary record codecs (codec byte 1) for Tree, Step, RepositoryView,
+   Operation and StepObservation; other kinds keep JCS (codec 0). A content
+   record omits its own id (the key names it); decoding rebuilds the typed
+   value, its JCS id must equal the key, and only one encoding decodes (the
+   re-encoding is byte-equal). Trees: entry count, then per entry the
+   length shared with the previous name, the rest of the name, a byte of
+   target kind and executable bit, the 32-byte digest. Other kinds: their
+   fields in schema order, content ids as 32 bytes, `<prefix>:<uuid>` ids
+   as a prefix code and 16 bytes, RFC 3339 times as integers with their
+   fraction digits; anything outside those shapes as tagged text, so every
+   value has an encoding.
+2. Consolidation order: Trees by lineage, oldest first, in blocks of up to
+   1 MiB raw; each batch's Step, View, Operation and Observations adjacent,
+   oldest first, in blocks of up to 256 KiB. A cold read of an old Tree
+   decompresses up to 1 MiB (about 1 ms); tail packs are unchanged.
+3. Block hashes: the block table carries each block's blake3 (32 bytes, of
+   its raw bytes), committed by the registered index digest; history
+   section entries drop their per-record digest (council s28 r2); a reader
+   of a history record checks its block's hash once per decompression.
+4. Keys of 16 bytes in pack metadata, with a lookup that verifies every
+   candidate (content id, decoded history id) and a pack that stores full
+   keys when two of its keys share 16 bytes.
+5. Receipts: a reversible key (`transaction:<uuid>` as 17 bytes), or
+   receipts as pack records keyed like history (reopens s25: replay would
+   depend on pack readability, failing closed like history lookups), or a
+   retention window (a user decision, s24 phase 5).
+
+Questions for council: which of 1 to 5, in which order, and with which
+gates; whether 3 is as strong as the per-record digests it replaces;
+whether 4 is worth its risk against 5; for 1, a direct typed decoder for
+Trees (hot path) and JCS reconstruction for the other kinds, or one way
+for all.
