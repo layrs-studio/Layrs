@@ -21,8 +21,8 @@ use layrs_store_local::scm_v1::{
     MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
     RepositoryFaultPoint, blocks_read_on_this_thread, existence_proofs_on_this_thread,
     forget_loaded_packs, fsck_existing, held_pack_files, init, maintain, maintain_with_pause,
-    maintenance_paused, open, open_exclusive, set_consolidation_budget, set_inline_pack_limit,
-    take_maintenance_due,
+    maintenance_paused, open, open_exclusive, set_cluster_max_raw, set_consolidation_budget,
+    set_inline_pack_limit, take_maintenance_due,
 };
 use rusqlite::Connection;
 
@@ -1283,18 +1283,70 @@ fn replace_history_block(image: &mut [u8]) -> bool {
     false
 }
 
+/// How many blocks of a pack v4 image hold `needle` in their raw bytes.
+fn blocks_holding(image: &[u8], needle: &[u8]) -> usize {
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = &image[meta..meta + meta_len];
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    let count = varint(metadata, &mut cursor);
+    let mut offset = 16;
+    let mut holding = 0;
+    for _ in 0..count {
+        let flags = metadata[cursor];
+        cursor += 1;
+        let raw_len = varint(metadata, &mut cursor);
+        let stored_len = varint(metadata, &mut cursor);
+        cursor += 32;
+        let stored = &image[offset + 5..offset + 5 + stored_len];
+        offset += 5 + stored_len + 8;
+        let raw = if flags & 1 != 0 {
+            stored.to_vec()
+        } else {
+            zstd::bulk::decompress(stored, raw_len).unwrap()
+        };
+        if raw.windows(needle.len()).any(|window| window == needle) {
+            holding += 1;
+        }
+    }
+    holding
+}
+
 /// Phase 3a (council s30): a history record's bytes are committed by its
 /// block's registered hash, not by a per-record digest. A block replaced by
 /// a valid one of the same geometry, its stored checksum recomputed, is
-/// refused by the point read, the Space query, fsck and maintenance, in a
-/// pack file and in an inline pack.
+/// refused by the point read, the Space query, fsck (its history visit, by
+/// key) and consolidation (maintenance of pack files, a batch's own
+/// consolidation of inline packs), which never retires the damaged pack.
 #[test]
 fn a_replaced_history_block_of_the_same_geometry_is_refused() {
-    for inline in [false, true] {
+    // (inline packs, plain copy past the clustering bound)
+    for (inline, plain) in [(false, false), (true, false), (false, true)] {
         let root = TestRoot::new("replaced-block");
         create(&root.0, "replaced-block", "8");
+        // No batch consolidates until the block is damaged.
+        set_consolidation_budget(&root.0, Some(1));
         if inline {
             set_inline_pack_limit(&root.0, None);
+        }
+        if plain {
+            set_cluster_max_raw(&root.0, Some(0));
         }
         let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
         let (mut lane, batch) = Lane::begin("replaced-block", &files);
@@ -1339,9 +1391,12 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
         )
         .unwrap();
         repository.apply_batch(&capture).unwrap();
+        repository
+            .apply_batch(&lane.capture(&files, vec![]))
+            .unwrap();
         drop(repository);
         assert_fsck_clean(&root.0);
-        let mut replaced = false;
+        let mut replaced = None;
         if inline {
             let connection = sql(&root.0);
             let images: Vec<(i64, Vec<u8>)> = connection
@@ -1359,7 +1414,7 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
                             rusqlite::params![image, seq],
                         )
                         .unwrap();
-                    replaced = true;
+                    replaced = Some(seq.to_string());
                     break;
                 }
             }
@@ -1372,12 +1427,23 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
                 let mut image = fs::read(&path).unwrap();
                 if replace_history_block(&mut image) {
                     fs::write(&path, &image).unwrap();
-                    replaced = true;
+                    replaced = Some(name.clone());
                     break;
                 }
             }
         }
-        assert!(replaced, "inline {inline}");
+        let damaged = replaced.expect("a block holding the Operation");
+        let still_registered = || {
+            let column = if inline { "pack_seq" } else { "name" };
+            sql(&root.0)
+                .query_row(
+                    &format!("SELECT count(*) FROM cas_packs WHERE CAST({column} AS TEXT)=?1"),
+                    [&damaged],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 1
+        };
         forget_loaded_packs();
         let repository = NativeScmRepository::new(&root.0);
         assert!(
@@ -1395,14 +1461,45 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
         );
         drop(reader);
         drop(store);
+        // fsck's history visit reports the Operation by its key.
+        let mut input = vec![11_u8];
+        input.extend_from_slice(operation.as_str().as_bytes());
+        let key = format!(
+            "blake3:{}",
+            blake3::Hash::from(blake3::derive_key("layrs history key v1", &input)).to_hex()
+        );
         let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
-        assert!(!report.is_clean(), "fsck, inline {inline}");
-        let _ = maintain(&root.0);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == FsckFindingCode::CasCorruption
+                    && finding.entity_id.as_deref() == Some(key.as_str())),
+            "fsck, inline {inline}: {:#?}",
+            report.findings
+        );
+        if inline {
+            // A batch's own consolidation takes the inline tail.
+            set_consolidation_budget(&root.0, None);
+            let mut repository = NativeScmRepository::new(&root.0);
+            let _ = repository.apply_batch(&lane.capture(&files, vec![]));
+            drop(repository);
+        } else {
+            let outcome = maintain(&root.0);
+            assert!(
+                !matches!(outcome, Ok(MaintenanceOutcome::NothingToDo)),
+                "maintenance had candidates: {outcome:?}"
+            );
+        }
         forget_loaded_packs();
+        assert!(
+            still_registered(),
+            "consolidation retired the damaged pack, inline {inline}"
+        );
         let repository = NativeScmRepository::new(&root.0);
         assert!(
             repository.get_operation(&operation).is_err(),
-            "maintenance must not bless the block, inline {inline}"
+            "consolidation must not bless the block, inline {inline}"
         );
     }
 }
@@ -1476,14 +1573,114 @@ fn history_paging_decompresses_each_consolidated_block_once() {
         projection.by_step.values().map(Vec::len).sum::<usize>(),
         OBSERVATIONS
     );
-    // About 400 KB of observations: a few blocks of 256 KiB, each read once.
-    assert!(
-        read <= 8,
+    // Each block holding the Space's observations is read once, and the
+    // block of the Step they observe (its envelope ends with its id).
+    let count = |needle: &[u8]| -> usize {
+        registered_packs(&root.0)
+            .iter()
+            .map(|name| {
+                blocks_holding(
+                    &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
+                    needle,
+                )
+            })
+            .sum()
+    };
+    let holding = count(b"\"observationId\"");
+    let step_blocks = count(format!("\"stepId\":\"{step}\"}}}}").as_bytes());
+    assert!(holding >= 2 && step_blocks == 1, "{holding} {step_blocks}");
+    assert_eq!(
+        read,
+        holding + step_blocks,
         "{read} blocks read for {OBSERVATIONS} observations"
     );
     drop(reader);
     drop(store);
     assert_fsck_clean(&root.0);
+}
+
+/// Council s31: rebuilding a pack's keys row reads its history bodies, under
+/// fsck's byte budget. A small budget (4 MiB with one finding) past which
+/// the history runs stops the check as incomplete, never as a row that
+/// differs from its pack.
+#[test]
+fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
+    let root = TestRoot::new("keys-budget");
+    create(&root.0, "keys-budget", "8");
+    set_consolidation_budget(&root.0, Some(1));
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("keys-budget", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let capture = lane.capture(&files, vec![]);
+    let step = capture
+        .canonical_objects()
+        .iter()
+        .find_map(|object| match object {
+            CanonicalObject::Step(step) => Some(step.id().clone()),
+            _ => None,
+        })
+        .unwrap();
+    repository.apply_batch(&capture).unwrap();
+    // About 8 MB of observations (twice the budget), in four batches.
+    for chunk in 0..4 {
+        let observations = (0..6000)
+            .map(|n| {
+                EntityRecord::StepObservation(StepObservation::new(
+                    ObservationId::parse(format!("observation:budget-{chunk}-{n}")).unwrap(),
+                    step.clone(),
+                    Some(lane.space.id().clone()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    timestamp(),
+                    CaptureReason::Received,
+                    Metadata::empty(),
+                ))
+            })
+            .collect();
+        repository
+            .apply_batch(
+                &WriteBatch::new(
+                    TransactionId::new(format!("transaction:budget-{chunk}")).unwrap(),
+                    vec![],
+                    observations,
+                    vec![],
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    drop(repository);
+    assert_fsck_clean(&root.0);
+    let history_blocks: usize = registered_packs(&root.0)
+        .iter()
+        .map(|name| {
+            blocks_holding(
+                &fs::read(root.0.join("objects/packs").join(name)).unwrap(),
+                b"\"observationId\"",
+            )
+        })
+        .sum();
+    let before = blocks_read_on_this_thread();
+    let report = fsck_existing(&root.0, FsckOptions { max_findings: 1 }).unwrap();
+    let read = blocks_read_on_this_thread() - before;
+    assert!(report.is_truncated(), "{:#?}", report.findings);
+    // The budget stopped the reads: not every history block was read.
+    assert!(
+        read < history_blocks,
+        "{read} of {history_blocks} blocks read"
+    );
+    assert!(
+        report.findings.iter().all(
+            |finding| finding.code != FsckFindingCode::CasPackKeysMismatch
+                && finding.code != FsckFindingCode::CasCorruption
+        ),
+        "{:#?}",
+        report.findings
+    );
 }
 
 /// Format 8: history records are never admitted; fsck reports a bitmap

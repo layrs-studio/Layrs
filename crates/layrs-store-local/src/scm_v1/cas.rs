@@ -2172,7 +2172,7 @@ impl NativeCas {
 }
 #[cfg(any(test, feature = "test-support"))]
 pub use compact::{
-    blocks_read_on_this_thread, forget_loaded_packs, set_consolidation_budget,
+    blocks_read_on_this_thread, forget_loaded_packs, set_cluster_max_raw, set_consolidation_budget,
     set_inline_pack_limit,
 };
 

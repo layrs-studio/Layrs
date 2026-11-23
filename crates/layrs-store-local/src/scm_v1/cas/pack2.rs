@@ -1440,7 +1440,7 @@ impl Pack2Builder {
         if sequence == 0 || sequence > i64::MAX as u64 {
             return Err(io::Error::other("a history sequence is positive"));
         }
-        let digest = *blake3::hash(body).as_bytes();
+        let digest = history_digest(body);
         if let Some(copy) = self.history_copies.get(&(code, key)) {
             if *copy == (sequence, digest, space.clone()) {
                 return Ok(false);

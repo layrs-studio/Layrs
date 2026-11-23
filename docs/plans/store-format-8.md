@@ -777,3 +777,41 @@ Decisions:
   `history_paging_decompresses_each_consolidated_block_once` (800
   observations after maintenance: at most 8 blocks read; 790 with the
   former 64 KiB bound); the pack2 unit test checks every block's hash.
+
+## Council s31 r1 (code review of 3a, 2026-11-23)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 8/10 (ship after fixes) |
+
+Fixed:
+
+- (P2, all three) `rebuild_keys` read every history block of a pack
+  outside fsck's budgets and held them all. It now reads block by block
+  (one held at a time, the pack file opened once), each block authorized
+  against fsck's byte and CPU budgets; a stop is an incomplete check
+  (`KeysRowCheck::complete`), a damaged history block a `CasCorruption`
+  finding, neither a keys row that differs. Test
+  `rebuilding_keys_rows_stops_at_the_fsck_budget` (8 MB of history, a
+  4 MiB budget: fewer blocks read than the history holds; with the budget
+  ignored, every block is read and the test fails).
+- (P2 Sol, Opus) The replaced-block test now proves each route on its own:
+  batches leave every pack to maintenance until the block is damaged;
+  maintenance of pack files (clustered, and the plain copy past the
+  clustering bound, forced by `set_cluster_max_raw`) and a batch's own
+  consolidation of inline packs never retire the damaged pack; fsck's
+  history visit reports the Operation by its key. One mutation per checked
+  read (both consolidation copies, `history_record`, `history_in_space`,
+  `visit_history`): each makes the test fail.
+- (P3 Astra, Opus) The audit (`NativeCas::scrub`, fsck's payload scan)
+  checks every packs-v4 block against its registered hash.
+- (P3 Opus) The paging test asserts equality: blocks read are the blocks
+  holding the Space's observations plus the observed Step's block.
+- (P3 Opus) The block cache hashes outside its lock, remembers a failed
+  check (a damaged block is not decompressed again for each record), and
+  keeps blocks up to `CLUSTER_BLOCK` plus a header (not the single large
+  records between 256 KiB and 1 MiB, which formats 6 and 7 would cache
+  too).
+- (P3 Opus) The builder computes history digests with `history_digest`.

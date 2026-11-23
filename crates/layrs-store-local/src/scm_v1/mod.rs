@@ -45,8 +45,8 @@ pub use cas::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use cas::{
-    blocks_read_on_this_thread, forget_loaded_packs, held_pack_files, set_consolidation_budget,
-    set_inline_pack_limit,
+    blocks_read_on_this_thread, forget_loaded_packs, held_pack_files, set_cluster_max_raw,
+    set_consolidation_budget, set_inline_pack_limit,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use consolidation::maintain_with_pause;

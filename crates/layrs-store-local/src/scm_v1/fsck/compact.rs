@@ -781,9 +781,16 @@ impl Context<'_> {
         }
         // Every readable pack's keys row, against its index (council s17,
         // B1c): a wrong row would turn a lost pack into a false "absent".
-        match catalog.keys_row_problems(self.connection, &cas) {
-            Ok(problems) => {
-                for (path, problem) in problems {
+        // Packs v4: rebuilding a row reads its history bodies, under the
+        // byte budget (council s31).
+        let connection = self.connection;
+        let checked = catalog.keys_row_problems(connection, &cas, &mut |bytes| {
+            let budget = self.byte_budget_remaining;
+            self.consume_cpu(1) && self.reserve_bytes(bytes, budget, "pack keys history")
+        });
+        match checked {
+            Ok(checked) => {
+                for (path, problem) in checked.problems {
                     self.finding(
                         FsckFindingCode::CasPackKeysMismatch,
                         FsckSeverity::Error,
@@ -792,6 +799,21 @@ impl Context<'_> {
                         None,
                         problem,
                     );
+                }
+                for (path, error) in checked.corrupt {
+                    self.finding(
+                        FsckFindingCode::CasCorruption,
+                        FsckSeverity::Error,
+                        Some(path),
+                        None,
+                        None,
+                        format!("{}: {error}", error.code()),
+                    );
+                }
+                if !checked.complete {
+                    // The budget ran out (`reserve_bytes` recorded it).
+                    self.work_truncated = true;
+                    return Ok(());
                 }
             }
             Err(error) => self.compact_lookup_failed(&error),
