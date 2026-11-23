@@ -96,10 +96,12 @@ pub fn schema_v3_checksum() -> String {
 /// `space_initializers` and `history_identities` answer what must stay
 /// complete). Draft 5: history section entries carry their record's body
 /// digest (packs v4 changed, schema unchanged). Draft 6: compact replay
-/// receipts (phase 2c). Drafts change until format 8 is frozen; a Store of
-/// an earlier draft is refused.
+/// receipts (phase 2c). Draft 7: packs v4 commit every block's raw hash in
+/// their block table and their history entries carry no digest (phase 3a,
+/// schema unchanged). Drafts change until format 8 is frozen; a Store of an
+/// earlier draft is refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft6";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft7";
 pub const SCHEMA_V4_CHECKSUM: &str =
     "aa0cad80ca675783fb88b2a1d57d8585b05ad410b7f0967db5b731b5a44e67f2";
 pub const SCHEMA_V4_FINGERPRINT: &str =

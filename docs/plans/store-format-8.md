@@ -750,3 +750,30 @@ Decisions:
 - Landing order, one review each: 3a block hashes and cache; 3b Tree codec;
   3c generic codec; 3d grouping and block sizes; 3e receipt key. The codecs
   are frozen before 2d.
+
+## Phase 3a progress (2026-11-23)
+
+- Packs v4 (schema v4 draft 7, schema SQL unchanged): each block-table
+  entry carries the blake3 of the block's raw bytes, record headers
+  included; history section entries carry no digest. `check_block_hash`
+  is applied by the catalog's `checked_block`, through which every history
+  read goes (`history_record`, `history_in_space`, `visit_history`) and
+  every consolidation copy reads its source blocks; a block in the recent
+  cache keeps whether it was checked, so one first read for content is
+  checked before a history read uses it. Content reads still verify ids
+  and skip the hash.
+- The keys digest keeps each history record's logical digest
+  (`history_digest`, the blake3 of its canonical JCS form, which is its
+  body with codec 0): the builder computes it when it seals a pack, and
+  `rebuild_keys` (fsck) reads the bodies from checked blocks.
+- The recent-block cache holds up to 64 blocks and 16 MiB, blocks up to
+  1 MiB (it held none over 64 KiB, so a consolidated block was
+  decompressed again for every record read from it).
+- Tests: `a_replaced_history_block_of_the_same_geometry_is_refused` (an
+  Operation's summary changed in its block, recompressed to the same stored
+  length, stored checksum recomputed; refused by the point read, the Space
+  query, fsck and maintenance, in a pack file and inline; with the hash
+  check disabled the test fails);
+  `history_paging_decompresses_each_consolidated_block_once` (800
+  observations after maintenance: at most 8 blocks read; 790 with the
+  former 64 KiB bound); the pack2 unit test checks every block's hash.

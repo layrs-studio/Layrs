@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use layrs_core::scm::{
-    Chunk, ChunkingDescriptor, FileId, FileManifest, Layer, LayerHeadSet, LayerId, LayerKind,
-    LayerSettings, LayerStatus, Metadata, Operation, OperationId, OperationKind, RepoPathComponent,
-    RepositoryView, RepositoryViewId, Space, SpaceId, Step, StoreId, Timestamp, Tree, TreeEntry,
-    TreeEntryTarget, fixed_chunking,
+    CaptureReason, Chunk, ChunkingDescriptor, FileId, FileManifest, Layer, LayerHeadSet, LayerId,
+    LayerKind, LayerSettings, LayerStatus, Metadata, ObservationId, Operation, OperationId,
+    OperationKind, RepoPathComponent, RepositoryView, RepositoryViewId, Space, SpaceId, Step,
+    StepObservation, StoreId, Timestamp, Tree, TreeEntry, TreeEntryTarget, fixed_chunking,
 };
 use layrs_store::scm::{
     CanonicalObject, EntityRecord, FileAvailability, OperationHeadsCas, RepositoryViewCas,
@@ -19,9 +19,10 @@ use layrs_store::scm::{
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
-    RepositoryFaultPoint, existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing,
-    held_pack_files, init, maintain, maintain_with_pause, maintenance_paused, open, open_exclusive,
-    set_consolidation_budget, set_inline_pack_limit, take_maintenance_due,
+    RepositoryFaultPoint, blocks_read_on_this_thread, existence_proofs_on_this_thread,
+    forget_loaded_packs, fsck_existing, held_pack_files, init, maintain, maintain_with_pause,
+    maintenance_paused, open, open_exclusive, set_consolidation_budget, set_inline_pack_limit,
+    take_maintenance_due,
 };
 use rusqlite::Connection;
 
@@ -1197,6 +1198,292 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
             .code(),
         "corruption"
     );
+}
+
+/// Replaces, in a pack image, the block holding an Operation and a
+/// StepObservation by a valid block of the same geometry: the Operation's
+/// summary changes case (its id and canonical form stay valid), the block
+/// is recompressed to its stored length (padded with a skippable zstd
+/// frame) and its stored checksum recomputed. Whether it found one.
+fn replace_history_block(image: &mut [u8]) -> bool {
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = image[meta..meta + meta_len].to_vec();
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    let count = varint(&metadata, &mut cursor);
+    let mut blocks = Vec::new();
+    for _ in 0..count {
+        let flags = metadata[cursor];
+        cursor += 1;
+        let raw = varint(&metadata, &mut cursor);
+        let stored = varint(&metadata, &mut cursor);
+        cursor += 32; // the raw hash (packs v4)
+        blocks.push((flags, raw, stored));
+    }
+    let mut offset = 16;
+    for (flags, raw_len, stored_len) in blocks {
+        let start = offset + 5;
+        let stored = image[start..start + stored_len].to_vec();
+        offset = start + stored_len + 8;
+        let mut raw = if flags & 1 != 0 {
+            stored.clone()
+        } else {
+            zstd::bulk::decompress(&stored, raw_len).unwrap()
+        };
+        let summary = b"\"summary\":\"";
+        let Some(found) = raw.windows(summary.len()).position(|w| w == summary) else {
+            continue;
+        };
+        if !raw.windows(14).any(|w| w == b"\"observationId") {
+            continue;
+        }
+        let letter = found + summary.len();
+        assert!(raw[letter].is_ascii_alphabetic());
+        raw[letter] ^= 0x20;
+        let replacement = if flags & 1 != 0 {
+            raw
+        } else {
+            let Some(mut bytes) = (1..=19)
+                .map(|level| zstd::bulk::compress(&raw, level).unwrap())
+                .find(|bytes| bytes.len() == stored_len || bytes.len() + 8 <= stored_len)
+            else {
+                continue;
+            };
+            if bytes.len() < stored_len {
+                let pad = stored_len - bytes.len() - 8;
+                bytes.extend_from_slice(&0x184D_2A50_u32.to_le_bytes());
+                bytes.extend_from_slice(&(pad as u32).to_le_bytes());
+                bytes.extend(std::iter::repeat_n(0_u8, pad));
+            }
+            assert_eq!(zstd::bulk::decompress(&bytes, raw_len).unwrap(), raw);
+            bytes
+        };
+        assert_eq!(replacement.len(), stored_len);
+        image[start..start + stored_len].copy_from_slice(&replacement);
+        image[start + stored_len..start + stored_len + 8]
+            .copy_from_slice(&blake3::hash(&replacement).as_bytes()[..8]);
+        return true;
+    }
+    false
+}
+
+/// Phase 3a (council s30): a history record's bytes are committed by its
+/// block's registered hash, not by a per-record digest. A block replaced by
+/// a valid one of the same geometry, its stored checksum recomputed, is
+/// refused by the point read, the Space query, fsck and maintenance, in a
+/// pack file and in an inline pack.
+#[test]
+fn a_replaced_history_block_of_the_same_geometry_is_refused() {
+    for inline in [false, true] {
+        let root = TestRoot::new("replaced-block");
+        create(&root.0, "replaced-block", "8");
+        if inline {
+            set_inline_pack_limit(&root.0, None);
+        }
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (mut lane, batch) = Lane::begin("replaced-block", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let capture = lane.capture(&files, vec![]);
+        let operation = capture
+            .entity_records()
+            .iter()
+            .find_map(|record| match record {
+                EntityRecord::Operation(value) => Some(value.id().clone()),
+                _ => None,
+            })
+            .unwrap();
+        let step = capture
+            .canonical_objects()
+            .iter()
+            .find_map(|object| match object {
+                CanonicalObject::Step(step) => Some(step.id().clone()),
+                _ => None,
+            })
+            .unwrap();
+        let mut entities = capture.entity_records().to_vec();
+        entities.push(EntityRecord::StepObservation(StepObservation::new(
+            ObservationId::parse("observation:replaced-block").unwrap(),
+            step,
+            Some(lane.space.id().clone()),
+            Some(operation.clone()),
+            None,
+            None,
+            None,
+            timestamp(),
+            CaptureReason::Received,
+            Metadata::empty(),
+        )));
+        let capture = WriteBatch::new(
+            capture.transaction_id().clone(),
+            capture.canonical_objects().to_vec(),
+            entities,
+            capture.admissions().to_vec(),
+            capture.mutations().to_vec(),
+        )
+        .unwrap();
+        repository.apply_batch(&capture).unwrap();
+        drop(repository);
+        assert_fsck_clean(&root.0);
+        let mut replaced = false;
+        if inline {
+            let connection = sql(&root.0);
+            let images: Vec<(i64, Vec<u8>)> = connection
+                .prepare("SELECT pack_seq,image FROM cas_pack_inline")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for (seq, mut image) in images {
+                if replace_history_block(&mut image) {
+                    connection
+                        .execute(
+                            "UPDATE cas_pack_inline SET image=?1 WHERE pack_seq=?2",
+                            rusqlite::params![image, seq],
+                        )
+                        .unwrap();
+                    replaced = true;
+                    break;
+                }
+            }
+            connection
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+        } else {
+            for name in registered_packs(&root.0) {
+                let path = root.0.join("objects/packs").join(&name);
+                let mut image = fs::read(&path).unwrap();
+                if replace_history_block(&mut image) {
+                    fs::write(&path, &image).unwrap();
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+        assert!(replaced, "inline {inline}");
+        forget_loaded_packs();
+        let repository = NativeScmRepository::new(&root.0);
+        assert!(
+            repository.get_operation(&operation).is_err(),
+            "point read, inline {inline}"
+        );
+        drop(repository);
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        assert!(
+            reader
+                .observation_projection(lane.space.id(), None)
+                .is_err(),
+            "Space query, inline {inline}"
+        );
+        drop(reader);
+        drop(store);
+        let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+        assert!(!report.is_clean(), "fsck, inline {inline}");
+        let _ = maintain(&root.0);
+        forget_loaded_packs();
+        let repository = NativeScmRepository::new(&root.0);
+        assert!(
+            repository.get_operation(&operation).is_err(),
+            "maintenance must not bless the block, inline {inline}"
+        );
+    }
+}
+
+/// Phase 3a (council s30): a catalog keeps the consolidated blocks it reads
+/// (256 KiB raw, past the former 64 KiB bound), so paging a Space's
+/// history decompresses each block once, not once per record.
+#[test]
+fn history_paging_decompresses_each_consolidated_block_once() {
+    let root = TestRoot::new("paging-blocks");
+    create(&root.0, "paging-blocks", "8");
+    set_consolidation_budget(&root.0, Some(1));
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("paging-blocks", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let capture = lane.capture(&files, vec![]);
+    let step = capture
+        .canonical_objects()
+        .iter()
+        .find_map(|object| match object {
+            CanonicalObject::Step(step) => Some(step.id().clone()),
+            _ => None,
+        })
+        .unwrap();
+    repository.apply_batch(&capture).unwrap();
+    const OBSERVATIONS: usize = 800;
+    for chunk in 0..4 {
+        let observations = (0..OBSERVATIONS / 4)
+            .map(|n| {
+                EntityRecord::StepObservation(StepObservation::new(
+                    ObservationId::parse(format!("observation:paging-{chunk}-{n}")).unwrap(),
+                    step.clone(),
+                    Some(lane.space.id().clone()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    timestamp(),
+                    CaptureReason::Received,
+                    Metadata::empty(),
+                ))
+            })
+            .collect();
+        repository
+            .apply_batch(
+                &WriteBatch::new(
+                    TransactionId::new(format!("transaction:paging-{chunk}")).unwrap(),
+                    vec![],
+                    observations,
+                    vec![],
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    drop(repository);
+    let MaintenanceOutcome::Consolidated { .. } = maintain(&root.0).unwrap() else {
+        panic!("nothing consolidated");
+    };
+    forget_loaded_packs();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    let before = blocks_read_on_this_thread();
+    let projection = reader
+        .observation_projection(lane.space.id(), None)
+        .unwrap();
+    let read = blocks_read_on_this_thread() - before;
+    assert_eq!(
+        projection.by_step.values().map(Vec::len).sum::<usize>(),
+        OBSERVATIONS
+    );
+    // About 400 KB of observations: a few blocks of 256 KiB, each read once.
+    assert!(
+        read <= 8,
+        "{read} blocks read for {OBSERVATIONS} observations"
+    );
+    drop(reader);
+    drop(store);
+    assert_fsck_clean(&root.0);
 }
 
 /// Format 8: history records are never admitted; fsck reports a bitmap

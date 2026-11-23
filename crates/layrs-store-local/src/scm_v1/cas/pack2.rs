@@ -25,6 +25,13 @@
 //! object `i`; file record `f` carries two logical objects, its chunk
 //! (`explicit + 2f`) and its recipe manifest (`explicit + 2f + 1`).
 //!
+//! Version 4 (Store format 8, council s25, s27, s30) adds history records
+//! (Operations, StepObservations) and their section (ordinal, sequence,
+//! Space), and gives each block of the block table the blake3 of its raw
+//! bytes, record headers included: the registered index digest commits to
+//! every record's bytes, and a history record (whose id is not a content
+//! address) is served only from a block checked against it.
+//!
 //! Version 3 (Store format 7, council s20) holds a Tree record of up to
 //! `MAX_TREE_RECORD_BYTES` in a block of its own: a folder of more than
 //! about 7,000 entries no longer becomes a loose uncompressed file. Every
@@ -149,6 +156,10 @@ pub(super) struct BlockInfo {
     pub(super) flags: u8,
     pub(super) stored_len: u32,
     pub(super) raw_len: u32,
+    /// Packs v4: the blake3 of the block's raw bytes (record headers
+    /// included), committed by the index digest (council s30). A history
+    /// record is served only from a block whose hash was checked.
+    pub(super) raw_hash: Option<[u8; 32]>,
 }
 
 /// The two manifest recipes a file record can carry (phase 3): the standard
@@ -281,21 +292,41 @@ pub(super) struct Pack2Index {
 }
 
 /// A history record's section entry: its explicit ordinal, its sequence in
-/// the Store's history clock, and its Space (an index into `spaces`).
+/// the Store's history clock, and its Space (an index into `spaces`). Its
+/// bytes are committed by its block's hash (council s30; the per-record
+/// digest of s28 r2 is now only in the keys digest).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HistoryEntry {
     pub(crate) ordinal: u32,
     pub(crate) sequence: u64,
     pub(crate) space: Option<u32>,
-    /// The record body's blake3: a history id is not a content address, so
-    /// the registered index digest commits to the bytes through this
-    /// (council s25, s28 r2). Every read checks it.
-    pub(crate) digest: [u8; 32],
 }
 
-/// Whether `body` is the one a history entry commits to.
-pub(crate) fn history_body_matches(entry: &HistoryEntry, body: &[u8]) -> bool {
-    *blake3::hash(body).as_bytes() == entry.digest
+/// A history record's logical digest, what the keys digest commits to: the
+/// blake3 of its canonical JCS form (its body, with codec 0).
+pub(crate) fn history_digest(body: &[u8]) -> [u8; 32] {
+    *blake3::hash(body).as_bytes()
+}
+
+/// Checks a decompressed block against its registered hash (packs v4); a
+/// pack without block hashes passes.
+pub(super) fn check_block_hash(
+    index: &Pack2Index,
+    block: u32,
+    raw: &[u8],
+    path: &Path,
+) -> CasResult<()> {
+    let info = index
+        .blocks
+        .get(block as usize)
+        .ok_or_else(|| pack2_corruption(path, "pack block does not exist"))?;
+    match info.raw_hash {
+        Some(hash) if *blake3::hash(raw).as_bytes() != hash => Err(pack2_corruption(
+            path,
+            format!("pack block {block} differs from its registered hash"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn fanout_of<'a>(ids: impl Iterator<Item = &'a [u8; 32]>) -> Box<[u32; 257]> {
@@ -763,11 +794,17 @@ fn decode_checked(
         if !valid {
             return Err(pack2_corruption(path, "pack block table entry is invalid"));
         }
+        let raw_hash = if version >= PACK2_VERSION_HISTORY {
+            Some(reader.id()?)
+        } else {
+            None
+        };
         blocks.push(BlockInfo {
             offset,
             flags,
             stored_len,
             raw_len,
+            raw_hash,
         });
         offset += BLOCK_HEADER_LEN + u64::from(stored_len) + BLOCK_CHECKSUM_LEN as u64;
     }
@@ -1021,7 +1058,6 @@ fn decode_history(
         let sequence = reader.varint(i64::MAX as u64)?;
         let space = reader.varint(spaces.len() as u64)? as u32;
         let space = space.checked_sub(1);
-        let digest = reader.id()?;
         let is_history = history_runs
             .iter()
             .any(|run| (run.start..run.end).contains(&(ordinal as usize)));
@@ -1047,7 +1083,6 @@ fn decode_history(
             ordinal,
             sequence,
             space,
-            digest,
         });
     }
     Ok((history, spaces))
@@ -1436,6 +1471,7 @@ impl Pack2Builder {
             flags: block.flags,
             stored_len,
             raw_len: block.raw_len,
+            raw_hash: (self.version >= PACK2_VERSION_HISTORY).then(|| *block.raw_hash.as_bytes()),
         });
         self.block_hashes.push(block.raw_hash);
         self.written += BLOCK_HEADER_LEN + u64::from(stored_len) + BLOCK_CHECKSUM_LEN as u64;
@@ -1611,6 +1647,9 @@ impl Pack2Builder {
             metadata.push(block.flags);
             put_varint(&mut metadata, u64::from(block.raw_len));
             put_varint(&mut metadata, u64::from(block.stored_len));
+            if let Some(hash) = &block.raw_hash {
+                metadata.extend_from_slice(hash);
+            }
         }
         let mut kinds: Vec<u8> = self.explicit.iter().map(|entry| entry.0).collect();
         kinds.dedup();
@@ -1703,10 +1742,9 @@ impl Pack2Builder {
                     &mut metadata,
                     entry.space.map_or(0, |space| u64::from(space) + 1),
                 );
-                metadata.extend_from_slice(&entry.digest);
             }
         }
-        let keys = self.keys(&section, &history.0, &history.1)?;
+        let keys = self.keys(&section, &history.0, &history.1, &history.2)?;
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(&header_bytes(self.version));
@@ -1733,7 +1771,14 @@ impl Pack2Builder {
 
     /// The history section of the sealed pack (explicit records sorted):
     /// its entries sorted by (Space, sequence), and its Space table.
-    fn history_entries(&self) -> io::Result<(Vec<HistoryEntry>, Vec<String>)> {
+    #[allow(clippy::type_complexity)]
+    fn history_entries(
+        &self,
+    ) -> io::Result<(
+        Vec<HistoryEntry>,
+        Vec<String>,
+        std::collections::HashMap<u32, [u8; 32]>,
+    )> {
         let invalid = |reason: &str| io::Error::other(reason.to_owned());
         let mut spaces: Vec<String> = self
             .history
@@ -1744,6 +1789,7 @@ impl Pack2Builder {
         spaces.dedup();
         let mut sequences = std::collections::HashSet::with_capacity(self.history.len());
         let mut entries = Vec::with_capacity(self.history.len());
+        let mut digests = std::collections::HashMap::with_capacity(self.history.len());
         for (code, key, sequence, space, digest) in &self.history {
             let ordinal = self
                 .explicit
@@ -1765,8 +1811,8 @@ impl Pack2Builder {
                 ordinal: ordinal as u32,
                 sequence: *sequence,
                 space,
-                digest: *digest,
             });
+            digests.insert(ordinal as u32, *digest);
         }
         entries.sort_unstable_by_key(|entry| {
             (
@@ -1774,7 +1820,7 @@ impl Pack2Builder {
                 entry.sequence,
             )
         });
-        Ok((entries, spaces))
+        Ok((entries, spaces, digests))
     }
 
     /// The keys row of the sealed pack, from its records in index order:
@@ -1787,6 +1833,7 @@ impl Pack2Builder {
         section: &[([u8; 32], u32, u64)],
         history: &[HistoryEntry],
         spaces: &[String],
+        digests: &std::collections::HashMap<u32, [u8; 32]>,
     ) -> io::Result<super::keys::PackKeys> {
         use super::keys::{self, Ordinal, SectionEntry};
         let by_ordinal: std::collections::HashMap<u32, &HistoryEntry> =
@@ -1804,7 +1851,9 @@ impl Pack2Builder {
                         .space
                         .and_then(|space| spaces.get(space as usize))
                         .map(String::as_str),
-                    digest: &entry.digest,
+                    digest: digests
+                        .get(&(ordinal as u32))
+                        .ok_or_else(|| io::Error::other("a history record has no digest"))?,
                 }),
                 None => ordinals.push(Ordinal::Explicit {
                     kind_code: *code,
@@ -2024,14 +2073,19 @@ mod tests {
                 (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
             ]
         );
-        // Each entry commits to its record's bytes (council s28 r2).
+        // Every block's raw bytes are committed by the index (council s30):
+        // a record's bytes changed in its block fail the check.
         for entry in &index.history {
             let (code, _, location) = index.explicit(entry.ordinal as usize).unwrap();
-            let block = read_block(&file, &path, &index, location.block).unwrap();
+            let mut block = read_block(&file, &path, &index, location.block).unwrap();
+            check_block_hash(&index, location.block, &block, &path).unwrap();
             let body = record_body(&block, location, code, &path).unwrap();
-            assert!(history_body_matches(entry, body));
-            assert!(!history_body_matches(entry, b"another body"));
+            assert_eq!(body, format!("body {}", entry.sequence).as_bytes());
+            let last = block.len() - 1;
+            block[last] ^= 1;
+            assert!(check_block_hash(&index, location.block, &block, &path).is_err());
         }
+        assert!(index.blocks.iter().all(|block| block.raw_hash.is_some()));
         let _ = fs::remove_file(&path);
 
         // A pack v3 refuses a history record; two records may not share a

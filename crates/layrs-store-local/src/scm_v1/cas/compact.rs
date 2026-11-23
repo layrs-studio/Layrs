@@ -24,10 +24,15 @@ use std::sync::{Mutex, OnceLock};
 /// as the catalog (one SQLite snapshot): a later operation rereads the disk,
 /// as format 5 rereads every object, and sees any damage done since.
 const RECENT_BLOCKS: usize = 64;
+/// Raw bytes the recent blocks of a catalog may hold together (council s30:
+/// consolidated blocks are up to 256 KiB, larger than the former per-block
+/// bound, so every read decompressed them again).
+const RECENT_BYTES: usize = 16 * 1024 * 1024;
 /// Packs whose file records derived data may name by position
 /// (`file_record_ref`): large ones, which consolidation rarely replaces.
 const REFERENCED_PACK_RECORDS: usize = 4096;
-const RECENT_BLOCK_MAX: usize = 64 * 1024;
+/// A larger block is never kept (a large Tree's block of its own).
+const RECENT_BLOCK_MAX: usize = 1024 * 1024 + 64;
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
 const HELD_PACKS_MAX: usize = 16;
@@ -992,8 +997,11 @@ fn bounded_group_within(
 impl LoadedPack {
     /// The keys row this pack's index gives: what its builder wrote when it
     /// sealed it (`Pack2Builder::keys`), rebuilt from the index (each file
-    /// record's alias manifest rebuilt and hashed).
-    fn rebuild_keys(&self, rice_bits: u8) -> CasResult<super::keys::PackKeys> {
+    /// record's alias manifest rebuilt and hashed) and, for history records
+    /// (packs v4), from their bodies, read from blocks checked against their
+    /// registered hashes (council s30: the logical digests are not in the
+    /// index).
+    fn rebuild_keys(&self, cas: &NativeCas, rice_bits: u8) -> CasResult<super::keys::PackKeys> {
         use super::keys::{self, Ordinal, SectionEntry};
         let index = &self.index;
         let vanished = || pack2::pack2_corruption(&self.path, "pack record vanished");
@@ -1015,6 +1023,21 @@ impl LoadedPack {
             .iter()
             .map(|entry| (entry.ordinal, entry))
             .collect();
+        let mut blocks: HashMap<u32, Vec<u8>> = HashMap::new();
+        let mut digests: HashMap<u32, [u8; 32]> = HashMap::with_capacity(history.len());
+        for entry in &index.history {
+            let (code, _, location) = index
+                .explicit(entry.ordinal as usize)
+                .ok_or_else(vanished)?;
+            if let std::collections::hash_map::Entry::Vacant(slot) = blocks.entry(location.block) {
+                let raw = self.read_block(cas, location.block)?;
+                pack2::check_block_hash(index, location.block, &raw, &self.path)?;
+                slot.insert(raw);
+            }
+            let body = pack2::record_body(&blocks[&location.block], location, code, &self.path)?;
+            digests.insert(entry.ordinal, pack2::history_digest(body));
+        }
+        drop(blocks);
         for (ordinal, (code, id)) in explicit.iter().enumerate() {
             match history.get(&(ordinal as u32)) {
                 Some(entry) => ordinals.push(Ordinal::History {
@@ -1022,7 +1045,7 @@ impl LoadedPack {
                     id,
                     sequence: entry.sequence,
                     space: index.space_of(entry),
-                    digest: &entry.digest,
+                    digest: digests.get(&(ordinal as u32)).ok_or_else(vanished)?,
                 }),
                 None => ordinals.push(Ordinal::Explicit {
                     kind_code: *code,
@@ -1183,7 +1206,7 @@ impl NativeCas {
                     continue;
                 }
                 let raw = catalog
-                    .block(self, position, block as u32)
+                    .checked_block(self, position, block as u32)
                     .map_err(failed)?;
                 for record in records {
                     self.copy_record(
@@ -1260,7 +1283,7 @@ impl NativeCas {
                     continue;
                 }
                 let raw = catalog
-                    .block(self, position, block as u32)
+                    .checked_block(self, position, block as u32)
                     .map_err(|e| failed(position, e))?;
                 raws.push(raw);
                 let at = raws.len() - 1;
@@ -1615,13 +1638,9 @@ impl NativeCas {
                     let entry = index.history_entry(ordinal).ok_or_else(|| {
                         pack2::pack2_corruption(&loaded.path, "history record has no entry")
                     })?;
+                    // Its block was checked against its registered hash
+                    // (`checked_block`).
                     let body = pack2::record_body(raw, location, code, &loaded.path)?;
-                    if !pack2::history_body_matches(entry, body) {
-                        return Err(CopyFailure::Source(pack2::pack2_corruption(
-                            &loaded.path,
-                            "a history record's bytes differ from its index",
-                        )));
-                    }
                     // Consolidation retires the sources: a copied history
                     // record must decode to the id its key names, in
                     // canonical bytes, in the Space its entry names (council
@@ -1776,7 +1795,8 @@ fn sql_error(error: rusqlite::Error) -> CasError {
 }
 
 /// A decompressed block a catalog keeps: ((pack, block), raw bytes).
-type RecentBlock = ((usize, u32), Arc<Vec<u8>>);
+/// ((pack, block), raw bytes, whether its registered hash was checked).
+type RecentBlock = ((usize, u32), Arc<Vec<u8>>, bool);
 
 /// What a format 8 batch registered before its validation. Its validating
 /// reader reads records that are not content only from earlier
@@ -1982,7 +2002,8 @@ pub(crate) struct RegisteredCatalog {
     /// file length.
     loose_by_file: BTreeMap<[u8; 32], Vec<([u8; 32], u64)>>,
     admissions: Mutex<HashMap<String, Arc<SpaceAdmissions>>>,
-    /// Last decompressed blocks: ((pack, block), raw bytes).
+    /// Last decompressed blocks, most recent first, at most `RECENT_BLOCKS`
+    /// and `RECENT_BYTES`.
     recent: Mutex<VecDeque<RecentBlock>>,
     /// Pack files kept open while a bulk read holds this catalog
     /// (`hold_pack_files`), by pack position, at most `HELD_PACKS_MAX`;
@@ -2027,17 +2048,57 @@ impl Drop for CatalogHold {
 }
 
 impl RegisteredCatalog {
+    /// Block `block` of pack `pack`, decompressed. Content records are
+    /// verified against their ids by their readers; its registered hash is
+    /// not checked here (`checked_block` does).
     fn block(&self, cas: &NativeCas, pack: usize, block: u32) -> CasResult<Arc<Vec<u8>>> {
-        if let Ok(recent) = self.recent.lock() {
-            if let Some((_, bytes)) = recent.iter().find(|(key, _)| *key == (pack, block)) {
-                return Ok(Arc::clone(bytes));
+        self.cached_block(cas, pack, block, false)
+    }
+
+    /// `block`, checked against its registered hash (packs v4) before it is
+    /// served: every history read and every consolidation copy reads
+    /// through this (council s30).
+    fn checked_block(&self, cas: &NativeCas, pack: usize, block: u32) -> CasResult<Arc<Vec<u8>>> {
+        self.cached_block(cas, pack, block, true)
+    }
+
+    fn cached_block(
+        &self,
+        cas: &NativeCas,
+        pack: usize,
+        block: u32,
+        check: bool,
+    ) -> CasResult<Arc<Vec<u8>>> {
+        let loaded = &self.packs[pack].pack;
+        if let Ok(mut recent) = self.recent.lock() {
+            if let Some(found) = recent.iter_mut().find(|entry| entry.0 == (pack, block)) {
+                if check && !found.2 {
+                    pack2::check_block_hash(&loaded.index, block, &found.1, &loaded.path)?;
+                    found.2 = true;
+                }
+                return Ok(Arc::clone(&found.1));
             }
         }
         let raw = Arc::new(self.read_pack_block(cas, pack, block)?);
+        crate::perf::count("cas.block_decompressed", 1);
+        #[cfg(any(test, feature = "test-support"))]
+        BLOCKS_READ.with(|count| count.set(count.get() + 1));
+        if check {
+            pack2::check_block_hash(&loaded.index, block, &raw, &loaded.path)?;
+        }
         if raw.len() <= RECENT_BLOCK_MAX {
             if let Ok(mut recent) = self.recent.lock() {
-                recent.push_front(((pack, block), Arc::clone(&raw)));
-                recent.truncate(RECENT_BLOCKS);
+                recent.push_front(((pack, block), Arc::clone(&raw), check));
+                let mut bytes = 0;
+                let mut keep = 0;
+                for entry in recent.iter() {
+                    if keep == RECENT_BLOCKS || bytes + entry.1.len() > RECENT_BYTES {
+                        break;
+                    }
+                    bytes += entry.1.len();
+                    keep += 1;
+                }
+                recent.truncate(keep.max(1));
             }
         }
         Ok(raw)
@@ -2111,6 +2172,20 @@ impl RegisteredCatalog {
         location: Location,
     ) -> CasResult<Vec<u8>> {
         let block = self.block(cas, pack, location.block)?;
+        let path = &self.packs[pack].pack.path;
+        Ok(pack2::record_body(&block, location, kind, path)?.to_vec())
+    }
+
+    /// A history record's body, from a block checked against its registered
+    /// hash: a history id is not a content address (council s28 r2, s30).
+    fn history_body(
+        &self,
+        cas: &NativeCas,
+        pack: usize,
+        kind: u8,
+        location: Location,
+    ) -> CasResult<Vec<u8>> {
+        let block = self.checked_block(cas, pack, location.block)?;
         let path = &self.packs[pack].pack.path;
         Ok(pack2::record_body(&block, location, kind, path)?.to_vec())
     }
@@ -2494,13 +2569,7 @@ impl RegisteredCatalog {
             let entry = index.history_entry(ordinal).ok_or_else(vanished)?;
             let sequence = entry.sequence;
             let (_, _, location) = index.explicit(ordinal).ok_or_else(vanished)?;
-            let body = self.body(cas, position, code, location)?;
-            if !pack2::history_body_matches(entry, &body) {
-                return Err(pack2::pack2_corruption(
-                    &self_path(),
-                    "a history record's bytes differ from its index",
-                ));
-            }
+            let body = self.history_body(cas, position, code, location)?;
             match &found {
                 None => found = Some((body, sequence)),
                 Some((other, other_sequence)) => {
@@ -2605,13 +2674,7 @@ impl RegisteredCatalog {
                 if kind != code {
                     continue;
                 }
-                let body = self.body(cas, position, code, location)?;
-                if !pack2::history_body_matches(entry, &body) {
-                    return Err(pack2::pack2_corruption(
-                        &self_path(),
-                        "a history record's bytes differ from its index",
-                    ));
-                }
+                let body = self.history_body(cas, position, code, location)?;
                 if let Some(other) = sequences_of.insert(*key, entry.sequence) {
                     if other != entry.sequence {
                         return Err(pack2::pack2_corruption(
@@ -2665,16 +2728,7 @@ impl RegisteredCatalog {
                 if !visit(HistoryStep::Authorize(u64::from(location.length))) {
                     return false;
                 }
-                let body = self.body(cas, position, code, location).and_then(|body| {
-                    if pack2::history_body_matches(entry, &body) {
-                        Ok(body)
-                    } else {
-                        Err(pack2::pack2_corruption(
-                            &self_path(),
-                            "a history record's bytes differ from its index",
-                        ))
-                    }
-                });
+                let body = self.history_body(cas, position, code, location);
                 match body {
                     Ok(body) => {
                         visit(HistoryStep::Record((
@@ -3867,6 +3921,19 @@ pub fn set_inline_pack_limit(root: &Path, limit: Option<usize>) {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static BLOCKS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test support: pack blocks the catalogs of this thread read and
+/// decompressed (a block served from a catalog's recent blocks is not
+/// counted), since the thread started.
+#[cfg(any(test, feature = "test-support"))]
+pub fn blocks_read_on_this_thread() -> usize {
+    BLOCKS_READ.with(std::cell::Cell::get)
+}
+
 /// A loose content object a batch installed: SQLite registers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LooseInstall {
@@ -4804,7 +4871,7 @@ impl RegisteredCatalog {
                 problems.push((path, "keys row checksum differs".to_owned()));
                 continue;
             }
-            match registered.pack.rebuild_keys(rice_bits) {
+            match registered.pack.rebuild_keys(cas, rice_bits) {
                 Ok(rebuilt) if rebuilt == stored => {}
                 Ok(_) => problems.push((path, "keys row differs from the pack's index".to_owned())),
                 Err(error) => problems.push((path, error.to_string())),
