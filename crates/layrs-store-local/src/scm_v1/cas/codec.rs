@@ -1,5 +1,9 @@
 //! Canonical CAS envelope and streaming content validation.
 use super::*;
+use layrs_core::scm::{
+    ConflictId, FileId, RepoPathComponent, SymlinkId, TombstoneId, TreeEntry, TreeEntryTarget,
+    TreeId,
+};
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnvelopeRef<'a, T: Serialize> {
@@ -54,6 +58,206 @@ fn tree_envelope(tree: &Tree) -> CasResult<Vec<u8>> {
     out.extend_from_slice(id.as_bytes());
     out.extend_from_slice(b"\"}}");
     Ok(out)
+}
+
+fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn take_varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
+    let mut value = 0_u64;
+    let mut shift = 0;
+    loop {
+        let byte = *bytes.get(*at)?;
+        *at += 1;
+        let bits = u64::from(byte & 0x7f);
+        if shift > 63 || (shift == 63 && bits > 1) {
+            return None;
+        }
+        value |= bits << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+}
+
+/// Target kinds of a binary Tree entry (the low three bits of its tag; bit
+/// 3 is the executable flag, the others are zero).
+const TREE_FILE: u8 = 0;
+const TREE_TREE: u8 = 1;
+const TREE_CONFLICT: u8 = 2;
+const TREE_SYMLINK: u8 = 3;
+const TREE_TOMBSTONE: u8 = 4;
+const TREE_EXECUTABLE: u8 = 8;
+/// The smallest encoded entry: shared length, suffix length, one name
+/// byte, the tag, the digest.
+const TREE_ENTRY_MIN: usize = 1 + 1 + 1 + 1 + 32;
+
+/// Packs v4 (format 8, phase 3b, council s30): a Tree record's body. The
+/// record's id is its key; the body is the entry count, then per entry the
+/// length its name shares with the previous one, the rest of the name, a
+/// tag (target kind, executable bit) and the target's 32-byte digest. Names
+/// are in the Tree's order (strictly increasing bytes), so the encoding is
+/// one per Tree.
+pub(super) fn encode_tree_binary(tree: &Tree) -> Vec<u8> {
+    let entries = tree.entries();
+    let mut out = Vec::with_capacity(4 + entries.len() * 40);
+    put_varint(&mut out, entries.len() as u64);
+    let mut previous: &[u8] = &[];
+    for entry in entries {
+        let name = entry.name().as_str().as_bytes();
+        let shared = previous
+            .iter()
+            .zip(name)
+            .take_while(|(left, right)| left == right)
+            .count();
+        put_varint(&mut out, shared as u64);
+        put_varint(&mut out, (name.len() - shared) as u64);
+        out.extend_from_slice(&name[shared..]);
+        let (kind, digest) = match entry.target() {
+            TreeEntryTarget::File { file_id } => (TREE_FILE, file_id.digest_bytes()),
+            TreeEntryTarget::Tree { tree_id } => (TREE_TREE, tree_id.digest_bytes()),
+            TreeEntryTarget::Conflict { conflict_id } => {
+                (TREE_CONFLICT, conflict_id.digest_bytes())
+            }
+            TreeEntryTarget::Symlink { symlink_id } => (TREE_SYMLINK, symlink_id.digest_bytes()),
+            TreeEntryTarget::Tombstone { tombstone_id } => {
+                (TREE_TOMBSTONE, tombstone_id.digest_bytes())
+            }
+        };
+        out.push(
+            kind | if entry.executable() {
+                TREE_EXECUTABLE
+            } else {
+                0
+            },
+        );
+        out.extend_from_slice(&digest);
+        previous = name;
+    }
+    out
+}
+
+/// Decodes a binary Tree record as `expected`: every entry valid, names
+/// strictly increasing, the id the key names, and the body the one
+/// encoding of that Tree (no padded varint, no shorter shared prefix, no
+/// trailing byte).
+pub(super) fn decode_tree_binary(
+    expected: &StoreObjectId,
+    body: &[u8],
+) -> CasResult<CanonicalObject> {
+    let bad = |reason: &str| corruption(expected, format!("binary Tree record: {reason}"));
+    let mut at = 0;
+    let count = take_varint(body, &mut at).ok_or_else(|| bad("truncated count"))?;
+    // Bounded before anything is allocated for it.
+    if count > (body.len() / TREE_ENTRY_MIN) as u64 {
+        return Err(bad("more entries than its bytes hold"));
+    }
+    let mut entries = Vec::with_capacity(count as usize);
+    let mut previous: Vec<u8> = Vec::new();
+    for index in 0..count {
+        let shared = take_varint(body, &mut at).ok_or_else(|| bad("truncated entry"))?;
+        let suffix = take_varint(body, &mut at).ok_or_else(|| bad("truncated entry"))?;
+        if shared > previous.len() as u64 || suffix == 0 {
+            return Err(bad("entry name out of bounds"));
+        }
+        let end = usize::try_from(suffix)
+            .ok()
+            .and_then(|suffix| at.checked_add(suffix))
+            .filter(|end| *end <= body.len())
+            .ok_or_else(|| bad("truncated name"))?;
+        let mut name = previous[..shared as usize].to_vec();
+        name.extend_from_slice(&body[at..end]);
+        at = end;
+        if index > 0 && name <= previous {
+            return Err(bad("names are not strictly increasing"));
+        }
+        let tag = *body.get(at).ok_or_else(|| bad("truncated tag"))?;
+        at += 1;
+        let digest: [u8; 32] = body
+            .get(at..at + 32)
+            .and_then(|digest| digest.try_into().ok())
+            .ok_or_else(|| bad("truncated digest"))?;
+        at += 32;
+        let target = match tag & !TREE_EXECUTABLE {
+            TREE_FILE => TreeEntryTarget::file(FileId::from_digest_bytes(&digest)),
+            TREE_TREE => TreeEntryTarget::tree(TreeId::from_digest_bytes(&digest)),
+            TREE_CONFLICT => TreeEntryTarget::conflict(ConflictId::from_digest_bytes(&digest)),
+            TREE_SYMLINK => TreeEntryTarget::symlink(SymlinkId::from_digest_bytes(&digest)),
+            TREE_TOMBSTONE => TreeEntryTarget::tombstone(TombstoneId::from_digest_bytes(&digest)),
+            _ => return Err(bad("unknown entry tag")),
+        };
+        let text = std::str::from_utf8(&name).map_err(|_| bad("name is not UTF-8"))?;
+        let component = RepoPathComponent::parse(text)
+            .map_err(|error| bad(&format!("invalid name: {error}")))?;
+        entries.push(TreeEntry::new(
+            component,
+            target,
+            tag & TREE_EXECUTABLE != 0,
+        ));
+        previous = name;
+    }
+    if at != body.len() {
+        return Err(bad("trailing bytes"));
+    }
+    let tree = Tree::new(entries).map_err(|error| bad(&error.to_string()))?;
+    let object = CanonicalObject::Tree(tree);
+    let actual = object.object_id();
+    if actual != *expected {
+        return Err(CasError::IdMismatch {
+            expected: expected.clone(),
+            actual: actual.to_string(),
+        });
+    }
+    let CanonicalObject::Tree(tree) = &object else {
+        unreachable!("built as a Tree");
+    };
+    if encode_tree_binary(tree) != body {
+        return Err(bad("not its canonical encoding"));
+    }
+    Ok(object)
+}
+
+/// The first and last entry names of a binary Tree record, as stored (an
+/// ordering key only: `None` for a malformed body).
+pub(super) fn tree_binary_bounds(body: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut at = 0;
+    let count = take_varint(body, &mut at)?;
+    let mut first = None;
+    let mut previous: Vec<u8> = Vec::new();
+    for _ in 0..count.min((body.len() / TREE_ENTRY_MIN) as u64) {
+        let shared = usize::try_from(take_varint(body, &mut at)?).ok()?;
+        let suffix = usize::try_from(take_varint(body, &mut at)?).ok()?;
+        let end = at.checked_add(suffix).filter(|end| *end <= body.len())?;
+        let mut name = previous.get(..shared)?.to_vec();
+        name.extend_from_slice(&body[at..end]);
+        at = end + 1 + 32;
+        if first.is_none() {
+            first = Some(name.clone());
+        }
+        previous = name;
+    }
+    Some((first.unwrap_or_default(), previous))
+}
+
+/// A pack record's object, decoded from its body as the kind's codec in a
+/// pack of `version` gives it (`pack2::record_codec`): a binary Tree in
+/// packs v4, canonical bytes otherwise.
+pub(super) fn validate_pack_record(
+    version: u32,
+    expected: &StoreObjectId,
+    body: &[u8],
+    whole_files: bool,
+) -> CasResult<CanonicalObject> {
+    if matches!(expected, StoreObjectId::Tree(_)) && pack2::binary_trees(version) {
+        return decode_tree_binary(expected, body);
+    }
+    validate_stored_bytes(expected, body, whole_files)
 }
 
 pub(super) fn encode_object(object: &CanonicalObject) -> CasResult<Vec<u8>> {
@@ -418,5 +622,159 @@ mod whole_gate_tests {
         let object = CanonicalObject::FileManifest(v1);
         let bytes = encode_object(&object).unwrap();
         assert!(validate_stored_bytes(&object.object_id(), &bytes, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tree_binary_tests {
+    use super::*;
+
+    fn digest(seed: &str) -> String {
+        format!("blake3:{}", blake3::hash(seed.as_bytes()).to_hex())
+    }
+
+    fn tree(names: &[&str]) -> Tree {
+        let entries = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let id = digest(name);
+                let target = match index % 5 {
+                    0 => TreeEntryTarget::file(FileId::parse(id).unwrap()),
+                    1 => TreeEntryTarget::tree(TreeId::parse(id).unwrap()),
+                    2 => TreeEntryTarget::conflict(ConflictId::parse(id).unwrap()),
+                    3 => TreeEntryTarget::symlink(SymlinkId::parse(id).unwrap()),
+                    _ => TreeEntryTarget::tombstone(TombstoneId::parse(id).unwrap()),
+                };
+                TreeEntry::new(
+                    RepoPathComponent::parse(*name).unwrap(),
+                    target,
+                    index % 2 == 0,
+                )
+            })
+            .collect();
+        Tree::new(entries).unwrap()
+    }
+
+    fn id(tree: &Tree) -> StoreObjectId {
+        StoreObjectId::Tree(tree.id().clone())
+    }
+
+    /// Phase 3b: a binary Tree record decodes to the same Tree (every
+    /// target kind, executable bits, shared prefixes, non-ASCII names), its
+    /// bounds are its first and last names, and the empty Tree encodes too.
+    #[test]
+    fn binary_trees_round_trip() {
+        for names in [
+            vec![],
+            vec!["a"],
+            vec!["f0.txt", "f1.txt", "f10.txt", "f2.txt", "g"],
+            vec!["caf\u{e9}", "caf\u{e9}s", "\u{1f600}x", "z"],
+            vec!["src", "src.rs", "srcs", "t"],
+        ] {
+            let tree = tree(&names);
+            let body = encode_tree_binary(&tree);
+            assert_eq!(
+                decode_tree_binary(&id(&tree), &body).unwrap(),
+                CanonicalObject::Tree(tree.clone()),
+                "{names:?}"
+            );
+            let (first, last) = tree_binary_bounds(&body).unwrap();
+            let sorted: Vec<&str> = tree.entries().iter().map(|e| e.name().as_str()).collect();
+            assert_eq!(first, sorted.first().copied().unwrap_or("").as_bytes());
+            assert_eq!(last, sorted.last().copied().unwrap_or("").as_bytes());
+        }
+        // Shared prefixes are stored once: "f10.txt" shares "f1" with
+        // "f1.txt" and stores "0.txt".
+        let body = encode_tree_binary(&tree(&["f1.txt", "f10.txt"]));
+        assert_eq!(body.len(), 1 + (2 + 6 + 1 + 32) + (2 + 5 + 1 + 32));
+    }
+
+    /// Only the one encoding of a Tree decodes, and only as its own id.
+    #[test]
+    fn binary_trees_refuse_other_encodings() {
+        let tree = tree(&["ab", "abc", "b"]);
+        let body = encode_tree_binary(&tree);
+        let expected = id(&tree);
+        let entry = |shared: u8, suffix: &[u8], tag: u8, seed: &str| {
+            let mut out = vec![shared, suffix.len() as u8];
+            out.extend_from_slice(suffix);
+            out.push(tag);
+            out.extend_from_slice(blake3::hash(seed.as_bytes()).as_bytes());
+            out
+        };
+        // The same entries, re-encoded by hand: decodes.
+        let manual = [
+            vec![3],
+            entry(0, b"ab", 8, "ab"),
+            entry(2, b"c", 1, "abc"),
+            entry(0, b"b", 8 | 2, "b"),
+        ]
+        .concat();
+        assert_eq!(manual, body);
+        let damaged = [
+            // A shorter shared prefix than the names share.
+            [
+                vec![3],
+                entry(0, b"ab", 8, "ab"),
+                entry(1, b"bc", 1, "abc"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            // Names out of order, and a repeated name.
+            [
+                vec![3],
+                entry(0, b"abc", 1, "abc"),
+                entry(0, b"ab", 8, "ab"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            [
+                vec![3],
+                entry(0, b"ab", 8, "ab"),
+                entry(0, b"ab", 1, "abc"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            // An empty suffix, a reserved tag bit, an unknown kind.
+            [
+                vec![3],
+                entry(0, b"ab", 8, "ab"),
+                entry(2, b"", 1, "abc"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            [
+                vec![3],
+                entry(0, b"ab", 8 | 16, "ab"),
+                entry(2, b"c", 1, "abc"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            [
+                vec![3],
+                entry(0, b"ab", 5, "ab"),
+                entry(2, b"c", 1, "abc"),
+                entry(0, b"b", 10, "b"),
+            ]
+            .concat(),
+            // A padded count, a trailing byte, a truncated digest.
+            [vec![0x83, 0], body[1..].to_vec()].concat(),
+            [body.clone(), vec![0]].concat(),
+            body[..body.len() - 1].to_vec(),
+            // A count past what the bytes could hold.
+            [vec![0xff, 0xff, 0xff, 0xff, 0x0f], body[1..].to_vec()].concat(),
+            // An invalid name.
+            [vec![1], entry(0, b"a/b", 0, "x")].concat(),
+        ];
+        for bytes in damaged {
+            assert!(decode_tree_binary(&expected, &bytes).is_err(), "{bytes:?}");
+        }
+        // Another Tree's bytes under this id: an id mismatch.
+        let other = encode_tree_binary(&super::tree_binary_tests::tree(&["ab"]));
+        assert!(matches!(
+            decode_tree_binary(&expected, &other),
+            Err(CasError::IdMismatch { .. })
+        ));
     }
 }

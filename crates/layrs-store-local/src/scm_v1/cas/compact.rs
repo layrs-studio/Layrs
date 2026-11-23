@@ -150,9 +150,14 @@ fn cluster_key(loaded: &LoadedPack, raw: &[u8], record: pack2::RecordRef) -> Clu
     if code != pack2::kind_code(StoreObjectKind::Tree) {
         return (code, Vec::new(), Vec::new());
     }
-    let Ok(body) = pack2::record_body(raw, location, code, &loaded.path) else {
+    let Ok(body) = pack2::record_body(raw, location, code, loaded.index.version, &loaded.path)
+    else {
         return (code, Vec::new(), Vec::new());
     };
+    if pack2::binary_trees(loaded.index.version) {
+        let (first, last) = tree_binary_bounds(body).unwrap_or_default();
+        return (code, first, last);
+    }
     // A key only orders records: a malformed body gets an empty one (the
     // copy validates it).
     const NAME: &[u8] = b"\"name\":\"";
@@ -1082,7 +1087,7 @@ impl LoadedPack {
                 Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
             };
             for (_, ordinal, code, location) in group {
-                let body = pack2::record_body(&raw, *location, *code, &self.path)?;
+                let body = pack2::record_body(&raw, *location, *code, index.version, &self.path)?;
                 digests.insert(*ordinal, pack2::history_digest(body));
             }
         }
@@ -1689,7 +1694,8 @@ impl NativeCas {
                     })?;
                     // Its block was checked against its registered hash
                     // (`checked_block`).
-                    let body = pack2::record_body(raw, location, code, &loaded.path)?;
+                    let body =
+                        pack2::record_body(raw, location, code, index.version, &loaded.path)?;
                     // Consolidation retires the sources: a copied history
                     // record must decode to the id its key names, in
                     // canonical bytes, in the Space its entry names (council
@@ -1724,8 +1730,9 @@ impl NativeCas {
                 let kind = pack2::kind_of_code(code)
                     .ok_or_else(|| pack2::pack2_corruption(&loaded.path, "unknown record kind"))?;
                 let object_id = pack2::object_id_of(kind, &id)?;
-                let body = pack2::record_body(raw, location, code, &loaded.path)?;
-                let object = validate_stored_bytes(&object_id, body, self.whole_files)?;
+                let body = pack2::record_body(raw, location, code, index.version, &loaded.path)?;
+                let object =
+                    validate_pack_record(index.version, &object_id, body, self.whole_files)?;
                 open.builder
                     .add_record(sink, kind, id, body, None)
                     .map_err(write)?;
@@ -1769,7 +1776,13 @@ impl NativeCas {
                     }
                 }
                 let (_, chunk_id) = loaded.alias_ids(file)?;
-                let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
+                let body = pack2::record_body(
+                    raw,
+                    record.location,
+                    FILE_KIND,
+                    index.version,
+                    &loaded.path,
+                )?;
                 validate_file_record_chunk(chunk_id, body, record.recipe)?;
                 if explicit {
                     // Its File is kept whole too: this v1 chunk and manifest
@@ -2284,8 +2297,11 @@ impl RegisteredCatalog {
         location: Location,
     ) -> CasResult<Vec<u8>> {
         let block = self.block(cas, pack, location.block)?;
-        let path = &self.packs[pack].pack.path;
-        Ok(pack2::record_body(&block, location, kind, path)?.to_vec())
+        let loaded = &self.packs[pack].pack;
+        Ok(
+            pack2::record_body(&block, location, kind, loaded.index.version, &loaded.path)?
+                .to_vec(),
+        )
     }
 
     /// A history record's body, from a block checked against its registered
@@ -2298,8 +2314,11 @@ impl RegisteredCatalog {
         location: Location,
     ) -> CasResult<Vec<u8>> {
         let block = self.checked_block(cas, pack, location.block)?;
-        let path = &self.packs[pack].pack.path;
-        Ok(pack2::record_body(&block, location, kind, path)?.to_vec())
+        let loaded = &self.packs[pack].pack;
+        Ok(
+            pack2::record_body(&block, location, kind, loaded.index.version, &loaded.path)?
+                .to_vec(),
+        )
     }
 
     /// Reads `cas_packs` and `loose_objects` from `connection` (one SQLite
@@ -2545,8 +2564,11 @@ impl RegisteredCatalog {
             };
             let (kind, _, location) = loaded.index.explicit(ordinal)?;
             let block = loaded.read_block(cas, location.block).ok()?;
-            let body = pack2::record_body(&block, location, kind, &loaded.path).ok()?;
-            let object = validate_stored_bytes(id, body, cas.whole_files).ok()?;
+            let body =
+                pack2::record_body(&block, location, kind, loaded.index.version, &loaded.path)
+                    .ok()?;
+            let object =
+                validate_pack_record(loaded.index.version, id, body, cas.whole_files).ok()?;
             crate::perf::count("cas.read_recent_hit", 1);
             return Some((u64::from(location.length), object));
         }
@@ -2991,7 +3013,12 @@ impl RegisteredCatalog {
                     .index
                     .explicit(ordinal)
                     .ok_or_else(|| corruption(id, "pack record vanished"))?;
-                validate_stored_bytes(id, &self.body(cas, pack, kind, location)?, cas.whole_files)
+                validate_pack_record(
+                    loaded.index.version,
+                    id,
+                    &self.body(cas, pack, kind, location)?,
+                    cas.whole_files,
+                )
             }
             Placement::Chunk { pack, file } => {
                 let loaded = &self.packs[pack].pack;
@@ -4269,11 +4296,23 @@ impl NativeCas {
         let bytes = encode_object(object)?;
         let bytes_len = bytes.len() as u64;
         let mut first_error = None;
+        // Packs v4 store a Tree in its binary form, as unique as its JCS one.
+        let stored_form = match object {
+            CanonicalObject::Tree(tree)
+                if pack2::binary_trees(pack2::version_for_store(
+                    self.whole_files,
+                    self.bitmap_admissions,
+                )) =>
+            {
+                Some(encode_tree_binary(tree))
+            }
+            _ => None,
+        };
         for placement in catalog.placements(&object_id)? {
             // A copy stored byte for byte as this object's canonical encoding
             // (which hashes to its id) is that object: no decoding needed.
             if let Ok(Some(stored)) = catalog.stored_bytes(self, placement) {
-                if stored == bytes {
+                if stored == bytes || stored_form.as_deref() == Some(stored.as_slice()) {
                     crate::perf::count("cas.compact_reuse", 1);
                     return Ok(Slot::Done(InstallOutcome {
                         path: self.object_path(&object_id)?,
@@ -4420,12 +4459,24 @@ impl NativeCas {
             });
         }
         let record_kind = if planned.is_some() { FILE_KIND } else { code };
-        let encoded = if pack2::is_large(bytes.len()) {
+        // Packs v4: a Tree's record is its binary form (phase 3b).
+        let version = pack2::version_for_store(self.whole_files, self.bitmap_admissions);
+        let binary = match object {
+            CanonicalObject::Tree(tree) if pack2::binary_trees(version) => {
+                Some(encode_tree_binary(tree))
+            }
+            _ => None,
+        };
+        let body: &[u8] = binary.as_deref().unwrap_or(&bytes);
+        let encoded = if pack2::is_large(body.len()) {
             let _span = crate::perf::span("cas.encode_large");
             Some(
-                pack2::EncodedBlock::single_record(record_kind, &bytes).map_err(|error| {
-                    io_error("compress CAS pack block", &self.staging_dir, error)
-                })?,
+                pack2::EncodedBlock::single_record(
+                    record_kind,
+                    pack2::record_codec(version, record_kind),
+                    body,
+                )
+                .map_err(|error| io_error("compress CAS pack block", &self.staging_dir, error))?,
             )
         } else {
             None
@@ -4478,7 +4529,7 @@ impl NativeCas {
                 }
                 _ => {
                     open.builder
-                        .add_record(sink, object_id.kind(), raw, &bytes, encoded)
+                        .add_record(sink, object_id.kind(), raw, body, encoded)
                         .map_err(write)?;
                 }
             }
@@ -5189,7 +5240,14 @@ fn scrub_record(
                     .and_then(|block| hash.map(|()| block))
                     .map_err(Clone::clone)
                     .and_then(|block| {
-                        pack2::record_body(block, location, kind, &loaded.path).map(|_| ())
+                        pack2::record_body(
+                            block,
+                            location,
+                            kind,
+                            loaded.index.version,
+                            &loaded.path,
+                        )
+                        .map(|_| ())
                     });
                 return (name.clone(), name, checked);
             }
@@ -5205,8 +5263,9 @@ fn scrub_record(
                 Err(error) => return ("pack entry".into(), "pack entry".into(), Err(error)),
             };
             let checked = raw.map_err(Clone::clone).and_then(|block| {
-                let body = pack2::record_body(block, location, kind, &loaded.path)?;
-                validate_stored_bytes(&id, body, whole_files).map(|_| ())
+                let body =
+                    pack2::record_body(block, location, kind, loaded.index.version, &loaded.path)?;
+                validate_pack_record(loaded.index.version, &id, body, whole_files).map(|_| ())
             });
             (id.to_string(), id.to_string(), checked)
         }
@@ -5220,8 +5279,13 @@ fn scrub_record(
             .to_string();
             let checked = (|| {
                 let block = raw.map_err(Clone::clone)?;
-                let body =
-                    pack2::record_body(block, file_record.location, FILE_KIND, &loaded.path)?;
+                let body = pack2::record_body(
+                    block,
+                    file_record.location,
+                    FILE_KIND,
+                    loaded.index.version,
+                    &loaded.path,
+                )?;
                 let (file_id, chunk_id) = loaded.alias_ids(file)?;
                 validate_file_record_chunk(chunk_id, body, file_record.recipe)?;
                 if FileId::from_bytes(body) != file_id {

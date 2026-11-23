@@ -130,6 +130,24 @@ const MAX_METADATA_BYTES: u64 = 512 * 1024 * 1024;
 /// Kind code of a file record (codes 1..=9 are `StoreObjectKind`s).
 pub(super) const FILE_KIND: u8 = 10;
 const CODEC_CANONICAL: u8 = 0;
+/// Packs v4 (phase 3b, council s30): a Tree record in its binary form
+/// (`codec::encode_tree_binary`).
+const CODEC_BINARY: u8 = 1;
+
+/// The one codec a record of kind `code` has in a pack of `version`: binary
+/// for Trees in packs v4, canonical JCS (or raw bytes) for everything else.
+pub(super) fn record_codec(version: u32, code: u8) -> u8 {
+    if version >= PACK2_VERSION_HISTORY && code == kind_code(StoreObjectKind::Tree) {
+        CODEC_BINARY
+    } else {
+        CODEC_CANONICAL
+    }
+}
+
+/// Whether a Tree record of a pack of `version` is binary.
+pub(super) fn binary_trees(version: u32) -> bool {
+    version >= PACK2_VERSION_HISTORY
+}
 const FLAG_RAW: u8 = 1;
 const ZSTD_LEVEL: i32 = 3;
 
@@ -569,10 +587,10 @@ fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
-fn record_header(kind: u8, length: usize) -> Vec<u8> {
+fn record_header(kind: u8, codec: u8, length: usize) -> Vec<u8> {
     let mut header = Vec::with_capacity(MAX_RECORD_HEADER);
     header.push(kind);
-    header.push(CODEC_CANONICAL);
+    header.push(codec);
     put_varint(&mut header, length as u64);
     header
 }
@@ -648,7 +666,7 @@ fn read_location(
     let info = blocks
         .get(block as usize)
         .ok_or_else(|| pack2_corruption(reader.path, "pack index entry names no block"))?;
-    let header = record_header(0, length as usize).len() as u64;
+    let header = record_header(0, CODEC_CANONICAL, length as usize).len() as u64;
     let end = u64::from(offset) + header + u64::from(length);
     if end > u64::from(info.raw_len) {
         return Err(pack2_corruption(
@@ -1280,15 +1298,17 @@ pub(super) fn read_block_from(
     Ok(raw)
 }
 
-/// The body of the record at `location` in decompressed `block`, after
-/// checking its header against the index (kind, codec, length).
+/// The body of the record at `location` in decompressed `block` of a pack
+/// of `version`, after checking its header against the index (kind, the
+/// kind's codec in that version, length).
 pub(super) fn record_body<'a>(
     block: &'a [u8],
     location: Location,
     kind: u8,
+    version: u32,
     path: &Path,
 ) -> CasResult<&'a [u8]> {
-    let expected = record_header(kind, location.length as usize);
+    let expected = record_header(kind, record_codec(version, kind), location.length as usize);
     let start = location.offset as usize;
     let body_start = start + expected.len();
     let end = body_start + location.length as usize;
@@ -1325,9 +1345,10 @@ impl EncodedBlock {
         })
     }
 
-    /// One record alone in its block (bodies larger than a shared block).
-    pub(super) fn single_record(kind: u8, body: &[u8]) -> io::Result<Self> {
-        let mut raw = record_header(kind, body.len());
+    /// One record alone in its block (bodies larger than a shared block),
+    /// with the codec of its kind in its pack's version.
+    pub(super) fn single_record(kind: u8, codec: u8, body: &[u8]) -> io::Result<Self> {
+        let mut raw = record_header(kind, codec, body.len());
         raw.extend_from_slice(body);
         Self::encode(&raw)
     }
@@ -1335,7 +1356,7 @@ impl EncodedBlock {
 
 /// Whether a record body gets a block of its own.
 pub(super) fn is_large(body_len: usize) -> bool {
-    record_header(0, body_len).len() + body_len > BLOCK_TARGET
+    record_header(0, CODEC_CANONICAL, body_len).len() + body_len > BLOCK_TARGET
 }
 
 /// The identities a file record stands for (raw digests).
@@ -1498,7 +1519,7 @@ impl Pack2Builder {
 
     /// Whether a record of `body_len` bytes gets a block of its own here.
     fn alone(&self, body_len: usize) -> bool {
-        record_header(0, body_len).len() + body_len > self.block_target
+        record_header(0, CODEC_CANONICAL, body_len).len() + body_len > self.block_target
     }
 
     /// Appends one record and returns where it is. A large body is encoded
@@ -1519,12 +1540,12 @@ impl Pack2Builder {
             self.flush(out)?;
             let block = match encoded {
                 Some(block) => block,
-                None => EncodedBlock::single_record(kind, body)?,
+                None => EncodedBlock::single_record(kind, record_codec(self.version, kind), body)?,
             };
             let index = self.append_block(out, block)?;
             return Ok(location_of(index, 0, length));
         }
-        let header = record_header(kind, body.len());
+        let header = record_header(kind, record_codec(self.version, kind), body.len());
         if self.block.len() + header.len() + body.len() > self.block_target {
             self.flush(out)?;
         }
@@ -2079,7 +2100,7 @@ mod tests {
             let (code, _, location) = index.explicit(entry.ordinal as usize).unwrap();
             let mut block = read_block(&file, &path, &index, location.block).unwrap();
             check_block_hash(&index, location.block, &block, &path).unwrap();
-            let body = record_body(&block, location, code, &path).unwrap();
+            let body = record_body(&block, location, code, index.version, &path).unwrap();
             assert_eq!(body, format!("body {}", entry.sequence).as_bytes());
             let last = block.len() - 1;
             block[last] ^= 1;
@@ -2114,7 +2135,7 @@ mod tests {
 
     fn read(written: &Written, index: &Pack2Index, kind: u8, location: Location) -> Vec<u8> {
         let block = read_block(&written.file, &written.path, index, location.block).unwrap();
-        record_body(&block, location, kind, &written.path)
+        record_body(&block, location, kind, index.version, &written.path)
             .unwrap()
             .to_vec()
     }
@@ -2135,7 +2156,7 @@ mod tests {
                     .unwrap();
             }
             let id = id_of(&StoreObjectId::ChunkRaw(large.id().clone()));
-            let encoded = EncodedBlock::single_record(1, large.bytes()).unwrap();
+            let encoded = EncodedBlock::single_record(1, CODEC_CANONICAL, large.bytes()).unwrap();
             builder
                 .add_record(
                     file,
