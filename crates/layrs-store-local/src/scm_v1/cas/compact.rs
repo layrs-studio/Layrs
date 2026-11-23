@@ -1916,8 +1916,9 @@ fn sql_error(error: rusqlite::Error) -> CasError {
 pub(crate) struct KeysRowCheck {
     /// Keys rows that differ from their pack.
     pub(crate) problems: Vec<(PathBuf, String)>,
-    /// Packs whose history blocks could not be read or failed their hash
-    /// (packs v4) to rebuild their row: corruption, not a row problem.
+    /// Packs whose history blocks or records could not be read, failed
+    /// their hash, or do not decode (packs v4) to rebuild their row:
+    /// corruption, not a row problem.
     pub(crate) corrupt: Vec<(PathBuf, CasError)>,
     /// Whether every row was checked within the budget.
     pub(crate) complete: bool,
@@ -1928,7 +1929,8 @@ pub(crate) enum RebuiltKeys {
     Keys(super::keys::PackKeys),
     /// The budget stopped it.
     Incomplete,
-    /// A history block could not be read or failed its hash.
+    /// A history block or record could not be read, failed its hash, or
+    /// does not decode.
     HistoryUnreadable(CasError),
 }
 

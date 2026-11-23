@@ -675,7 +675,7 @@ mod tests {
             (br#"{"actorId":null,"createdAt":"2026-11-22T23:51:55.6826368Z","deviceId":null,"kind":"capture_worktree","metadata":[],"operationId":"operation:d9ca3a5f-9d45-4681-9fdc-6049560969ff","parentOperationIds":["operation:c6916971-2ddc-40ad-a074-bbb5c68c74d2"],"resultingViewId":"blake3:01b39dd5257187e509a5218de1182954fc83de3d381a9f8ce0f5e29fc848cc64","rewriteMap":[],"schemaVersion":"layrs.operation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","summary":"Capture Worktree"}"#, None),
             (br#"{"actorId":null,"captureReason":"manual_snapshot","deviceId":null,"metadata":[{"key":"a.b","value":"x\ny\u0001\"q\\"}],"observationId":"observation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","observedAt":"2026-11-22T23:51:57Z","operationId":"operation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","schemaVersion":"layrs.step-observation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","stepId":"blake3:5163cb173f212b026677770c1e971c0eb87f5b0ddbd41b82f4c4db5f1a7c8905","worktreeId":"worktree:d4ae26ee-1ef6-4c32-97a7-3b723da2e370"}"#, None),
             (
-                r#"{"n":[0,-1,9007199254740991,9007199254740992,1.5,-0.25,1e+21],"odd":["blake3:ABC","space:6CCBC9FF-adb0-4197-9558-03206afcf1e5","unknown:6ccbc9ff-adb0-4197-9558-03206afcf1e5","2026-02-30T00:00:00Z","2026-11-22T23:51:57.0Z","2026-11-22T23:51:57.123456789Z","1969-12-31T23:59:59Z","é"],"z":{}}"#.as_bytes(),
+                r#"{"b":[false,true,null],"n":[0,-1,9007199254740991,9007199254740992,1.5,-0.25,1e+21],"odd":["blake3:ABC","space:6CCBC9FF-adb0-4197-9558-03206afcf1e5","unknown:6ccbc9ff-adb0-4197-9558-03206afcf1e5","2026-02-30T00:00:00Z","2026-11-22T23:51:57.0Z","2026-11-22T23:51:57.123456789Z","1969-12-31T23:59:59Z","é"],"z":{}}"#.as_bytes(),
                 None,
             ),
         ]
@@ -719,7 +719,7 @@ mod tests {
     }
     const PINNED_TABLES: &str = "b3b858ffa5bed20f6aacd9abe6db78b448391872666f4f1030cbcd188bffadb9";
     const PINNED_ENCODINGS: &str =
-        "7a15156d8eb515cd795f794b584c40c27bc61dad2109c4a43a8190cc53669fee";
+        "7770c42eb5a62562c0c0e52ec1e00ddeae1553f7db3931a5ac54e1cbca596cf1";
 
     /// Only the one encoding of a value decodes; random damage never
     /// panics, and whatever decodes re-encodes to itself.
@@ -796,7 +796,18 @@ mod tests {
             state ^= state >> 27;
             state.wrapping_mul(0x2545_f491_4f6c_dd1d)
         };
-        for _ in 0..20_000 {
+        // Every sample's encoding is damaged, so integers, numbers, ids
+        // and own ids are fuzzed too (council s33 r3).
+        let bodies: Vec<(Vec<u8>, Option<&str>)> = std::iter::once((body.clone(), None))
+            .chain(
+                samples()
+                    .into_iter()
+                    .map(|(canonical, own)| (encode_value_binary(canonical, own).unwrap(), own)),
+            )
+            .collect();
+        for round in 0..30_000 {
+            let (body, own) = &bodies[round % bodies.len()];
+            let own = *own;
             let mut damaged = body.clone();
             let at = (next() % damaged.len() as u64) as usize;
             match next() % 3 {
@@ -806,14 +817,14 @@ mod tests {
                 }
                 _ => damaged.insert(at, next() as u8),
             }
-            if let Some(canonical) = decode_value_binary(&damaged, None, u64::MAX) {
-                assert_eq!(encode_value_binary(&canonical, None).unwrap(), damaged);
+            if let Some(canonical) = decode_value_binary(&damaged, own, u64::MAX) {
+                assert_eq!(encode_value_binary(&canonical, own).unwrap(), damaged);
                 assert_eq!(
-                    value_binary_expanded_len(&damaged, None).unwrap(),
+                    value_binary_expanded_len(&damaged, own).unwrap(),
                     canonical.len() as u64
                 );
             }
-            let _ = value_binary_expanded_len(&damaged, None);
+            let _ = value_binary_expanded_len(&damaged, own);
         }
     }
 }

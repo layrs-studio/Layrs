@@ -1200,3 +1200,27 @@ reader build up to about 0.7 GB for a 64 MiB history record before its
 typed check refuses it. The streaming decoder also removes two passes per
 Step and View read. Also later: one walk instead of two in
 `history_in_space`; `previous` key without a clone.
+
+## Council s33 r3 (2026-11-23, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 9/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 | 9/10 (ship) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 9/10 (ship) |
+
+All three: ship, P3 only. Fixed:
+
+- (P3 Sol, Opus) No sample held a boolean, so the `FALSE` and `TRUE` tag
+  codes were not pinned: the fifth sample holds `false` and `true`, and the
+  encodings are pinned again.
+- (P3 Opus) The damage loop only damaged a body with no integer, number,
+  id or own id: it now damages every sample's encoding, so the rule "what
+  decodes walks to its decoded length" is fuzzed over `canonical_number`
+  and `decimal_len`.
+- (P3 Opus) Docs of `RebuiltKeys::HistoryUnreadable` and
+  `KeysRowCheck::corrupt`: a record that does not decode is damage too.
+
+Noted, no change: the walk sizes an `INTEGER` past 2^53 - 1 a byte short
+in one case, but the decoder refuses such a body when it re-encodes it,
+before rendering, so nothing expands past its limit.
