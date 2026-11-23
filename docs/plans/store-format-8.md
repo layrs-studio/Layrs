@@ -687,3 +687,66 @@ gates; whether 3 is as strong as the per-record digests it replaces;
 whether 4 is worth its risk against 5; for 1, a direct typed decoder for
 Trees (hot path) and JCS reconstruction for the other kinds, or one way
 for all.
+
+## Council s30 r1 (design of phase 3, 2026-11-23) and chair's decisions
+
+All three members: adopt items 1, 2, 3 and 5a; defer 4; reject receipts in
+packs (it would reopen s25) and a retention window (a user decision that
+changes idempotency, not needed for the margin).
+
+Decisions:
+
+- Item 3 (block hashes), with the four conditions the members set:
+  - each block's raw blake3 (record headers included) is in the block
+    table, committed by the index digest, and checked in the block reader
+    itself, for file and inline packs; the block cache keeps a "checked"
+    bit, so a block first decompressed for a content read is checked before
+    a history read uses it; history blocks are never decompressed partly;
+  - the per-record digests leave the history section but stay in the keys
+    digest (`Ordinal::History`): computed from the records when a pack is
+    sealed, recomputed by fsck, consolidation and repair, and taken over the
+    canonical JCS form so the logical inventory does not depend on the
+    codec; `rebuild_keys` changes accordingly;
+  - a damaged block makes all its history records unknown (as a stored
+    checksum failure does today);
+  - gate: a block replaced by a valid one of the same geometry, with its
+    stored checksum recomputed, is refused by every history route and by
+    consolidation, inline and file-backed.
+- The block cache becomes a byte budget (it now keeps no block over 64 KiB,
+  so every read of a consolidated 256 KiB block decompresses it again);
+  history scans decompress each block once. Gate: decompressions per
+  history page equal blocks touched.
+- Item 1 (codecs, codec byte 1, one codec per pack version and kind):
+  Trees by a direct typed decoder (strictly increasing names, maximal
+  shared prefix, reserved bits zero, id from the canonical payload equal to
+  the key; `cluster_key` decodes it). Step, RepositoryView, Operation and
+  StepObservation by one generic codec over the JCS value (a key
+  dictionary per kind with presence, content ids as 32 bytes, canonical
+  lowercase `<prefix>:<uuid>` as a code and 16 bytes, RFC 3339 times as
+  integers with their fraction digits, tagged text otherwise), decoded by
+  rebuilding the JCS envelope and running the existing validators. One
+  rule for every codec-1 record: the re-encoding is byte-equal. The writer
+  decodes every codec-1 record before sealing; decoders are fuzzed; budgets
+  charge expanded sizes. Gate: Tree walk and materialization at 10k and
+  99k files no slower than today.
+- Item 2: each batch's records adjacent, from the records themselves with
+  a deterministic fallback for shared or unreached records, in 256 KiB
+  blocks. Tree blocks of 1 MiB only after a latency gate (cold head-Tree
+  reads, diff and log of old Steps at 10k and 99k files), newest first
+  within a lineage with partial decompression for content-only blocks. The
+  copy path past 64 MiB of candidates takes the large block target too.
+- Item 5a: the receipt key as a tag and 16 bytes for `transaction:` plus a
+  canonical lowercase UUID, text otherwise (a text key of that shape is
+  refused); the s29 tag keeps covering the id text. Measured with it:
+  UUIDv7 stamps (ordered keys fill B-tree pages) and a VACUUM in
+  `layrs maintenance`.
+- Gate for phase 3: Layrs after maintenance at most 0.9 times `git gc`, on
+  slope and total, at 1,000 and 2,000 Steps, flat (100 files) and nested
+  (about 1,000 files in 50 folders); measured with the real writer, a
+  script that fails on any command error and checks the counts; no latency
+  regression at 10k and 99k files (status, step, checkout, log, diff,
+  history paging). Item 4 only if the margin is still short, and then only
+  for history keys.
+- Landing order, one review each: 3a block hashes and cache; 3b Tree codec;
+  3c generic codec; 3d grouping and block sizes; 3e receipt key. The codecs
+  are frozen before 2d.
