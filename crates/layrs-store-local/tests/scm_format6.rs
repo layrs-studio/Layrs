@@ -1391,9 +1391,11 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
         )
         .unwrap();
         repository.apply_batch(&capture).unwrap();
-        repository
-            .apply_batch(&lane.capture(&files, vec![]))
-            .unwrap();
+        for _ in 0..3 {
+            repository
+                .apply_batch(&lane.capture(&files, vec![]))
+                .unwrap();
+        }
         drop(repository);
         assert_fsck_clean(&root.0);
         let mut replaced = None;
@@ -1460,14 +1462,33 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
             "Space query, inline {inline}"
         );
         drop(reader);
-        drop(store);
-        // fsck's history visit reports the Operation by its key.
         let mut input = vec![11_u8];
         input.extend_from_slice(operation.as_str().as_bytes());
         let key = format!(
             "blake3:{}",
             blake3::Hash::from(blake3::derive_key("layrs history key v1", &input)).to_hex()
         );
+        // The audit reports the block once and fails its history records.
+        let scrub = NativeCas::open(&store).unwrap().scrub().unwrap();
+        let messages: Vec<&str> = scrub
+            .issues
+            .iter()
+            .map(|issue| issue.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("registered hash")),
+            "scrub, inline {inline}: {messages:#?}"
+        );
+        assert!(
+            messages.iter().any(|message| message.contains(&key[7..])),
+            "scrub, inline {inline}: {messages:#?}"
+        );
+        drop(store);
+        // fsck: its history visit reports the Operation by its key; the keys
+        // row rebuild reports the pack's damaged history, never a row that
+        // differs.
         let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
         assert!(
             report
@@ -1478,19 +1499,56 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
             "fsck, inline {inline}: {:#?}",
             report.findings
         );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == FsckFindingCode::CasCorruption
+                    && finding.path.is_some()
+                    && finding.message.starts_with("keys row history")),
+            "fsck, inline {inline}: {:#?}",
+            report.findings
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.code != FsckFindingCode::CasPackKeysMismatch),
+            "fsck, inline {inline}: {:#?}",
+            report.findings
+        );
+        let packs_before = registered_packs(&root.0).len();
         if inline {
-            // A batch's own consolidation takes the inline tail.
+            // A batch's own consolidation takes the inline tail once it holds
+            // eight packs: the damaged pack is left out, the others
+            // consolidate.
             set_consolidation_budget(&root.0, None);
             let mut repository = NativeScmRepository::new(&root.0);
-            let _ = repository.apply_batch(&lane.capture(&files, vec![]));
+            for _ in 0..4 {
+                repository
+                    .apply_batch(&lane.capture(&files, vec![]))
+                    .unwrap();
+            }
             drop(repository);
         } else {
-            let outcome = maintain(&root.0);
+            // The pass that finds the damaged pack abandons and leaves it
+            // out from then on; the next consolidates the others.
+            let outcome = maintain(&root.0).unwrap();
             assert!(
-                !matches!(outcome, Ok(MaintenanceOutcome::NothingToDo)),
-                "maintenance had candidates: {outcome:?}"
+                matches!(outcome, MaintenanceOutcome::Abandoned),
+                "maintenance found the damaged pack: {outcome:?}"
+            );
+            let again = maintain(&root.0).unwrap();
+            assert!(
+                matches!(again, MaintenanceOutcome::Consolidated { .. }),
+                "maintenance consolidated the others: {again:?}"
             );
         }
+        let written = if inline { 4 } else { 0 };
+        assert!(
+            registered_packs(&root.0).len() < packs_before + written,
+            "nothing consolidated, inline {inline}"
+        );
         forget_loaded_packs();
         assert!(
             still_registered(),
@@ -1600,9 +1658,9 @@ fn history_paging_decompresses_each_consolidated_block_once() {
 }
 
 /// Council s31: rebuilding a pack's keys row reads its history bodies, under
-/// fsck's byte budget. A small budget (4 MiB with one finding) past which
-/// the history runs stops the check as incomplete, never as a row that
-/// differs from its pack.
+/// fsck's byte budget, charged for the history records only. A small budget
+/// (4 MiB with one finding) past which the history runs stops the check as
+/// incomplete, never as a row that differs from its pack.
 #[test]
 fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
     let root = TestRoot::new("keys-budget");
@@ -1654,6 +1712,12 @@ fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
             .unwrap();
     }
     drop(repository);
+    // In consolidated 256 KiB blocks, few blocks hold the history: the byte
+    // budget binds, not the CPU one (council s31 r2).
+    let MaintenanceOutcome::Consolidated { .. } = maintain(&root.0).unwrap() else {
+        panic!("nothing consolidated");
+    };
+    forget_loaded_packs();
     assert_fsck_clean(&root.0);
     let history_blocks: usize = registered_packs(&root.0)
         .iter()
@@ -1668,10 +1732,18 @@ fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
     let report = fsck_existing(&root.0, FsckOptions { max_findings: 1 }).unwrap();
     let read = blocks_read_on_this_thread() - before;
     assert!(report.is_truncated(), "{:#?}", report.findings);
-    // The budget stopped the reads: not every history block was read.
+    // The byte budget stopped the reads: not every history block was read.
     assert!(
         read < history_blocks,
         "{read} of {history_blocks} blocks read"
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("pack keys history")),
+        "{:#?}",
+        report.findings
     );
     assert!(
         report.findings.iter().all(

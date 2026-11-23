@@ -815,3 +815,45 @@ Fixed:
   records between 256 KiB and 1 MiB, which formats 6 and 7 would cache
   too).
 - (P3 Opus) The builder computes history digests with `history_digest`.
+
+## Council s31 r2 (2026-11-23)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 8/10 | 8/10 |
+
+Fixed:
+
+- (P2 Astra, Sol) A check hashed outside the cache lock was recorded on
+  the cache key, whatever buffer it then held (evicted and read again,
+  other bytes). `mark_checked` records it only on the very buffer that was
+  hashed (`Arc::ptr_eq`); unit test `a_check_marks_only_the_buffer_it_hashed`.
+- (P2 Opus) `rebuild_keys` charged each block's whole raw length, content
+  included (a batch pack's last content block holds its history too). It
+  now charges the bytes of the block's history records only.
+- (P3 Opus) The budget test now consolidates first, so history sits in
+  256 KiB blocks and the byte budget binds (not the CPU one); it asserts
+  the budget finding names "pack keys history" (without the byte check, 33
+  of 31 blocks are read and it fails).
+- (P3 Opus) The replaced-block test asserts the audit (`scrub` reports the
+  block's hash and the Operation's history key), the keys rebuild (a
+  `CasCorruption` with the pack's path, "keys row history", and no
+  `CasPackKeysMismatch`), a maintenance pass that finds the damaged pack
+  (`Abandoned`) then one that consolidates the others, and a batch's own
+  consolidation of the inline tail (eight packs) that leaves it out. Seven
+  mutations (five checked reads, the audit check, the keys classification)
+  each fail it.
+- (P3 Opus) The audit reports a failed block hash once, for the block, and
+  fails its history records only; content records are still checked by
+  their ids.
+- (P3 Opus) Only a history block that cannot be read or fails its hash is
+  corruption in the keys check (`RebuiltKeys::HistoryUnreadable`); any
+  other rebuild failure stays a keys row problem, as in formats 5 to 7.
+- (P3 Opus) Stale docs (`KeysRowCheck`, `keys_row_problems`,
+  `RECENT_BLOCK_MAX`).
+
+Later (Opus, scope note): compute the keys rows' history digests during
+the audit pass, which already reads and checks every block once, to drop
+one decompress-and-hash pass from fsck.

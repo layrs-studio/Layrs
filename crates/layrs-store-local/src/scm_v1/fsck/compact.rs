@@ -807,7 +807,7 @@ impl Context<'_> {
                         Some(path),
                         None,
                         None,
-                        format!("{}: {error}", error.code()),
+                        format!("keys row history: {}: {error}", error.code()),
                     );
                 }
                 if !checked.complete {

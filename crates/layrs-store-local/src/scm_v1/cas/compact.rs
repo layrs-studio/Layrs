@@ -31,9 +31,9 @@ const RECENT_BYTES: usize = 16 * 1024 * 1024;
 /// Packs whose file records derived data may name by position
 /// (`file_record_ref`): large ones, which consolidation rarely replaces.
 const REFERENCED_PACK_RECORDS: usize = 4096;
-/// A larger block is never kept: a consolidated block is at most
-/// `CLUSTER_BLOCK` raw bytes plus one record's header; a larger one holds a
-/// single large record, rarely read again.
+/// A larger block is never kept: a shared block is at most `CLUSTER_BLOCK`
+/// raw bytes (the margin is slack); a larger one holds a single large
+/// record, rarely read again.
 const RECENT_BLOCK_MAX: usize = CLUSTER_BLOCK + 64;
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
@@ -1008,7 +1008,7 @@ impl LoadedPack {
         cas: &NativeCas,
         rice_bits: u8,
         authorize: &mut dyn FnMut(u64) -> bool,
-    ) -> CasResult<Option<super::keys::PackKeys>> {
+    ) -> CasResult<RebuiltKeys> {
         use super::keys::{self, Ordinal, SectionEntry};
         let index = &self.index;
         let vanished = || pack2::pack2_corruption(&self.path, "pack record vanished");
@@ -1031,8 +1031,10 @@ impl LoadedPack {
             .map(|entry| (entry.ordinal, entry))
             .collect();
         // The history records' logical digests, from their bodies: block by
-        // block (one held at a time), each block authorized against the
-        // caller's budget (fsck's) and checked against its registered hash.
+        // block (one held at a time), each block authorized for the bytes
+        // of its history records only (a block may hold content too, which
+        // the audit charges elsewhere; council s31 r2) and checked against
+        // its registered hash.
         let mut by_block: Vec<(u32, u32, u8, pack2::Location)> = index
             .history
             .iter()
@@ -1045,40 +1047,45 @@ impl LoadedPack {
             .collect::<CasResult<_>>()?;
         by_block.sort_unstable_by_key(|(block, ordinal, _, _)| (*block, *ordinal));
         let file = if self.image.is_none() && !by_block.is_empty() {
-            Some(self.open(cas)?)
+            match self.open(cas) {
+                Ok(file) => Some(file),
+                Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
+            }
         } else {
             None
         };
         let mut digests: HashMap<u32, [u8; 32]> = HashMap::with_capacity(history.len());
-        let mut raw: Option<(u32, Vec<u8>)> = None;
-        for (block, ordinal, code, location) in by_block {
-            if raw.as_ref().is_none_or(|(held, _)| *held != block) {
-                let info = index.blocks.get(block as usize).ok_or_else(vanished)?;
-                if !authorize(u64::from(info.raw_len)) {
-                    return Ok(None);
-                }
-                let read = match (&self.image, &file) {
-                    (Some(image), _) => pack2::read_block_from(
-                        pack2::PackSource::Image(image),
-                        &self.path,
-                        index,
-                        block,
-                    )?,
-                    (None, Some(file)) => pack2::read_block(file.file(), &self.path, index, block)?,
-                    (None, None) => return Err(vanished()),
-                };
-                #[cfg(any(test, feature = "test-support"))]
-                BLOCKS_READ.with(|count| count.set(count.get() + 1));
-                pack2::check_block_hash(index, block, &read, &self.path)?;
-                raw = Some((block, read));
+        for group in by_block.chunk_by(|left, right| left.0 == right.0) {
+            let block = group[0].0;
+            let bytes: u64 = group
+                .iter()
+                .map(|(_, _, _, location)| u64::from(location.length))
+                .sum();
+            if !authorize(bytes) {
+                return Ok(RebuiltKeys::Incomplete);
             }
-            let Some((_, block_bytes)) = &raw else {
-                return Err(vanished());
+            let read = match (&self.image, &file) {
+                (Some(image), _) => pack2::read_block_from(
+                    pack2::PackSource::Image(image),
+                    &self.path,
+                    index,
+                    block,
+                ),
+                (None, Some(file)) => pack2::read_block(file.file(), &self.path, index, block),
+                (None, None) => Err(vanished()),
+            }
+            .and_then(|raw| pack2::check_block_hash(index, block, &raw, &self.path).map(|()| raw));
+            #[cfg(any(test, feature = "test-support"))]
+            BLOCKS_READ.with(|count| count.set(count.get() + 1));
+            let raw = match read {
+                Ok(raw) => raw,
+                Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
             };
-            let body = pack2::record_body(block_bytes, location, code, &self.path)?;
-            digests.insert(ordinal, pack2::history_digest(body));
+            for (_, ordinal, code, location) in group {
+                let body = pack2::record_body(&raw, *location, *code, &self.path)?;
+                digests.insert(*ordinal, pack2::history_digest(body));
+            }
         }
-        drop(raw);
         for (ordinal, (code, id)) in explicit.iter().enumerate() {
             match history.get(&(ordinal as u32)) {
                 Some(entry) => ordinals.push(Ordinal::History {
@@ -1128,7 +1135,7 @@ impl LoadedPack {
             tagged.push(keys::key(keys::FILEID_SECTION_TAG, &entry.file_id));
         }
         keys::PackKeys::build(&ordinals, &section, tagged, rice_bits)
-            .map(Some)
+            .map(RebuiltKeys::Keys)
             .map_err(|error| pack2::pack2_corruption(&self.path, error.to_string()))
     }
 
@@ -1836,21 +1843,47 @@ fn sql_error(error: rusqlite::Error) -> CasError {
     }
 }
 
-/// A decompressed block a catalog keeps: ((pack, block), raw bytes).
 /// What `keys_row_problems` found.
 pub(crate) struct KeysRowCheck {
     /// Keys rows that differ from their pack.
     pub(crate) problems: Vec<(PathBuf, String)>,
-    /// Packs whose history could not be read to rebuild their row: a
-    /// damaged block, which is corruption.
+    /// Packs whose history blocks could not be read or failed their hash
+    /// (packs v4) to rebuild their row: corruption, not a row problem.
     pub(crate) corrupt: Vec<(PathBuf, CasError)>,
     /// Whether every row was checked within the budget.
     pub(crate) complete: bool,
 }
 
-/// ((pack, block), raw bytes, its registered hash check: not yet, passed,
-/// or failed).
+/// What rebuilding a keys row gave.
+pub(crate) enum RebuiltKeys {
+    Keys(super::keys::PackKeys),
+    /// The budget stopped it.
+    Incomplete,
+    /// A history block could not be read or failed its hash.
+    HistoryUnreadable(CasError),
+}
+
+/// A decompressed block a catalog keeps: ((pack, block), raw bytes, its
+/// registered hash check: not yet, passed, or failed).
 type RecentBlock = ((usize, u32), Arc<Vec<u8>>, Option<bool>);
+
+/// Records the hash check of `raw` on its cache entry, only if that entry
+/// still holds the very buffer that was hashed: meanwhile the block may have
+/// been evicted and read again, other bytes under the same key (council
+/// s31 r2).
+fn mark_checked(
+    recent: &mut VecDeque<RecentBlock>,
+    key: (usize, u32),
+    raw: &Arc<Vec<u8>>,
+    passed: bool,
+) {
+    if let Some(entry) = recent
+        .iter_mut()
+        .find(|entry| entry.0 == key && Arc::ptr_eq(&entry.1, raw))
+    {
+        entry.2 = Some(passed);
+    }
+}
 
 /// What a format 8 batch registered before its validation. Its validating
 /// reader reads records that are not content only from earlier
@@ -2145,11 +2178,7 @@ impl RegisteredCatalog {
                     let passed =
                         pack2::check_block_hash(&loaded.index, block, &raw, &loaded.path).is_ok();
                     if let Ok(mut recent) = self.recent.lock() {
-                        if let Some(entry) =
-                            recent.iter_mut().find(|entry| entry.0 == (pack, block))
-                        {
-                            entry.2 = Some(passed);
-                        }
+                        mark_checked(&mut recent, (pack, block), &raw, passed);
                     }
                     return if passed { Ok(raw) } else { Err(failed()) };
                 }
@@ -4842,14 +4871,36 @@ impl RegisteredCatalog {
                     (None, None) => Err(pack2::pack2_corruption(&loaded.path, "pack not opened")),
                 };
                 // Packs v4: the block against its registered hash, which
-                // commits to its history records' bytes (council s30).
-                let raw = raw.and_then(|raw| {
-                    pack2::check_block_hash(&loaded.index, block as u32, &raw, &loaded.path)
-                        .map(|()| raw)
-                });
+                // commits to its history records' bytes (council s30). A
+                // failure is reported once for the block and fails its
+                // history records; its content records are still checked
+                // against their ids.
+                let hash = match &raw {
+                    Ok(raw) => {
+                        pack2::check_block_hash(&loaded.index, block as u32, raw, &loaded.path)
+                    }
+                    Err(_) => Ok(()),
+                };
+                if let Err(error) = &hash {
+                    let copy = AuditedCopy {
+                        path: loaded.path.clone(),
+                        object: format!("block {block}"),
+                        message_prefix: String::new(),
+                        result: Err(error.clone()),
+                        pack_level: true,
+                    };
+                    if !event(AuditEvent::Copy(copy)) {
+                        return;
+                    }
+                }
                 for record in records {
-                    let (object, name, result) =
-                        scrub_record(&loaded, record, raw.as_ref(), cas.whole_files);
+                    let (object, name, result) = scrub_record(
+                        &loaded,
+                        record,
+                        raw.as_ref(),
+                        hash.as_ref(),
+                        cas.whole_files,
+                    );
                     let copy = AuditedCopy {
                         path: loaded.path.clone(),
                         object,
@@ -4929,8 +4980,8 @@ impl RegisteredCatalog {
     /// Each readable registered pack whose keys row is missing, bound to
     /// another index, fails its checksum, or differs from what its index
     /// gives (council s17, B1c), with why. The rows of unreadable packs
-    /// cannot be checked against anything.
-    /// Every readable pack's keys row against its index and (packs v4) its
+    /// cannot be checked against anything. Every readable pack's keys row
+    /// is checked against its index and (packs v4) its
     /// history bodies, read under `authorize` (fsck's budget): the row
     /// problems, the packs whose history blocks are damaged (corruption,
     /// not a row problem), and whether the budget stopped the check.
@@ -5006,18 +5057,20 @@ impl RegisteredCatalog {
                 continue;
             }
             match registered.pack.rebuild_keys(cas, rice_bits, authorize) {
-                Ok(Some(rebuilt)) if rebuilt == stored => {}
-                Ok(Some(_)) => {
+                Ok(RebuiltKeys::Keys(rebuilt)) if rebuilt == stored => {}
+                Ok(RebuiltKeys::Keys(_)) => {
                     problems.push((path, "keys row differs from the pack's index".to_owned()))
                 }
-                Ok(None) => {
+                Ok(RebuiltKeys::Incomplete) => {
                     return Ok(KeysRowCheck {
                         problems,
                         corrupt,
                         complete: false,
                     });
                 }
-                Err(error) => corrupt.push((path, error)),
+                Ok(RebuiltKeys::HistoryUnreadable(error)) => corrupt.push((path, error)),
+                // As in formats 5 to 7: any other failure is a row problem.
+                Err(error) => problems.push((path, error.to_string())),
             }
         }
         // An unreadable pack's row cannot be checked against its index, but
@@ -5105,6 +5158,7 @@ fn scrub_record(
     loaded: &LoadedPack,
     record: pack2::RecordRef,
     raw: Result<&Vec<u8>, &CasError>,
+    hash: Result<&(), &CasError>,
     whole_files: bool,
 ) -> (String, String, CasResult<()>) {
     match record {
@@ -5121,9 +5175,12 @@ fn scrub_record(
             // are checked by fsck's history projection.
             if pack2::is_history_code(kind) {
                 let name = format!("history:{}", pack2::digest_text(digest));
-                let checked = raw.map_err(Clone::clone).and_then(|block| {
-                    pack2::record_body(block, location, kind, &loaded.path).map(|_| ())
-                });
+                let checked = raw
+                    .and_then(|block| hash.map(|()| block))
+                    .map_err(Clone::clone)
+                    .and_then(|block| {
+                        pack2::record_body(block, location, kind, &loaded.path).map(|_| ())
+                    });
                 return (name.clone(), name, checked);
             }
             let Some(object_kind) = pack2::kind_of_code(kind) else {
@@ -5249,6 +5306,30 @@ fn create_staging_pack(
         staging_dir,
         last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "collision")),
     ))
+}
+
+#[cfg(test)]
+mod recent_block_tests {
+    use super::{RecentBlock, mark_checked};
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    /// Council s31 r2: a check is recorded only on the buffer that was
+    /// hashed, not on other bytes cached under the same key meanwhile.
+    #[test]
+    fn a_check_marks_only_the_buffer_it_hashed() {
+        let hashed = Arc::new(vec![1_u8; 8]);
+        let replaced = Arc::new(vec![1_u8; 8]);
+        let mut recent: VecDeque<RecentBlock> = VecDeque::new();
+        recent.push_front(((0, 7), Arc::clone(&replaced), None));
+        mark_checked(&mut recent, (0, 7), &hashed, true);
+        assert_eq!(recent[0].2, None);
+        mark_checked(&mut recent, (0, 7), &replaced, false);
+        assert_eq!(recent[0].2, Some(false));
+        recent.push_front(((0, 8), Arc::clone(&hashed), None));
+        mark_checked(&mut recent, (0, 8), &hashed, true);
+        assert_eq!(recent[0].2, Some(true));
+    }
 }
 
 #[cfg(test)]
