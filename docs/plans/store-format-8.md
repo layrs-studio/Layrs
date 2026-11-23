@@ -1067,3 +1067,55 @@ No regression beyond noise. git in the same runs: status 52-53, commit
   unexercised until a format 8 Store reads older packs.
 
 Phase 3b is reviewed (three rounds).
+
+## Phase 3c progress (2026-11-23)
+
+- Packs v4 store Step, RepositoryView, Operation and StepObservation
+  records binary (record codec 1, schema v4 draft 9) with one generic codec
+  over their canonical JSON (`cas/value_codec.rs`): tagged values; object
+  keys and common words (schema versions, kinds, statuses, capture
+  reasons) by dictionary index; content ids as 32 bytes; `<prefix>:<uuid>`
+  ids (a fixed prefix table, lowercase canonical UUIDs only) as a code and
+  16 bytes; RFC 3339 UTC times as seconds, digit count and fraction (only
+  when they render back to the same text); a content record's own id (the
+  key names it) as one byte; integers up to 2^53 - 1 as zigzag varints;
+  anything else as text. Decoding rebuilds the value (depth at most 32,
+  counts bounded by the bytes left, a repeated key refused), re-encodes it
+  and requires the same bytes, then returns its JCS bytes, which the
+  existing validators check (`validate_stored_bytes`, the history
+  decoders). `value_binary_expanded_len` gives the exact JCS length
+  without decoding.
+- Writers: `put_compact` encodes a Step or View and decodes it back before
+  comparing or writing it; the pack builder encodes a history record from
+  its canonical bytes and decodes it back; consolidation re-encodes when a
+  target keeps another codec. Readers: content records through
+  `validate_pack_record`; history bodies are decoded where they are read
+  (`history_body`, consolidation copies, `rebuild_keys`, whose logical
+  digests stay over the canonical bytes). Budgets: the audit, fsck's
+  logical pass, the history visit and `rebuild_keys` authorize the
+  canonical growth before decoding; `history_in_space` also bounds the
+  canonical bytes it holds.
+- Tests: `records_round_trip` (real Step, View, Operation and
+  StepObservation spellings, escapes, numbers to 2^53 and beyond, near-miss
+  ids and times; exact expansion) and `binary_values_refuse_other_encodings`
+  (a word spelled as text, a padded varint, a trailing byte, a repeated
+  key, too deep; 20,000 random mutations never panic and anything that
+  decodes re-encodes to itself); the header test covers the new kinds; the
+  history, paging and budget tests find records by their kinds and ids.
+  Suites: store-local 843/843 in formats 8 and 7, client-core 297/297 and
+  CLI 116/116 in format 8.
+
+Measured after 3c (release CLI, maintained, 100 files):
+
+| Steps | Layrs | packs | `layrs.sqlite3` | git |
+| --- | --- | --- | --- | --- |
+| 1,000 | 916 KiB (1048 after 3b) | 568 | 291 | 796 KiB |
+| 2,000 | 1692 KiB (1964) | 1175 | 464 | 1448 KiB |
+| slope | 795 B/Step (938) | | | 668 B/Step |
+
+Pack anatomy at 2,000 Steps (stored bytes per Step): Tree 144, Step 33
+(86), RepositoryView 66 (132), Operation 48 (80), StepObservation 61 (78),
+file records 28; metadata keys 160, file records 44, locations 28, history
+section 12. SQLite's slope is about 177 B/Step (receipts). Next: 3d
+(grouping and block sizes), 3e (receipt key); the gate (0.9 times git)
+likely needs item 4 (shorter keys) too.
