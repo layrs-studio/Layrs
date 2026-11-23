@@ -31,10 +31,10 @@ const RECENT_BYTES: usize = 16 * 1024 * 1024;
 /// Packs whose file records derived data may name by position
 /// (`file_record_ref`): large ones, which consolidation rarely replaces.
 const REFERENCED_PACK_RECORDS: usize = 4096;
-/// A larger block is never kept: a shared block is at most `CLUSTER_BLOCK`
-/// raw bytes (the margin is slack); a larger one holds a single large
-/// record, rarely read again.
-const RECENT_BLOCK_MAX: usize = CLUSTER_BLOCK + 64;
+/// A larger block is never kept: a shared block is at most
+/// `TREE_CLUSTER_BLOCK` raw bytes (the margin is slack); a larger one holds
+/// a single large record, rarely read again.
+const RECENT_BLOCK_MAX: usize = TREE_CLUSTER_BLOCK + 64;
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
 const HELD_PACKS_MAX: usize = 16;
@@ -134,6 +134,10 @@ const CLUSTER_MAX_RAW: u64 = 64 * 1024 * 1024;
 /// phase 0: 256 KiB brings 1,000 versions of a 100-entry folder from 4.7 to
 /// 0.6 KiB per version).
 const CLUSTER_BLOCK: usize = 256 * 1024;
+/// Raw bytes Trees share a block up to in a clustered copy into packs v4
+/// (phase 3d, council s30 item 2): the versions of a folder compress
+/// against more of the ones before them.
+const TREE_CLUSTER_BLOCK: usize = 1024 * 1024;
 
 /// Where a record goes in a clustered copy: its kind, then for a Tree its
 /// first and last entry names (as stored), which the versions of one folder
@@ -148,6 +152,20 @@ fn in_batch_group(code: u8) -> bool {
     code == pack2::kind_code(StoreObjectKind::Step)
         || code == pack2::kind_code(StoreObjectKind::RepositoryView)
         || pack2::is_history_code(code)
+}
+
+/// Where a record sits in its block: copies into packs v4 keep the order
+/// records were written in (phase 3d).
+fn record_offset(index: &pack2::Pack2Index, record: pack2::RecordRef) -> u32 {
+    match record {
+        pack2::RecordRef::Explicit(ordinal) => index
+            .explicit(ordinal)
+            .map_or(0, |(_, _, location)| location.offset),
+        pack2::RecordRef::File(file) => index
+            .files
+            .get(file)
+            .map_or(0, |record| record.location.offset),
+    }
 }
 
 /// A record of a clustered copy: (lineage key, order read, candidate, raw
@@ -1288,6 +1306,13 @@ impl NativeCas {
         if raw_total <= self.cluster_max_raw() {
             return self.copy_clustered(catalog, candidates, open, &whole_files);
         }
+        // Past the clustering bound, into packs v4: records keep the order
+        // they were written in, in blocks of `CLUSTER_BLOCK` (phase 3d,
+        // council s30 item 2).
+        let written_order = open.builder.version() >= pack2::PACK2_VERSION_HISTORY;
+        if written_order {
+            open.builder.set_block_target(CLUSTER_BLOCK);
+        }
         for &position in candidates {
             // Only what the candidate's own bytes prove (corruption, a wrong
             // id, a registered file missing) names it; a plain I/O failure
@@ -1310,9 +1335,12 @@ impl NativeCas {
             let loaded = &registered.pack;
             let index = &loaded.index;
             let keys = loaded.logical_keys().map_err(failed)?;
-            for (block, records) in index.records_by_block().into_iter().enumerate() {
+            for (block, mut records) in index.records_by_block().into_iter().enumerate() {
                 if records.is_empty() {
                     continue;
+                }
+                if written_order {
+                    records.sort_by_key(|record| record_offset(index, *record));
                 }
                 let raw = catalog
                     .checked_block(self, position, block as u32)
@@ -1402,14 +1430,10 @@ impl NativeCas {
                 for record in block_records {
                     let key = cluster_key(loaded, &raws[at], record, written_order);
                     // Into packs v4, by place in the block: the order written.
-                    let order = match (written_order, record) {
-                        (true, pack2::RecordRef::Explicit(ordinal)) => {
-                            (at, index.explicit(ordinal).map_or(0, |(_, _, l)| l.offset))
-                        }
-                        (true, pack2::RecordRef::File(file)) => {
-                            (at, index.files.get(file).map_or(0, |f| f.location.offset))
-                        }
-                        (false, _) => (records.len(), 0),
+                    let order = if written_order {
+                        (at, record_offset(index, record))
+                    } else {
+                        (records.len(), 0)
                     };
                     records.push((key, order, candidate, at, record));
                 }
@@ -1426,7 +1450,25 @@ impl NativeCas {
         open.builder.set_block_target(CLUSTER_BLOCK);
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
-        for (_, _, candidate, at, record) in records {
+        let tree = pack2::kind_code(StoreObjectKind::Tree);
+        let mut group = None;
+        for ((code, _, _), _, candidate, at, record) in records {
+            // Into packs v4, each group starts a block; Trees share blocks
+            // of up to `TREE_CLUSTER_BLOCK` (phase 3d).
+            if written_order && group != Some(code) {
+                if group.is_some() {
+                    let path = open.path.clone();
+                    open.builder
+                        .cut_block(&mut open.sink)
+                        .map_err(|error| general(io_error("write CAS pack", &path, error)))?;
+                }
+                open.builder.set_block_target(if code == tree {
+                    TREE_CLUSTER_BLOCK
+                } else {
+                    CLUSTER_BLOCK
+                });
+                group = Some(code);
+            }
             let position = candidates[candidate];
             self.copy_record(
                 open,

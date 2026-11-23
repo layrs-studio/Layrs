@@ -1289,6 +1289,39 @@ fn replace_history_block(image: &mut [u8]) -> bool {
     false
 }
 
+/// The raw length of each block of a pack v4 image, from its metadata.
+fn block_raw_lengths(image: &[u8]) -> Vec<usize> {
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = &image[meta..meta + meta_len];
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    (0..varint(metadata, &mut cursor))
+        .map(|_| {
+            cursor += 1;
+            let raw = varint(metadata, &mut cursor);
+            varint(metadata, &mut cursor);
+            cursor += 32;
+            raw
+        })
+        .collect()
+}
+
 /// Every explicit record of a pack v4 image: its kind, key, block and
 /// offset in the block, from its metadata.
 fn record_places(image: &[u8]) -> Vec<(u8, [u8; 32], usize, usize)> {
@@ -1771,12 +1804,22 @@ fn history_paging_decompresses_each_consolidated_block_once() {
 /// Phase 3d: a clustered consolidation into packs v4 keeps the order the
 /// records were written in, not their keys' order: the versions of a folder
 /// stay in the order they were made (they then compress against each
-/// other), and each batch's Step and RepositoryView stay together.
+/// other), and each batch's Step and RepositoryView stay together. Trees
+/// share blocks of up to 1 MiB raw, which hold nothing else. A plain copy
+/// (past the clustering bound) keeps the order written too.
 #[test]
 fn consolidation_keeps_versions_and_batches_in_the_order_written() {
+    consolidation_keeps_the_order_written(false);
+    consolidation_keeps_the_order_written(true);
+}
+
+fn consolidation_keeps_the_order_written(plain: bool) {
     let root = TestRoot::new("written-order");
     create(&root.0, "written-order", "8");
-    let mut files: Vec<File> = (0..40)
+    if plain {
+        set_cluster_max_raw(&root.0, Some(0));
+    }
+    let mut files: Vec<File> = (0..120)
         .map(|n| {
             file(
                 &format!("f{n}.txt"),
@@ -1793,7 +1836,7 @@ fn consolidation_keeps_versions_and_batches_in_the_order_written() {
     let mut repository = NativeScmRepository::new(&root.0);
     repository.apply_batch(&batch).unwrap();
     let (mut trees, mut steps, mut views) = (Vec::new(), Vec::new(), Vec::new());
-    for k in 1..=60 {
+    for k in 1..=80 {
         let n = k % files.len();
         files[n] = file(
             &format!("f{n}.txt"),
@@ -1817,16 +1860,29 @@ edit {k}
         repository.apply_batch(&capture).unwrap();
     }
     drop(repository);
-    let MaintenanceOutcome::Consolidated { .. } = maintain(&root.0).unwrap() else {
-        panic!("nothing consolidated");
-    };
+    // The batches' own consolidations or this one: every pack is checked.
+    maintain(&root.0).unwrap();
     let mut places = std::collections::HashMap::new();
+    let mut large_tree_block = false;
     for name in registered_packs(&root.0) {
         let image = fs::read(root.0.join("objects/packs").join(&name)).unwrap();
+        let lengths = block_raw_lengths(&image);
+        let mut kinds_of: std::collections::HashMap<usize, std::collections::BTreeSet<u8>> =
+            Default::default();
         for (kind, key, block, offset) in record_places(&image) {
             places.insert((kind, key), (name.clone(), block, offset));
+            kinds_of.entry(block).or_default().insert(kind);
+        }
+        for (block, kinds) in kinds_of {
+            if kinds.contains(&3) && !plain {
+                // A Tree block holds Trees only; past 256 KiB raw when
+                // there are that many.
+                assert_eq!(kinds.len(), 1, "{name} block {block}: {kinds:?}");
+                large_tree_block |= lengths[block] > 256 * 1024;
+            }
         }
     }
+    assert!(large_tree_block || plain, "no Tree block past 256 KiB");
     let place = |kind: u8, key: &[u8; 32]| places.get(&(kind, *key)).unwrap().clone();
     // In each pack, each folder version after the one before it; most of
     // them in one consolidated pack.

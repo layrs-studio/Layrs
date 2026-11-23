@@ -1544,6 +1544,11 @@ impl Pack2Builder {
         self.block_target = target.clamp(BLOCK_TARGET, MAX_RECORD_BYTES);
     }
 
+    /// Ends the block being filled: the next record starts a new one.
+    pub(super) fn cut_block(&mut self, out: &mut impl Write) -> io::Result<()> {
+        self.flush(out)
+    }
+
     /// Whether a record of `body_len` bytes gets a block of its own here.
     fn alone(&self, body_len: usize) -> bool {
         record_header(0, CODEC_CANONICAL, body_len).len() + body_len > self.block_target

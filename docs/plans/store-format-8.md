@@ -1269,3 +1269,19 @@ the slope and 82 B per Step on the total. Next: Tree blocks of 1 MiB (about
 -47 B/Step, after the latency gate), then 3e (about -55 B/Step: a 17-byte
 receipt key brings a receipt row from 116 to 80 bytes, VACUUM about 19 B per
 Step, measured on a copy of the metadata).
+
+Then (Tree blocks, plain copy):
+
+- A clustered copy into packs v4 starts a block at each group (files, Trees,
+  the batch group, the other kinds) and lets Trees share blocks of up to
+  1 MiB raw (`TREE_CLUSTER_BLOCK`); the other groups keep 256 KiB. A block
+  of Trees holds nothing else, so a history read never decompresses Trees.
+- The recent-block cache keeps blocks of up to 1 MiB (`RECENT_BLOCK_MAX`),
+  within the same 16 MiB.
+- Past the clustering bound (64 MiB of candidates), the plain copy into
+  packs v4 keeps each block's records in the order written, in blocks of
+  256 KiB (s30: the copy path past 64 MiB takes the large block target too).
+- Test: the same test, clustered and plain (`set_cluster_max_raw(0)`); in
+  the clustered run, a Tree block holds Trees only and one passes 256 KiB
+  raw (120 files, 80 versions). It fails with Trees at 256 KiB, without the
+  block cut between groups, and without the plain copy's order.
