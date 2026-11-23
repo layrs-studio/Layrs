@@ -936,8 +936,12 @@ impl Context<'_> {
                 }
                 AuditEvent::Copy(copy) => copy,
             };
-            self.report.checked_objects = self.report.checked_objects.saturating_add(1);
-            // Reported before the envelope scan.
+            if !copy.block_level {
+                self.report.checked_objects = self.report.checked_objects.saturating_add(1);
+            }
+            // Reported before the envelope scan. A block that failed its
+            // registered hash is reported here (council s31 r3): its content
+            // records may all pass their ids.
             if copy.pack_level {
                 return true;
             }

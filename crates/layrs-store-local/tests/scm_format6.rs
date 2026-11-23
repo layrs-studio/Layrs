@@ -1372,7 +1372,7 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
         let mut entities = capture.entity_records().to_vec();
         entities.push(EntityRecord::StepObservation(StepObservation::new(
             ObservationId::parse("observation:replaced-block").unwrap(),
-            step,
+            step.clone(),
             Some(lane.space.id().clone()),
             Some(operation.clone()),
             None,
@@ -1468,17 +1468,36 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
             "blake3:{}",
             blake3::Hash::from(blake3::derive_key("layrs history key v1", &input)).to_hex()
         );
-        // The audit reports the block once and fails its history records.
+        // The audit reports the block once and fails its history records
+        // only: the Step beside them in the block still passes its id.
         let scrub = NativeCas::open(&store).unwrap().scrub().unwrap();
         let messages: Vec<&str> = scrub
             .issues
             .iter()
             .map(|issue| issue.message.as_str())
             .collect();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.contains("registered hash")
+                    && !message.starts_with("history:"))
+                .count(),
+            1,
+            "scrub, inline {inline}: {messages:#?}"
+        );
         assert!(
             messages
                 .iter()
-                .any(|message| message.contains("registered hash")),
+                .all(|message| !message.contains(&step.to_string()[7..])),
+            "scrub, inline {inline}: {messages:#?}"
+        );
+        // Every other issue is a history record's: no content record of the
+        // block fails on its hash.
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.starts_with("history:")
+                    || (message.contains("registered hash") && !message.contains("history:"))),
             "scrub, inline {inline}: {messages:#?}"
         );
         assert!(
@@ -1514,6 +1533,27 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
                 .findings
                 .iter()
                 .all(|finding| finding.code != FsckFindingCode::CasPackKeysMismatch),
+            "fsck, inline {inline}: {:#?}",
+            report.findings
+        );
+        // fsck reports the block itself too, and never the Step.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == FsckFindingCode::CasCorruption
+                    && finding
+                        .object_id
+                        .as_deref()
+                        .is_some_and(|object| object.starts_with("block "))),
+            "fsck, inline {inline}: {:#?}",
+            report.findings
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.object_id.as_deref() != Some(step.to_string().as_str())),
             "fsck, inline {inline}: {:#?}",
             report.findings
         );

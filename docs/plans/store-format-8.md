@@ -857,3 +857,31 @@ Fixed:
 Later (Opus, scope note): compute the keys rows' history digests during
 the audit pass, which already reads and checks every block once, to drop
 one decompress-and-hash pass from fsck.
+
+## Council s31 r3 (2026-11-23, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 | 8/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 8/10 | 8/10 | 9/10 (ship) |
+
+- Fixed (P2 Astra, Sol): the audit's block-hash event was marked
+  pack-level, which fsck skips as already reported; a block whose content
+  records all pass their ids (a wrong registered hash) would leave fsck
+  clean while scrub and consolidation refuse it. The event is now
+  `block_level`: fsck reports it as `CasCorruption` on "block N", and
+  neither fsck nor scrub counts it as a checked copy (Opus P3). The
+  replaced-block test asserts the fsck finding (a mutation that skips it
+  fails the test).
+- Fixed (Opus P3): the test requires exactly one block-level scrub issue
+  and every other issue a history record's. Not pinned: that content
+  records sharing a failed block still pass by id. In format 8 the writers
+  put this test's history in a block of its own; the mutation that fails
+  content on the hash is not caught. The code keeps the scope.
+- Accepted (Opus P3): the budget test does not pin that only history bytes
+  are charged (charging more stops earlier and passes); documented here.
+- Later: keys digests computed during the audit pass (one decompress and
+  hash pass fewer, and history charged once).
+
+Phase 3a is reviewed (three rounds, the last with only these fixes).

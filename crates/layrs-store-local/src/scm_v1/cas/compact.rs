@@ -2026,6 +2026,9 @@ pub(crate) struct AuditedCopy {
     pub(crate) result: CasResult<()>,
     /// The whole registered pack is unreadable (its records unnamed).
     pub(crate) pack_level: bool,
+    /// One block failed its registered hash (packs v4): reported for the
+    /// block, not counted as a copy (council s31 r3).
+    pub(crate) block_level: bool,
 }
 
 /// An audit's next step: the bytes it is about to read and decode (so the
@@ -4755,7 +4758,9 @@ impl NativeCas {
             let AuditEvent::Copy(copy) = event else {
                 return true;
             };
-            report.checked_objects += 1;
+            if !copy.block_level {
+                report.checked_objects += 1;
+            }
             if let Err(error) = copy.result {
                 report.issues.push(CasScrubIssue {
                     path: copy.path,
@@ -4793,6 +4798,7 @@ impl RegisteredCatalog {
                 message_prefix: String::new(),
                 result: Err(error),
                 pack_level: true,
+                block_level: false,
             })
         };
         for row in &self.rows {
@@ -4887,7 +4893,8 @@ impl RegisteredCatalog {
                         object: format!("block {block}"),
                         message_prefix: String::new(),
                         result: Err(error.clone()),
-                        pack_level: true,
+                        pack_level: false,
+                        block_level: true,
                     };
                     if !event(AuditEvent::Copy(copy)) {
                         return;
@@ -4907,6 +4914,7 @@ impl RegisteredCatalog {
                         message_prefix: format!("{name}: "),
                         result,
                         pack_level: false,
+                        block_level: false,
                     };
                     if !event(AuditEvent::Copy(copy)) {
                         return;
@@ -4962,6 +4970,7 @@ impl RegisteredCatalog {
                     object,
                     result,
                     pack_level: false,
+                    block_level: false,
                 },
                 Err(error) => AuditedCopy {
                     path: self_path(),
@@ -4969,6 +4978,7 @@ impl RegisteredCatalog {
                     message_prefix: String::new(),
                     result: Err(error),
                     pack_level: false,
+                    block_level: false,
                 },
             };
             if !event(AuditEvent::Copy(copy)) {
