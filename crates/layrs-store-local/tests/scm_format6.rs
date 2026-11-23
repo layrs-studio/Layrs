@@ -1795,6 +1795,168 @@ fn rebuilding_keys_rows_stops_at_the_fsck_budget() {
     );
 }
 
+/// The codec byte of every Tree record in a pack image (packs v2 to v4).
+fn tree_record_codecs(image: &[u8]) -> Vec<u8> {
+    let version = u32::from_le_bytes(image[8..12].try_into().unwrap());
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = &image[meta..meta + meta_len];
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    let mut blocks = Vec::new();
+    let mut offset = 16;
+    for _ in 0..varint(metadata, &mut cursor) {
+        let flags = metadata[cursor];
+        cursor += 1;
+        let raw_len = varint(metadata, &mut cursor);
+        let stored_len = varint(metadata, &mut cursor);
+        if version >= 4 {
+            cursor += 32;
+        }
+        let stored = &image[offset + 5..offset + 5 + stored_len];
+        offset += 5 + stored_len + 8;
+        blocks.push(if flags & 1 != 0 {
+            stored.to_vec()
+        } else {
+            zstd::bulk::decompress(stored, raw_len).unwrap()
+        });
+    }
+    let mut codecs = Vec::new();
+    for _ in 0..varint(metadata, &mut cursor) {
+        let kind = metadata[cursor];
+        cursor += 1;
+        let count = varint(metadata, &mut cursor);
+        cursor += 32 * count;
+        for _ in 0..count {
+            let block = varint(metadata, &mut cursor);
+            let record = varint(metadata, &mut cursor);
+            let _length = varint(metadata, &mut cursor);
+            if kind == 3 {
+                assert_eq!(blocks[block][record], 3);
+                codecs.push(blocks[block][record + 1]);
+            }
+        }
+    }
+    codecs
+}
+
+fn tree_codecs_of(root: &Path) -> Vec<u8> {
+    registered_packs(root)
+        .iter()
+        .flat_map(|name| {
+            tree_record_codecs(&fs::read(root.join("objects/packs").join(name)).unwrap())
+        })
+        .collect()
+}
+
+/// Phase 3b (council s32): a format 8 Store writes its Tree records binary
+/// (codec 1); format 7 keeps them JCS (codec 0). A Tree put again is the
+/// copy already stored (compared in its binary form), not a second record.
+#[test]
+fn format_8_writes_binary_trees_and_reuses_them() {
+    for (format, codec) in [("7", 0_u8), ("8", 1_u8)] {
+        let root = TestRoot::new("tree-codec");
+        create(&root.0, "tree-codec", format);
+        let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+        let (lane, batch) = Lane::begin("tree-codec", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        let codecs = tree_codecs_of(&root.0);
+        assert!(!codecs.is_empty(), "format {format}");
+        assert!(
+            codecs.iter().all(|found| *found == codec),
+            "format {format}: {codecs:?}"
+        );
+        let tree = batch
+            .canonical_objects()
+            .iter()
+            .find_map(|object| match object {
+                CanonicalObject::Tree(tree) => Some(tree.clone()),
+                _ => None,
+            })
+            .unwrap();
+        repository
+            .apply_batch(&carrying(
+                "tree-codec-again",
+                lane.space.id(),
+                vec![CanonicalObject::Tree(tree.clone())],
+                false,
+            ))
+            .unwrap();
+        assert_eq!(
+            tree_codecs_of(&root.0).len(),
+            codecs.len(),
+            "format {format}"
+        );
+        assert_eq!(repository.get_tree(tree.id()).unwrap(), Some(tree));
+        drop(repository);
+        assert_fsck_clean(&root.0);
+    }
+}
+
+/// Council s32: budgets charge a binary Tree's expanded size. A Tree of
+/// 20,000 entries sharing a 200-byte prefix is under 1 MB binary and about
+/// 7 MB canonical: fsck with a 4 MiB budget stops in its audit before
+/// decoding it, where it charged only the binary bytes before.
+#[test]
+fn fsck_charges_a_binary_tree_its_expanded_size() {
+    let root = TestRoot::new("tree-expanded");
+    create(&root.0, "tree-expanded", "8");
+    let (lane, batch) = Lane::begin("tree-expanded", &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    // Every entry names one File the batch carries too.
+    let shared = file("shared.txt", b"shared", Recipe::Fixed);
+    let prefix = "p".repeat(200);
+    let entries = (0..20_000)
+        .map(|n| {
+            TreeEntry::new(
+                RepoPathComponent::parse(format!("{prefix}{n:05}")).unwrap(),
+                TreeEntryTarget::file(shared.manifest.file_id().clone()),
+                false,
+            )
+        })
+        .collect();
+    let tree = Tree::new(entries).unwrap();
+    let mut objects = file_objects(std::slice::from_ref(&shared));
+    objects.push(CanonicalObject::Tree(tree));
+    repository
+        .apply_batch(&carrying(
+            "tree-expanded-big",
+            lane.space.id(),
+            objects,
+            true,
+        ))
+        .unwrap();
+    drop(repository);
+    assert_fsck_clean(&root.0);
+    let report = fsck_existing(&root.0, FsckOptions { max_findings: 1 }).unwrap();
+    assert!(report.is_truncated(), "{:#?}", report.findings);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("pack envelopes")),
+        "{:#?}",
+        report.findings
+    );
+}
+
 /// Format 8: history records are never admitted; fsck reports a bitmap
 /// that admits one (council s28).
 #[test]

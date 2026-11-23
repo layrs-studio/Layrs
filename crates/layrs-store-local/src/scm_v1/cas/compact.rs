@@ -1733,8 +1733,21 @@ impl NativeCas {
                 let body = pack2::record_body(raw, location, code, index.version, &loaded.path)?;
                 let object =
                     validate_pack_record(index.version, &object_id, body, self.whole_files)?;
+                let target = open.builder.version();
+                let reencoded = if pack2::record_codec(index.version, code)
+                    == pack2::record_codec(target, code)
+                {
+                    None
+                } else {
+                    Some(match &object {
+                        CanonicalObject::Tree(tree) if pack2::binary_trees(target) => {
+                            encode_tree_binary(tree)
+                        }
+                        other => encode_object(other)?,
+                    })
+                };
                 open.builder
-                    .add_record(sink, kind, id, body, None)
+                    .add_record(sink, kind, id, reencoded.as_deref().unwrap_or(body), None)
                     .map_err(write)?;
                 if let CanonicalObject::FileManifest(manifest) = &object {
                     let file_raw = pack2::hex_digest(
@@ -2948,11 +2961,40 @@ impl RegisteredCatalog {
         Ok(true)
     }
 
-    /// Canonical byte length of `id`'s first copy, from metadata only.
+    /// Stored byte length of `id`'s first copy, from metadata only: the
+    /// canonical length, except a packs-v4 Tree's binary body, which expands
+    /// when decoded (`expanded_length`).
     pub(crate) fn stored_length(&self, id: &StoreObjectId) -> CasResult<Option<u64>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
             return self.complete(|| object_keys(id), None);
         };
+        self.placement_length(id, placement).map(Some)
+    }
+
+    /// What decoding `id`'s first copy costs: a binary Tree's expanded
+    /// size (its body read to bound it), else its stored length (council
+    /// s32: budgets charge expanded sizes).
+    pub(crate) fn expanded_length(
+        &self,
+        cas: &NativeCas,
+        id: &StoreObjectId,
+    ) -> CasResult<Option<u64>> {
+        let Some(placement) = self.placements(id)?.into_iter().next() else {
+            return self.complete(|| object_keys(id), None);
+        };
+        if let Placement::Record { pack, ordinal } = placement {
+            let loaded = &self.packs[pack].pack;
+            let (code, _, location) = loaded
+                .index
+                .explicit(ordinal)
+                .ok_or_else(|| corruption(id, "pack record vanished"))?;
+            if pack2::record_codec(loaded.index.version, code) == pack2::CODEC_BINARY {
+                let body = self.body(cas, pack, code, location)?;
+                return tree_binary_expanded_len(&body)
+                    .map(Some)
+                    .ok_or_else(|| corruption(id, "binary Tree record: malformed entries"));
+            }
+        }
         self.placement_length(id, placement).map(Some)
     }
 
@@ -4296,23 +4338,24 @@ impl NativeCas {
         let bytes = encode_object(object)?;
         let bytes_len = bytes.len() as u64;
         let mut first_error = None;
-        // Packs v4 store a Tree in its binary form, as unique as its JCS one.
-        let stored_form = match object {
-            CanonicalObject::Tree(tree)
-                if pack2::binary_trees(pack2::version_for_store(
-                    self.whole_files,
-                    self.bitmap_admissions,
-                )) =>
-            {
-                Some(encode_tree_binary(tree))
+        // Packs v4 store a Tree in its binary form, its one stored form
+        // there: encoded once, and decoded back as its id before anything
+        // compares or writes it (council s30, s32).
+        let version = pack2::version_for_store(self.whole_files, self.bitmap_admissions);
+        let binary = match object {
+            CanonicalObject::Tree(tree) if pack2::binary_trees(version) => {
+                let binary = encode_tree_binary(tree);
+                decode_tree_binary(&object_id, &binary)?;
+                Some(binary)
             }
             _ => None,
         };
+        let stored_form: &[u8] = binary.as_deref().unwrap_or(&bytes);
         for placement in catalog.placements(&object_id)? {
             // A copy stored byte for byte as this object's canonical encoding
             // (which hashes to its id) is that object: no decoding needed.
             if let Ok(Some(stored)) = catalog.stored_bytes(self, placement) {
-                if stored == bytes || stored_form.as_deref() == Some(stored.as_slice()) {
+                if stored == stored_form {
                     crate::perf::count("cas.compact_reuse", 1);
                     return Ok(Slot::Done(InstallOutcome {
                         path: self.object_path(&object_id)?,
@@ -4460,23 +4503,13 @@ impl NativeCas {
         }
         let record_kind = if planned.is_some() { FILE_KIND } else { code };
         // Packs v4: a Tree's record is its binary form (phase 3b).
-        let version = pack2::version_for_store(self.whole_files, self.bitmap_admissions);
-        let binary = match object {
-            CanonicalObject::Tree(tree) if pack2::binary_trees(version) => {
-                Some(encode_tree_binary(tree))
-            }
-            _ => None,
-        };
-        let body: &[u8] = binary.as_deref().unwrap_or(&bytes);
+        let body: &[u8] = stored_form;
         let encoded = if pack2::is_large(body.len()) {
             let _span = crate::perf::span("cas.encode_large");
             Some(
-                pack2::EncodedBlock::single_record(
-                    record_kind,
-                    pack2::record_codec(version, record_kind),
-                    body,
-                )
-                .map_err(|error| io_error("compress CAS pack block", &self.staging_dir, error))?,
+                pack2::EncodedBlock::single_record(record_kind, version, body).map_err(
+                    |error| io_error("compress CAS pack block", &self.staging_dir, error),
+                )?,
             )
         } else {
             None
@@ -4952,6 +4985,36 @@ impl RegisteredCatalog {
                     }
                 }
                 for record in records {
+                    // A binary Tree expands when decoded: the auditor
+                    // authorizes the difference first (council s32).
+                    if let (Ok(block), pack2::RecordRef::Explicit(ordinal)) = (&raw, record) {
+                        if let Some((code, _, location)) = loaded.index.explicit(ordinal) {
+                            if pack2::record_codec(loaded.index.version, code)
+                                == pack2::CODEC_BINARY
+                            {
+                                let extra = pack2::record_body(
+                                    block,
+                                    location,
+                                    code,
+                                    loaded.index.version,
+                                    &loaded.path,
+                                )
+                                .ok()
+                                .and_then(tree_binary_expanded_len)
+                                .map_or(0, |expanded| {
+                                    expanded.saturating_sub(u64::from(location.length))
+                                });
+                                if extra > 0
+                                    && !event(AuditEvent::Block {
+                                        envelope_bytes: extra,
+                                        chunk_bytes: 0,
+                                    })
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     let (object, name, result) = scrub_record(
                         &loaded,
                         record,

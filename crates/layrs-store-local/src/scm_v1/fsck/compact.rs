@@ -993,7 +993,8 @@ impl Context<'_> {
                 self.object_ids.insert(id_text, object_id);
                 continue;
             }
-            let length = match catalog.stored_length(&object_id) {
+            // What decoding it costs (a binary Tree expands; council s32).
+            let length = match catalog.expanded_length(&cas, &object_id) {
                 Ok(length) => length.unwrap_or_default(),
                 Err(error) => {
                     self.finding(

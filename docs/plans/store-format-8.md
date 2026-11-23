@@ -922,3 +922,64 @@ Pack anatomy at 2,000 Steps (stored bytes per Step): Tree 127 (383 before),
 RepositoryView 132, Step 86, Operation 80, StepObservation 78, file records
 16; metadata: keys 158, file records 44, locations 29, history section 12
 (71 before). Next: 3c (the other four kinds), 3d, 3e.
+
+## Council s32 r1 (code review of 3b, 2026-11-23)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 (ship after fixes) |
+
+Fixed:
+
+- (P2, all three) The writer's reuse shortcut accepted a copy equal to the
+  Tree's JCS bytes, which a v4 Tree record never holds. It compares the
+  one stored form of the placement's codec only.
+- (P2, all three) s30's gate "the writer decodes every codec-1 record
+  before sealing": `put_compact` encodes a Tree once and decodes it back as
+  its id before comparing or writing it. Consolidation copies decode every
+  body they copy (`validate_pack_record`).
+- (P2, all three) Budgets charge expanded sizes: `tree_binary_expanded_len`
+  bounds the canonical envelope a binary Tree decodes to (288 bytes plus,
+  per entry, 152 and its escaped name; the randomized test checks the bound
+  against the encoder); the audit authorizes the difference before it
+  decodes such a record; fsck's logical pass charges `expanded_length`; the
+  decoder refuses a body whose canonical form would pass the pack Tree
+  limit before building any entry. Test
+  `fsck_charges_a_binary_tree_its_expanded_size` (20,000 entries sharing a
+  200-byte prefix, under 1 MB binary and about 7 MB canonical: fsck with a
+  4 MiB budget stops in its audit; without the audit's charge it fails).
+- (P2 Astra, Sol) Clustering and decoding walk names with one bounded
+  buffer (`walk_tree_binary`): a name over 1,020 bytes (255 scalars), a
+  shared prefix longer than the previous name or an empty suffix is
+  refused as it is read, so a malformed record costs no more than its
+  bytes.
+- (P2 Opus) Decoders fuzzed: `binary_tree_decoding_holds_under_random_input`
+  (2,000 random valid Trees with non-ASCII, quote and control names up to
+  255 scalars, round trip and expansion bound; 16,000 random mutations and
+  random bodies never panic, and whatever decodes is the Tree its id names
+  in its one encoding), with a deterministic generator (no fuzzing crate is
+  available offline).
+- (P2 Opus) A consolidation copy re-encodes from the validated object when
+  its target pack keeps another codec for the kind (latent until 2d).
+- (P2 Opus) Tests: `format_8_writes_binary_trees_and_reuses_them` (format 8
+  Tree records are codec 1, format 7 codec 0; a Tree put again adds no
+  record), `record_headers_carry_the_codec_of_their_version` (a codec-0
+  Tree header in v4, a codec-1 one in v3, a codec-1 Step: refused by
+  `record_body`, which every read, the audit and consolidation use). The
+  pack2 fixture writes its Tree binary.
+- (P3 Opus) `validate_pack_record` dispatches on `record_codec`;
+  `single_record` takes the pack version; the Tree is encoded once; names
+  are allocated once; `stored_length`'s doc says what it measures.
+
+Not done: an end-to-end pack holding a JCS body under codec 1 (no writer
+can produce one now that every fresh encoding is decoded before it is
+written; `record_body` and the reuse comparison are the gates).
+
+Latency gate at 10,000 files (format 8, release, two runs each, 3a then
+3b, ms): status 23-28 / 20-33, step 66 / 65-70, room new 1231-1265 /
+1235-1393, room step 78 / 74-82, fast-forward 55 / 53-60, second merge
+55-56 / 55-58, three-way merge 222-233 / 203-209, room drop 95-106 /
+96-115: no regression beyond noise; the Store is smaller (1412 against
+1556 KiB after the bench). 99,000 files: not run yet.

@@ -97,6 +97,68 @@ const TREE_EXECUTABLE: u8 = 8;
 /// The smallest encoded entry: shared length, suffix length, one name
 /// byte, the tag, the digest.
 const TREE_ENTRY_MIN: usize = 1 + 1 + 1 + 1 + 32;
+/// The longest valid entry name: 255 Unicode scalars of up to 4 bytes.
+const TREE_NAME_MAX: usize = 255 * 4;
+/// A Tree envelope's bytes beside its entries (278), and an entry's beside
+/// its escaped name (149 with its comma, for the longest target spelling),
+/// rounded up: bounds the randomized test checks against the encoder.
+const TREE_ENVELOPE_BYTES: u64 = 288;
+const TREE_ENTRY_BYTES: u64 = 152;
+
+/// A name's bytes once escaped in JCS (a bound: a control byte as `\u00XX`).
+fn escaped_len(name: &[u8]) -> u64 {
+    name.iter()
+        .map(|byte| match byte {
+            b'"' | b'\\' => 2,
+            0..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Walks a binary Tree record's entries with one bounded name buffer: each
+/// name rebuilt (at most `TREE_NAME_MAX` bytes, never a shared prefix
+/// longer than the previous name, never an empty suffix), with its tag and
+/// digest. `None` when the body is not entries of that shape.
+fn walk_tree_binary(
+    body: &[u8],
+    mut entry: impl FnMut(&[u8], u8, &[u8; 32]) -> Option<()>,
+) -> Option<u64> {
+    let mut at = 0;
+    let count = take_varint(body, &mut at)?;
+    if count > (body.len() / TREE_ENTRY_MIN) as u64 {
+        return None;
+    }
+    let mut name: Vec<u8> = Vec::with_capacity(64);
+    for _ in 0..count {
+        let shared = usize::try_from(take_varint(body, &mut at)?).ok()?;
+        let suffix = usize::try_from(take_varint(body, &mut at)?).ok()?;
+        if shared > name.len() || suffix == 0 || shared + suffix > TREE_NAME_MAX {
+            return None;
+        }
+        let end = at.checked_add(suffix).filter(|end| *end <= body.len())?;
+        name.truncate(shared);
+        name.extend_from_slice(&body[at..end]);
+        at = end;
+        let tag = *body.get(at)?;
+        let digest: &[u8; 32] = body.get(at + 1..at + 33)?.try_into().ok()?;
+        at += 33;
+        entry(&name, tag, digest)?;
+    }
+    (at == body.len()).then_some(count)
+}
+
+/// A bound on the canonical (JCS) envelope a binary Tree record expands
+/// to: what budgets charge for it, and what its decoder refuses past the
+/// pack Tree limit (council s32). `None` for a malformed body.
+pub(super) fn tree_binary_expanded_len(body: &[u8]) -> Option<u64> {
+    let mut expanded = TREE_ENVELOPE_BYTES;
+    walk_tree_binary(body, |name, _, _| {
+        expanded = expanded.saturating_add(escaped_len(name) + TREE_ENTRY_BYTES);
+        Some(())
+    })?;
+    Some(expanded)
+}
 
 /// Packs v4 (format 8, phase 3b, council s30): a Tree record's body. The
 /// record's id is its key; the body is the entry count, then per entry the
@@ -152,59 +214,51 @@ pub(super) fn decode_tree_binary(
     body: &[u8],
 ) -> CasResult<CanonicalObject> {
     let bad = |reason: &str| corruption(expected, format!("binary Tree record: {reason}"));
-    let mut at = 0;
-    let count = take_varint(body, &mut at).ok_or_else(|| bad("truncated count"))?;
-    // Bounded before anything is allocated for it.
-    if count > (body.len() / TREE_ENTRY_MIN) as u64 {
-        return Err(bad("more entries than its bytes hold"));
+    // Shape and size first, with one bounded buffer: no entry is built for a
+    // body whose canonical form would not fit a pack (it belongs loose).
+    let expanded = tree_binary_expanded_len(body).ok_or_else(|| bad("malformed entries"))?;
+    if expanded > pack2::MAX_TREE_RECORD_BYTES as u64 {
+        return Err(bad("its canonical form exceeds the pack Tree limit"));
     }
-    let mut entries = Vec::with_capacity(count as usize);
+    let mut entries: Vec<TreeEntry> = Vec::new();
     let mut previous: Vec<u8> = Vec::new();
-    for index in 0..count {
-        let shared = take_varint(body, &mut at).ok_or_else(|| bad("truncated entry"))?;
-        let suffix = take_varint(body, &mut at).ok_or_else(|| bad("truncated entry"))?;
-        if shared > previous.len() as u64 || suffix == 0 {
-            return Err(bad("entry name out of bounds"));
+    let mut failure: Option<CasError> = None;
+    walk_tree_binary(body, |name, tag, digest| {
+        let built = (|| {
+            if !entries.is_empty() && name <= previous.as_slice() {
+                return Err(bad("names are not strictly increasing"));
+            }
+            let target = match tag & !TREE_EXECUTABLE {
+                TREE_FILE => TreeEntryTarget::file(FileId::from_digest_bytes(digest)),
+                TREE_TREE => TreeEntryTarget::tree(TreeId::from_digest_bytes(digest)),
+                TREE_CONFLICT => TreeEntryTarget::conflict(ConflictId::from_digest_bytes(digest)),
+                TREE_SYMLINK => TreeEntryTarget::symlink(SymlinkId::from_digest_bytes(digest)),
+                TREE_TOMBSTONE => {
+                    TreeEntryTarget::tombstone(TombstoneId::from_digest_bytes(digest))
+                }
+                _ => return Err(bad("unknown entry tag")),
+            };
+            let text = String::from_utf8(name.to_vec()).map_err(|_| bad("name is not UTF-8"))?;
+            let component = RepoPathComponent::parse(text)
+                .map_err(|error| bad(&format!("invalid name: {error}")))?;
+            entries.push(TreeEntry::new(
+                component,
+                target,
+                tag & TREE_EXECUTABLE != 0,
+            ));
+            previous.clear();
+            previous.extend_from_slice(name);
+            Ok(())
+        })();
+        match built {
+            Ok(()) => Some(()),
+            Err(error) => {
+                failure = Some(error);
+                None
+            }
         }
-        let end = usize::try_from(suffix)
-            .ok()
-            .and_then(|suffix| at.checked_add(suffix))
-            .filter(|end| *end <= body.len())
-            .ok_or_else(|| bad("truncated name"))?;
-        let mut name = previous[..shared as usize].to_vec();
-        name.extend_from_slice(&body[at..end]);
-        at = end;
-        if index > 0 && name <= previous {
-            return Err(bad("names are not strictly increasing"));
-        }
-        let tag = *body.get(at).ok_or_else(|| bad("truncated tag"))?;
-        at += 1;
-        let digest: [u8; 32] = body
-            .get(at..at + 32)
-            .and_then(|digest| digest.try_into().ok())
-            .ok_or_else(|| bad("truncated digest"))?;
-        at += 32;
-        let target = match tag & !TREE_EXECUTABLE {
-            TREE_FILE => TreeEntryTarget::file(FileId::from_digest_bytes(&digest)),
-            TREE_TREE => TreeEntryTarget::tree(TreeId::from_digest_bytes(&digest)),
-            TREE_CONFLICT => TreeEntryTarget::conflict(ConflictId::from_digest_bytes(&digest)),
-            TREE_SYMLINK => TreeEntryTarget::symlink(SymlinkId::from_digest_bytes(&digest)),
-            TREE_TOMBSTONE => TreeEntryTarget::tombstone(TombstoneId::from_digest_bytes(&digest)),
-            _ => return Err(bad("unknown entry tag")),
-        };
-        let text = std::str::from_utf8(&name).map_err(|_| bad("name is not UTF-8"))?;
-        let component = RepoPathComponent::parse(text)
-            .map_err(|error| bad(&format!("invalid name: {error}")))?;
-        entries.push(TreeEntry::new(
-            component,
-            target,
-            tag & TREE_EXECUTABLE != 0,
-        ));
-        previous = name;
-    }
-    if at != body.len() {
-        return Err(bad("trailing bytes"));
-    }
+    })
+    .ok_or_else(|| failure.take().unwrap_or_else(|| bad("malformed entries")))?;
     let tree = Tree::new(entries).map_err(|error| bad(&error.to_string()))?;
     let object = CanonicalObject::Tree(tree);
     let actual = object.object_id();
@@ -224,25 +278,20 @@ pub(super) fn decode_tree_binary(
 }
 
 /// The first and last entry names of a binary Tree record, as stored (an
-/// ordering key only: `None` for a malformed body).
+/// ordering key only: `None` for a malformed body). Bounded like the
+/// decoder: one name buffer, names of at most `TREE_NAME_MAX` bytes.
 pub(super) fn tree_binary_bounds(body: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let mut at = 0;
-    let count = take_varint(body, &mut at)?;
-    let mut first = None;
-    let mut previous: Vec<u8> = Vec::new();
-    for _ in 0..count.min((body.len() / TREE_ENTRY_MIN) as u64) {
-        let shared = usize::try_from(take_varint(body, &mut at)?).ok()?;
-        let suffix = usize::try_from(take_varint(body, &mut at)?).ok()?;
-        let end = at.checked_add(suffix).filter(|end| *end <= body.len())?;
-        let mut name = previous.get(..shared)?.to_vec();
-        name.extend_from_slice(&body[at..end]);
-        at = end + 1 + 32;
+    let mut first: Option<Vec<u8>> = None;
+    let mut last: Vec<u8> = Vec::new();
+    walk_tree_binary(body, |name, _, _| {
         if first.is_none() {
-            first = Some(name.clone());
+            first = Some(name.to_vec());
         }
-        previous = name;
-    }
-    Some((first.unwrap_or_default(), previous))
+        last.clear();
+        last.extend_from_slice(name);
+        Some(())
+    })?;
+    Some((first.unwrap_or_default(), last))
 }
 
 /// A pack record's object, decoded from its body as the kind's codec in a
@@ -254,10 +303,10 @@ pub(super) fn validate_pack_record(
     body: &[u8],
     whole_files: bool,
 ) -> CasResult<CanonicalObject> {
-    if matches!(expected, StoreObjectId::Tree(_)) && pack2::binary_trees(version) {
-        return decode_tree_binary(expected, body);
+    match pack2::record_codec(version, pack2::kind_code(expected.kind())) {
+        pack2::CODEC_BINARY => decode_tree_binary(expected, body),
+        _ => validate_stored_bytes(expected, body, whole_files),
     }
-    validate_stored_bytes(expected, body, whole_files)
 }
 
 pub(super) fn encode_object(object: &CanonicalObject) -> CasResult<Vec<u8>> {
@@ -776,5 +825,161 @@ mod tree_binary_tests {
             decode_tree_binary(&expected, &other),
             Err(CasError::IdMismatch { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod tree_binary_fuzz {
+    use super::*;
+
+    /// A small deterministic generator (xorshift64*): no crate needed, the
+    /// same cases on every run.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound.max(1)
+        }
+    }
+
+    const ALPHABET: &[&str] = &[
+        "a",
+        "b",
+        "z",
+        "0",
+        "9",
+        ".",
+        "-",
+        "_",
+        " ",
+        "~",
+        "\u{e9}",
+        "\u{fc}",
+        "\u{3b1}",
+        "\u{4e2d}",
+        "\u{1f600}",
+        "\"",
+        "\u{1}",
+        "\t",
+    ];
+
+    fn name(rng: &mut Rng) -> String {
+        let length = if rng.below(50) == 0 {
+            200 + rng.below(56)
+        } else {
+            1 + rng.below(12)
+        };
+        (0..length)
+            .map(|_| ALPHABET[rng.below(ALPHABET.len() as u64) as usize])
+            .collect()
+    }
+
+    fn random_tree(rng: &mut Rng) -> Tree {
+        let mut entries = Vec::new();
+        let mut names = std::collections::BTreeSet::new();
+        for _ in 0..rng.below(40) {
+            let candidate = name(rng);
+            let Ok(component) = RepoPathComponent::parse(candidate.clone()) else {
+                continue;
+            };
+            if !names.insert(candidate) {
+                continue;
+            }
+            let mut digest = [0_u8; 32];
+            for byte in &mut digest {
+                *byte = rng.next() as u8;
+            }
+            let target = match rng.below(5) {
+                0 => TreeEntryTarget::file(FileId::from_digest_bytes(&digest)),
+                1 => TreeEntryTarget::tree(TreeId::from_digest_bytes(&digest)),
+                2 => TreeEntryTarget::conflict(ConflictId::from_digest_bytes(&digest)),
+                3 => TreeEntryTarget::symlink(SymlinkId::from_digest_bytes(&digest)),
+                _ => TreeEntryTarget::tombstone(TombstoneId::from_digest_bytes(&digest)),
+            };
+            entries.push(TreeEntry::new(component, target, rng.below(2) == 0));
+        }
+        Tree::new(entries).unwrap()
+    }
+
+    /// Council s32: random valid Trees round-trip and bound their expansion;
+    /// random damage to their bodies (and random bodies) never panics, and
+    /// anything that decodes is exactly the Tree its id names, in its one
+    /// encoding.
+    #[test]
+    fn binary_tree_decoding_holds_under_random_input() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..2000 {
+            let tree = random_tree(&mut rng);
+            let id = StoreObjectId::Tree(tree.id().clone());
+            let body = encode_tree_binary(&tree);
+            assert_eq!(
+                decode_tree_binary(&id, &body).unwrap(),
+                CanonicalObject::Tree(tree.clone())
+            );
+            let expanded = tree_binary_expanded_len(&body).unwrap();
+            let actual = tree_envelope(&tree).unwrap().len() as u64;
+            assert!(expanded >= actual, "{expanded} < {actual}");
+            for _ in 0..8 {
+                let mut damaged = body.clone();
+                match rng.below(4) {
+                    0 if !damaged.is_empty() => {
+                        let at = rng.below(damaged.len() as u64) as usize;
+                        damaged[at] ^= 1 << rng.below(8);
+                    }
+                    1 => {
+                        let at = rng.below(damaged.len() as u64 + 1) as usize;
+                        damaged.insert(at, rng.next() as u8);
+                    }
+                    2 if !damaged.is_empty() => {
+                        let at = rng.below(damaged.len() as u64) as usize;
+                        damaged.remove(at);
+                    }
+                    _ => {
+                        let at = rng.below(damaged.len() as u64 + 1) as usize;
+                        damaged.truncate(at);
+                    }
+                }
+                if let Ok(decoded) = decode_tree_binary(&id, &damaged) {
+                    let CanonicalObject::Tree(decoded) = decoded else {
+                        panic!("not a Tree");
+                    };
+                    assert_eq!(decoded.id(), tree.id());
+                    assert_eq!(encode_tree_binary(&decoded), damaged);
+                }
+                let _ = tree_binary_bounds(&damaged);
+                let _ = tree_binary_expanded_len(&damaged);
+            }
+            let garbage: Vec<u8> = (0..rng.below(200)).map(|_| rng.next() as u8).collect();
+            assert!(decode_tree_binary(&id, &garbage).is_err() || garbage == body);
+        }
+    }
+
+    /// Council s32: a name longer than any valid name, rebuilt from shared
+    /// prefixes, is refused before it grows (the walk never holds more than
+    /// one bounded name).
+    #[test]
+    fn binary_tree_names_are_bounded_while_walking() {
+        let mut body = Vec::new();
+        put_varint(&mut body, 3);
+        for (shared, suffix) in [
+            (0_usize, vec![b'a'; 1000]),
+            (1000, vec![b'b'; 21]),
+            (0, vec![b'c']),
+        ] {
+            put_varint(&mut body, shared as u64);
+            put_varint(&mut body, suffix.len() as u64);
+            body.extend_from_slice(&suffix);
+            body.push(TREE_FILE);
+            body.extend_from_slice(&[7; 32]);
+        }
+        assert!(tree_binary_bounds(&body).is_none());
+        assert!(tree_binary_expanded_len(&body).is_none());
+        let id = StoreObjectId::Tree(Tree::new(vec![]).unwrap().id().clone());
+        assert!(decode_tree_binary(&id, &body).is_err());
     }
 }

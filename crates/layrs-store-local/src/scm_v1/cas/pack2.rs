@@ -132,7 +132,7 @@ pub(super) const FILE_KIND: u8 = 10;
 const CODEC_CANONICAL: u8 = 0;
 /// Packs v4 (phase 3b, council s30): a Tree record in its binary form
 /// (`codec::encode_tree_binary`).
-const CODEC_BINARY: u8 = 1;
+pub(super) const CODEC_BINARY: u8 = 1;
 
 /// The one codec a record of kind `code` has in a pack of `version`: binary
 /// for Trees in packs v4, canonical JCS (or raw bytes) for everything else.
@@ -1346,9 +1346,9 @@ impl EncodedBlock {
     }
 
     /// One record alone in its block (bodies larger than a shared block),
-    /// with the codec of its kind in its pack's version.
-    pub(super) fn single_record(kind: u8, codec: u8, body: &[u8]) -> io::Result<Self> {
-        let mut raw = record_header(kind, codec, body.len());
+    /// with the codec of its kind in a pack of `version`.
+    pub(super) fn single_record(kind: u8, version: u32, body: &[u8]) -> io::Result<Self> {
+        let mut raw = record_header(kind, record_codec(version, kind), body.len());
         raw.extend_from_slice(body);
         Self::encode(&raw)
     }
@@ -1540,7 +1540,7 @@ impl Pack2Builder {
             self.flush(out)?;
             let block = match encoded {
                 Some(block) => block,
-                None => EncodedBlock::single_record(kind, record_codec(self.version, kind), body)?,
+                None => EncodedBlock::single_record(kind, self.version, body)?,
             };
             let index = self.append_block(out, block)?;
             return Ok(location_of(index, 0, length));
@@ -1553,6 +1553,11 @@ impl Pack2Builder {
         self.block.extend_from_slice(&header);
         self.block.extend_from_slice(body);
         Ok(location_of(self.blocks.len() as u32, offset, length))
+    }
+
+    /// This pack's version (its records' codecs follow from it).
+    pub(super) fn version(&self) -> u32 {
+        self.version
     }
 
     pub(super) fn add_record(
@@ -2043,14 +2048,16 @@ mod tests {
             .open(&path)
             .unwrap();
         let mut builder = Pack2Builder::start_for(&mut file, true, true).unwrap();
-        let tree = CanonicalObject::Tree(Tree::new(vec![]).unwrap());
+        let empty = Tree::new(vec![]).unwrap();
+        let tree = CanonicalObject::Tree(empty.clone());
         let tree_id = id_of(&tree.object_id());
+        // Packs v4 hold Trees in their binary form (phase 3b).
         builder
             .add_record(
                 &mut file,
                 StoreObjectKind::Tree,
                 tree_id,
-                &encode_object(&tree).unwrap(),
+                &encode_tree_binary(&empty),
                 None,
             )
             .unwrap();
@@ -2133,6 +2140,32 @@ mod tests {
         raw_digest(object).unwrap()
     }
 
+    /// Phase 3b: each record's header carries its kind's one codec in its
+    /// pack's version; a Tree record in packs v4 is binary, elsewhere JCS,
+    /// and either spelling in the other version is refused.
+    #[test]
+    fn record_headers_carry_the_codec_of_their_version() {
+        let tree = kind_code(StoreObjectKind::Tree);
+        let step = kind_code(StoreObjectKind::Step);
+        let path = Path::new("pack");
+        let location = location_of(0, 0, 3);
+        let block = |kind: u8, codec: u8| [vec![kind, codec, 3], b"abc".to_vec()].concat();
+        for (version, kind, codec, accepted) in [
+            (PACK2_VERSION_HISTORY, tree, CODEC_BINARY, true),
+            (PACK2_VERSION_HISTORY, tree, CODEC_CANONICAL, false),
+            (PACK2_VERSION_LARGE_TREES, tree, CODEC_CANONICAL, true),
+            (PACK2_VERSION_LARGE_TREES, tree, CODEC_BINARY, false),
+            (PACK2_VERSION_HISTORY, step, CODEC_CANONICAL, true),
+            (PACK2_VERSION_HISTORY, step, CODEC_BINARY, false),
+        ] {
+            assert_eq!(
+                record_body(&block(kind, codec), location, kind, version, path).is_ok(),
+                accepted,
+                "version {version}, kind {kind}, codec {codec}"
+            );
+        }
+    }
+
     fn read(written: &Written, index: &Pack2Index, kind: u8, location: Location) -> Vec<u8> {
         let block = read_block(&written.file, &written.path, index, location.block).unwrap();
         record_body(&block, location, kind, index.version, &written.path)
@@ -2156,7 +2189,7 @@ mod tests {
                     .unwrap();
             }
             let id = id_of(&StoreObjectId::ChunkRaw(large.id().clone()));
-            let encoded = EncodedBlock::single_record(1, CODEC_CANONICAL, large.bytes()).unwrap();
+            let encoded = EncodedBlock::single_record(1, PACK2_VERSION, large.bytes()).unwrap();
             builder
                 .add_record(
                     file,
