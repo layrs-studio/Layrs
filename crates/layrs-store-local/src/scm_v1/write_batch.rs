@@ -50,6 +50,8 @@ const RECEIPT_APPLIED: &str = "applied";
 /// Compact receipt version and outcome bytes (format 8).
 const COMPACT_RECEIPT_V1: u8 = 1;
 const COMPACT_APPLIED: u8 = 1;
+/// Bytes of the tag binding a compact receipt to its row (council s29 r2).
+const COMPACT_TAG_LEN: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,8 +81,11 @@ impl ApplyBatchReceipt {
     }
 
     /// Format 8's compact receipt (council s25, phase 2c): a version, the
-    /// outcome and the four counts as LEB128; the transaction id and request
-    /// digest are the row's key and digest columns.
+    /// outcome, the four counts as LEB128 and an 8-byte tag. The transaction
+    /// id and request digest are the row's key and digest columns; the tag
+    /// binds the receipt to both, so damage to either column, or to the
+    /// receipt, is corruption rather than another row's receipt (council
+    /// s29: a request digest does not cover the transaction id).
     pub(crate) fn compact_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![COMPACT_RECEIPT_V1, COMPACT_APPLIED];
         for count in [
@@ -100,7 +105,25 @@ impl ApplyBatchReceipt {
                 bytes.push(byte | 0x80);
             }
         }
+        let tag = self.compact_tag(&bytes);
+        bytes.extend_from_slice(&tag);
         bytes
+    }
+
+    /// The tag of a compact receipt whose other bytes are `head`.
+    fn compact_tag(&self, head: &[u8]) -> [u8; COMPACT_TAG_LEN] {
+        let mut hasher = blake3::Hasher::new_derive_key("layrs compact receipt tag v1");
+        for field in [
+            self.transaction_id.as_bytes(),
+            self.request_digest.as_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
+        hasher.update(head);
+        let mut tag = [0; COMPACT_TAG_LEN];
+        tag.copy_from_slice(&hasher.finalize().as_bytes()[..COMPACT_TAG_LEN]);
+        tag
     }
 
     /// The receipt a compact row stores (`compact_bytes`), or why not.
@@ -109,7 +132,12 @@ impl ApplyBatchReceipt {
         request_digest: &str,
         bytes: &[u8],
     ) -> Result<Self, String> {
-        let [COMPACT_RECEIPT_V1, COMPACT_APPLIED, rest @ ..] = bytes else {
+        let head = bytes
+            .len()
+            .checked_sub(COMPACT_TAG_LEN)
+            .map(|at| &bytes[..at])
+            .ok_or("compact receipt is truncated")?;
+        let [COMPACT_RECEIPT_V1, COMPACT_APPLIED, rest @ ..] = head else {
             return Err("unknown compact receipt version or outcome".into());
         };
         let mut counts = [0_usize; 4];
@@ -146,9 +174,10 @@ impl ApplyBatchReceipt {
             admission_count: counts[2],
             mutation_count: counts[3],
         };
-        // Its encoding is the only one (no padded varints).
+        // Its encoding is the only one (no padded varints), and its tag is
+        // that of this row's transaction id and request digest.
         if receipt.compact_bytes() != bytes {
-            return Err("compact receipt is not canonical".into());
+            return Err("compact receipt is not canonical or not this row's".into());
         }
         Ok(receipt)
     }
@@ -215,21 +244,34 @@ mod tests {
         ] {
             let expected = receipt(counts);
             let bytes = expected.compact_bytes();
-            assert!((6..=42).contains(&bytes.len()), "{counts:?}");
+            assert!((14..=50).contains(&bytes.len()), "{counts:?}");
             assert_eq!(decode(&bytes).unwrap(), expected, "{counts:?}");
         }
         let bytes = receipt([1, 2, 3, 4]).compact_bytes();
-        assert_eq!(bytes, [1, 1, 1, 2, 3, 4]);
+        assert_eq!(bytes[..6], [1, 1, 1, 2, 3, 4]);
+        assert_eq!(bytes.len(), 14);
+        let tag = &bytes[6..];
+        let tagged = |head: &[u8]| [head, tag].concat();
+        // Each damaged form keeps the tag of the exact receipt.
         for damaged in [
-            vec![2, 1, 1, 2, 3, 4],
-            vec![1, 2, 1, 2, 3, 4],
-            vec![1, 1, 1, 2, 3],
-            vec![1, 1, 1, 2, 3, 4, 0],
-            vec![1, 1, 1, 2, 3, 0x84, 0],
-            vec![1, 1, 1, 2, 3, 0x84],
-            [vec![1, 1, 1, 2, 3], vec![0xff; 10], vec![1]].concat(),
+            tagged(&[2, 1, 1, 2, 3, 4]),
+            tagged(&[1, 2, 1, 2, 3, 4]),
+            tagged(&[1, 1, 1, 2, 3]),
+            tagged(&[1, 1, 1, 2, 3, 4, 0]),
+            tagged(&[1, 1, 1, 2, 3, 0x84, 0]),
+            tagged(&[1, 1, 1, 2, 3, 0x84]),
+            tagged(&[1, 1, 1, 2, 3, 5]),
+            tagged(&[vec![1, 1, 1, 2, 3], vec![0xff; 10], vec![1]].concat()),
+            [bytes.as_slice(), &[0]].concat(),
+            bytes[..13].to_vec(),
+            bytes[..7].to_vec(),
         ] {
             assert!(decode(&damaged).is_err(), "{damaged:?}");
         }
+        // The tag binds the transaction id and the request digest.
+        let digest = format!("blake3:{}", "ab".repeat(32));
+        assert!(ApplyBatchReceipt::from_compact("transaction:compacu", &digest, &bytes).is_err());
+        let other = format!("blake3:{}", "ac".repeat(32));
+        assert!(ApplyBatchReceipt::from_compact("transaction:compact", &other, &bytes).is_err());
     }
 }

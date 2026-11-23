@@ -506,14 +506,16 @@ default flip (2e).
 ## Phase 2c: compact receipts (2026-11-23)
 
 Format 8's `applied_transactions` keeps the request digest as its 32 bytes
-and the receipt as a version byte, the outcome byte and the four counts in
-LEB128 (`ApplyBatchReceipt::compact_bytes`, 6 to 42 bytes, `WITHOUT ROWID`).
+and the receipt as a version byte, the outcome byte, the four counts in
+LEB128 and an 8-byte tag (`ApplyBatchReceipt::compact_bytes`, 14 to 50
+bytes, `WITHOUT ROWID`; the tag since council s29 r2).
 The transaction id and the digest are the row's own, so decoding
 (`from_compact`) rebuilds the same `ApplyBatchReceipt` that formats 5 to 7
 keep as JCS, and only the canonical encoding decodes (no padded varints, no
 trailing bytes, the tenth byte holds bit 63 only). Replay and VFS recovery
-read both through `repository::read_receipt`; replay compares the digest
-before it decodes the receipt, as before (another digest is a replay
+read both through `repository::read_receipt`, which decodes the receipt;
+replay compares the digest before it reports a decoding failure, so the
+errors come in the same order as before (another digest is a replay
 mismatch, a damaged receipt is corruption). Schema v4 draft 6.
 
 Not done from the s25 sketch: the reversible binary transaction key. Ids are
@@ -567,3 +569,30 @@ Steps (stored bytes per Step): Tree 383, RepositoryView 130, Step 78,
 Operation 74, StepObservation 74, file records 8; pack metadata 293 (keys 150,
 history section about 71 of which 64 are record digests, file records 43,
 locations 28). Phase 3 must halve the slope; see its design.
+
+## Council s29 r2 (2026-11-23)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 9/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 8/10 | 9/10 (ship) |
+
+- Fixed (Sol P2, contesting rejection 1): a request digest does not cover
+  the transaction id, so one damaged bit in a row's key (`transaction:40`
+  read as `transaction:41`) made the same content under the new id replay
+  as applied, with no deliberate edit. The compact receipt now ends with an
+  8-byte tag, blake3 (derived key "layrs compact receipt tag v1") of the
+  transaction id, the request digest and the receipt's other bytes; a
+  receipt decodes only under its own row's id and digest, so damage to the
+  key, the digest or the receipt is corruption. Astra's digest-substitution
+  case is covered by the same tag. Rows are 8 bytes longer (14 to 50).
+  Regression: the row's key moved, the same content under the new id is
+  `corruption` (`format_8_replays_from_compact_receipts_and_refuses_damaged_ones`).
+- Fixed (Opus P3): `baseline_for_format`'s doc is back on it; the pinned VFS
+  test also checks an exact receipt under another digest (fails closed,
+  capture pending).
+- Fixed (Astra, Sol P3): the plan and the test comment say what is ordered
+  (the digest compare comes before a decoding failure is reported).
+- Later (Opus scope note): a format 8 fsck could decode every receipt (at
+  most 50 bytes each); no format checks receipts in fsck today.

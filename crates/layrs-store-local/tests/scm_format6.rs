@@ -1099,7 +1099,7 @@ fn a_replay_beside_its_lost_history_pack_takes_no_sequence() {
 }
 
 /// Format 8 keeps compact receipts (phase 2c): a replay decodes them; another
-/// request digest is a replay mismatch before the receipt is decoded; a
+/// request digest is a replay mismatch even when the receipt does not decode; a
 /// receipt that does not decode exactly, or disagrees with the batch, is
 /// corruption.
 #[test]
@@ -1122,8 +1122,10 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
         .unwrap();
     assert_eq!(digest, batch.request_digest().as_bytes().to_vec());
     assert_eq!(original[..2], [1, 1]);
+    // Version, outcome, four one-byte counts, then the 8-byte tag.
+    let head = original.len() - 8;
     assert!(
-        original[2..].iter().all(|byte| *byte < 0x7f),
+        original[2..head].iter().all(|byte| *byte < 0x7f),
         "{original:?}"
     );
     let set = |digest: &[u8], receipt: &[u8]| {
@@ -1139,12 +1141,12 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
             .unwrap();
     };
     let replay = || NativeScmRepository::new(&root.0).apply_batch(&batch);
-    set(&[0; 32], &[9, 9, 0, 0, 0, 0]);
+    set(&[0; 32], &[9; 14]);
     assert_eq!(replay().unwrap_err().code(), "transaction_replay_mismatch");
-    let last = original.len() - 1;
-    let mut padded = original.clone();
-    padded[last] |= 0x80;
+    let mut padded = original[..head].to_vec();
+    padded[head - 1] |= 0x80;
     padded.push(0);
+    padded.extend_from_slice(&original[head..]);
     let mut miscounted = original.clone();
     miscounted[2] += 1;
     let mut versioned = original.clone();
@@ -1163,7 +1165,37 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
     }
     set(&digest, &original);
     assert!(replay().unwrap().was_replay());
-    assert_fsck_clean(&root.0);
+    // A damaged transaction id (council s29): the same content under the
+    // id the row now carries is corruption, not a replay; the request
+    // digest does not cover the id, the receipt's tag does.
+    let moved = TransactionId::new(format!("{id}-moved")).unwrap();
+    let same_content = WriteBatch::new(
+        moved.clone(),
+        batch.canonical_objects().to_vec(),
+        batch.entity_records().to_vec(),
+        batch.admissions().to_vec(),
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(same_content.request_digest(), batch.request_digest());
+    let connection = sql(&root.0);
+    connection
+        .execute(
+            "UPDATE applied_transactions SET transaction_id=?1 WHERE transaction_id=?2",
+            rusqlite::params![moved.as_str(), id],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&same_content)
+            .unwrap_err()
+            .code(),
+        "corruption"
+    );
 }
 
 /// Format 8: history records are never admitted; fsck reports a bitmap

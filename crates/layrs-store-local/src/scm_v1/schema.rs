@@ -101,9 +101,9 @@ pub fn schema_v3_checksum() -> String {
 pub const SCHEMA_V4_VERSION: u32 = 4;
 pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft6";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "fda9e81e112d7570438a9286a17528decf55a76b2bc00fe885e76b2968f6139c";
+    "aa0cad80ca675783fb88b2a1d57d8585b05ad410b7f0967db5b731b5a44e67f2";
 pub const SCHEMA_V4_FINGERPRINT: &str =
-    "0e1b2117a5a6d20d310b8a637203cbb1b7286c081028204ef35869edae35876d";
+    "59ad5d88bbd43e9d8f7e9fa808ab2a88b22f2a9aa4311648392d72daa440be37";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
 
 pub fn schema_v4_checksum() -> String {
@@ -250,8 +250,6 @@ pub const BASELINE_V3: Baseline = Baseline {
     auto_vacuum: true,
 };
 
-/// The baseline of a Store of `format_version` (formats 6 and 7: v3;
-/// format 8: v4; else v2).
 /// Whether a Store of `format_version` keeps compact replay receipts: its
 /// schema is v4 (format 8, phase 2c). Every reader and writer of
 /// `applied_transactions` asks this.
@@ -259,6 +257,8 @@ pub(crate) fn compact_receipts(format_version: u32) -> bool {
     baseline_for_format(format_version).version == BASELINE_V4.version
 }
 
+/// The baseline of a Store of `format_version` (formats 6 and 7: v3;
+/// format 8: v4; else v2).
 pub fn baseline_for_format(format_version: u32) -> &'static Baseline {
     if format_version == super::format::HISTORY_FORMAT_VERSION {
         return &BASELINE_V4;

@@ -558,13 +558,30 @@ fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
         );
         assert!(journal.state().pending_capture.is_some());
     }
+    // An exact receipt under another request digest fails closed too.
     let committed = super::super::open_exclusive(&store_root).unwrap();
     committed
         .begin_write_connection()
         .unwrap()
         .execute(
-            "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
-            rusqlite::params![exact, expected.transaction_id],
+            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
+            rusqlite::params![vec![0_u8; 32], exact, expected.transaction_id],
+        )
+        .unwrap();
+    drop(committed);
+    assert!(journal.resolve_capture(&NoVfsJournalFaults).is_err());
+    assert!(journal.state().pending_capture.is_some());
+    let committed = super::super::open_exclusive(&store_root).unwrap();
+    committed
+        .begin_write_connection()
+        .unwrap()
+        .execute(
+            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
+            rusqlite::params![
+                digest_bytes(&expected.request_digest),
+                exact,
+                expected.transaction_id
+            ],
         )
         .unwrap();
     drop(committed);
