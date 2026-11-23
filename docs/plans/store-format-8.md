@@ -584,8 +584,9 @@ locations 28). Phase 3 must halve the slope; see its design.
   as applied, with no deliberate edit. The compact receipt now ends with an
   8-byte tag, blake3 (derived key "layrs compact receipt tag v1") of the
   transaction id, the request digest and the receipt's other bytes; a
-  receipt decodes only under its own row's id and digest, so damage to the
-  key, the digest or the receipt is corruption. Astra's digest-substitution
+  receipt decodes only under its own row's id and digest: a damaged key or
+  receipt is corruption, and a damaged digest stays a replay mismatch (replay
+  compares the digest first, as formats 5 to 7). Astra's digest-substitution
   case is covered by the same tag. Rows are 8 bytes longer (14 to 50).
   Regression: the row's key moved, the same content under the new id is
   `corruption` (`format_8_replays_from_compact_receipts_and_refuses_damaged_ones`).
@@ -596,3 +597,19 @@ locations 28). Phase 3 must halve the slope; see its design.
   (the digest compare comes before a decoding failure is reported).
 - Later (Opus scope note): a format 8 fsck could decode every receipt (at
   most 50 bytes each); no format checks receipts in fsck today.
+
+## Council s29 r3 (2026-11-23, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 9/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 9/10 | 8/10 | 9/10 (ship) |
+| Claude Opus 5.5 (xhigh) | 8/10 | 9/10 | 9/10 (ship) |
+
+No P0, P1 or P2. Opus's two P3 are fixed: the receipt doc and the plan say
+that a damaged digest stays a replay mismatch (only a damaged key or
+receipt is corruption), and the VFS test's padded form pads the last count,
+not the tag. The replay test checks fsck before it moves the row's key.
+Phase 2c is reviewed. Later: a format 8 fsck that decodes every receipt;
+the reversible transaction key; the 2d conversion check of each JCS
+receipt against its row.

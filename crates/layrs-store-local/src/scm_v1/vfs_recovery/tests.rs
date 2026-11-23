@@ -523,10 +523,12 @@ fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
         )
         .unwrap();
     let exact = expected.receipt.compact_bytes();
-    let mut padded = exact.clone();
-    let last = padded.len() - 1;
-    padded[last] |= 0x80;
+    // The counts end 8 bytes before the end (the tag follows them).
+    let head = exact.len() - 8;
+    let mut padded = exact[..head].to_vec();
+    padded[head - 1] |= 0x80;
     padded.push(0);
+    padded.extend_from_slice(&exact[head..]);
     let mut versioned = exact.clone();
     versioned[0] = 2;
     let committed = super::super::open_exclusive(&store_root).unwrap();

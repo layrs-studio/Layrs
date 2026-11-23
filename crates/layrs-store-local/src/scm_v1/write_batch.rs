@@ -83,9 +83,10 @@ impl ApplyBatchReceipt {
     /// Format 8's compact receipt (council s25, phase 2c): a version, the
     /// outcome, the four counts as LEB128 and an 8-byte tag. The transaction
     /// id and request digest are the row's key and digest columns; the tag
-    /// binds the receipt to both, so damage to either column, or to the
-    /// receipt, is corruption rather than another row's receipt (council
-    /// s29: a request digest does not cover the transaction id).
+    /// binds the receipt to both, so it decodes under no other id or digest
+    /// (council s29: a request digest does not cover the transaction id).
+    /// Replay compares the digest first, so it still reports a damaged
+    /// digest as a replay mismatch; a damaged key or receipt is corruption.
     pub(crate) fn compact_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![COMPACT_RECEIPT_V1, COMPACT_APPLIED];
         for count in [

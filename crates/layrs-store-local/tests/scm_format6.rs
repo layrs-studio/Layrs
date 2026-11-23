@@ -1165,6 +1165,7 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
     }
     set(&digest, &original);
     assert!(replay().unwrap().was_replay());
+    assert_fsck_clean(&root.0);
     // A damaged transaction id (council s29): the same content under the
     // id the row now carries is corruption, not a replay; the request
     // digest does not cover the id, the receipt's tag does.
