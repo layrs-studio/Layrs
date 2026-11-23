@@ -252,6 +252,13 @@ pub const BASELINE_V3: Baseline = Baseline {
 
 /// The baseline of a Store of `format_version` (formats 6 and 7: v3;
 /// format 8: v4; else v2).
+/// Whether a Store of `format_version` keeps compact replay receipts: its
+/// schema is v4 (format 8, phase 2c). Every reader and writer of
+/// `applied_transactions` asks this.
+pub(crate) fn compact_receipts(format_version: u32) -> bool {
+    baseline_for_format(format_version).version == BASELINE_V4.version
+}
+
 pub fn baseline_for_format(format_version: u32) -> &'static Baseline {
     if format_version == super::format::HISTORY_FORMAT_VERSION {
         return &BASELINE_V4;

@@ -631,7 +631,7 @@ impl NativeScmRepository {
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
         // objects supplied by the losing request. This is safe by contract:
         // no metadata points at them and normal reachability GC may remove them.
-        if let Some(outcome) = replay(connection, batch, !cas.reader().object_projections())? {
+        if let Some(outcome) = replay(connection, batch, cas.reader().compact_receipts())? {
             return Ok(outcome);
         }
         self.hit(RepositoryFaultPoint::AfterReplayCheck)?;
@@ -774,7 +774,7 @@ impl NativeScmRepository {
         drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
-        if projections {
+        if !cas.reader().compact_receipts() {
             let receipt_json = canonical_receipt_json(&receipt).map_err(schema_backend)?;
             guard.execute(
                 "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
@@ -976,7 +976,7 @@ fn replay(
     else {
         return Ok(None);
     };
-    // The digest is compared before the receipt is decoded.
+    // The digest is compared before a decoding failure is reported.
     if digest != batch.request_digest().to_string() {
         return Err(StoreError::TransactionReplayMismatch {
             transaction_id: batch.transaction_id().clone(),

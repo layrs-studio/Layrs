@@ -1060,7 +1060,7 @@ fn acceptance_receipt_matches(
     expected_receipt: &ApplyBatchReceipt,
 ) -> io::Result<bool> {
     store.verify_filesystem_identity()?;
-    let compact = store.format_version() == super::HISTORY_FORMAT_VERSION;
+    let compact = super::schema::compact_receipts(store.format_version());
     let row = super::repository::read_receipt(
         &*store.connection().map_err(io::Error::other)?,
         transaction_id,

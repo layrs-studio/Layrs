@@ -303,6 +303,8 @@ pub struct NativeCas {
     /// Format 8: every object kind is admitted by the pack bitmaps and
     /// `space_loose_admissions` (no `space_object_admissions`).
     bitmap_admissions: bool,
+    /// Schema v4: `applied_transactions` keeps compact receipts.
+    compact_receipts: bool,
     /// Format 6: the Store id this view was opened for; a scrub reopening
     /// the database authenticates it (council s8 r2).
     store_id: Option<layrs_core::scm::StoreId>,
@@ -489,6 +491,7 @@ impl NativeCas {
             cas.compact_format = true;
             cas.whole_files = store.whole_files();
             cas.bitmap_admissions = store.bitmap_admissions();
+            cas.compact_receipts = super::schema::compact_receipts(store.format_version());
             cas.store_id = Some(store.store_id().clone());
             let connection = store.try_connection().map_err(|error| {
                 io_error(
@@ -524,6 +527,11 @@ impl NativeCas {
     /// Whether every object kind is admitted by the bitmaps (format 8).
     pub(crate) fn bitmap_admissions(&self) -> bool {
         self.bitmap_admissions
+    }
+
+    /// Whether `applied_transactions` keeps compact receipts (schema v4).
+    pub(crate) fn compact_receipts(&self) -> bool {
+        self.compact_receipts
     }
 
     /// Whether this Store keeps object projections (`objects`, edges,
@@ -598,6 +606,7 @@ impl NativeCas {
         cas.compact_format = store.compact();
         cas.whole_files = store.whole_files();
         cas.bitmap_admissions = store.bitmap_admissions();
+        cas.compact_receipts = super::schema::compact_receipts(store.format_version());
         cas.store_id = store.compact().then(|| store.store_id().clone());
         store
             .verify_filesystem_identity()
@@ -728,6 +737,7 @@ impl NativeCas {
             compact_format: false,
             whole_files: false,
             bitmap_admissions: false,
+            compact_receipts: false,
             store_id: None,
             compact: None,
             compact_batch: Arc::default(),
@@ -1803,6 +1813,7 @@ impl<'store> NativeCasWriter<'store> {
             cas.compact_format = true;
             cas.whole_files = store.whole_files();
             cas.bitmap_admissions = store.bitmap_admissions();
+            cas.compact_receipts = super::schema::compact_receipts(store.format_version());
             cas.store_id = Some(store.store_id().clone());
             let catalog = match writer {
                 Some(writer) => compact::RegisteredCatalog::load(writer, &cas)?,

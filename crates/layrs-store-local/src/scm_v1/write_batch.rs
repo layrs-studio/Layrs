@@ -43,6 +43,14 @@ pub(crate) fn no_faults() -> Arc<dyn RepositoryFaultInjector> {
     Arc::new(NoRepositoryFaults)
 }
 
+/// The receipt schema; a compact receipt's version byte 1 stands for it.
+const RECEIPT_SCHEMA: &str = "layrs.apply-batch-receipt.v1";
+/// The one outcome a receipt records; the compact outcome byte 1.
+const RECEIPT_APPLIED: &str = "applied";
+/// Compact receipt version and outcome bytes (format 8).
+const COMPACT_RECEIPT_V1: u8 = 1;
+const COMPACT_APPLIED: u8 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ApplyBatchReceipt {
@@ -59,8 +67,8 @@ pub(crate) struct ApplyBatchReceipt {
 impl ApplyBatchReceipt {
     pub(crate) fn new(batch: &WriteBatch) -> Self {
         Self {
-            schema_version: "layrs.apply-batch-receipt.v1".into(),
-            outcome: "applied".into(),
+            schema_version: RECEIPT_SCHEMA.into(),
+            outcome: RECEIPT_APPLIED.into(),
             transaction_id: batch.transaction_id().to_string(),
             request_digest: batch.request_digest().to_string(),
             object_count: batch.canonical_objects().len(),
@@ -74,7 +82,7 @@ impl ApplyBatchReceipt {
     /// outcome and the four counts as LEB128; the transaction id and request
     /// digest are the row's key and digest columns.
     pub(crate) fn compact_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![1_u8, 1_u8];
+        let mut bytes = vec![COMPACT_RECEIPT_V1, COMPACT_APPLIED];
         for count in [
             self.object_count,
             self.entity_count,
@@ -101,7 +109,7 @@ impl ApplyBatchReceipt {
         request_digest: &str,
         bytes: &[u8],
     ) -> Result<Self, String> {
-        let [1, 1, rest @ ..] = bytes else {
+        let [COMPACT_RECEIPT_V1, COMPACT_APPLIED, rest @ ..] = bytes else {
             return Err("unknown compact receipt version or outcome".into());
         };
         let mut counts = [0_usize; 4];
@@ -129,8 +137,8 @@ impl ApplyBatchReceipt {
             return Err("compact receipt has trailing bytes".into());
         }
         let receipt = Self {
-            schema_version: "layrs.apply-batch-receipt.v1".into(),
-            outcome: "applied".into(),
+            schema_version: RECEIPT_SCHEMA.into(),
+            outcome: RECEIPT_APPLIED.into(),
             transaction_id: transaction_id.to_owned(),
             request_digest: request_digest.to_owned(),
             object_count: counts[0],
@@ -151,8 +159,8 @@ impl ApplyBatchReceipt {
         digest: RequestDigest,
         batch: &WriteBatch,
     ) -> Result<(), StoreError> {
-        if self.schema_version != "layrs.apply-batch-receipt.v1"
-            || self.outcome != "applied"
+        if self.schema_version != RECEIPT_SCHEMA
+            || self.outcome != RECEIPT_APPLIED
             || self.transaction_id != transaction_id.as_str()
             || self.request_digest != digest.to_string()
             || self.object_count != batch.canonical_objects().len()
@@ -172,12 +180,12 @@ impl ApplyBatchReceipt {
 
 #[cfg(test)]
 mod tests {
-    use super::ApplyBatchReceipt;
+    use super::{ApplyBatchReceipt, RECEIPT_APPLIED, RECEIPT_SCHEMA};
 
     fn receipt(counts: [usize; 4]) -> ApplyBatchReceipt {
         ApplyBatchReceipt {
-            schema_version: "layrs.apply-batch-receipt.v1".into(),
-            outcome: "applied".into(),
+            schema_version: RECEIPT_SCHEMA.into(),
+            outcome: RECEIPT_APPLIED.into(),
             transaction_id: "transaction:compact".into(),
             request_digest: format!("blake3:{}", "ab".repeat(32)),
             object_count: counts[0],

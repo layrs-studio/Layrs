@@ -2,7 +2,7 @@ use super::*;
 
 /// Whether `store` keeps compact receipts (format 8, phase 2c).
 fn compact_receipts(store: &super::super::NativeStoreExclusive) -> bool {
-    store.format_version() == super::super::HISTORY_FORMAT_VERSION
+    super::super::schema::compact_receipts(store.format_version())
 }
 
 fn digest_bytes(digest: &str) -> Vec<u8> {
@@ -458,6 +458,122 @@ fn legacy_capture_below_capacity_requires_receipt_for_replayed_lineage() {
         open(false).unwrap().state().provider_capture_baseline(),
         Some((&expected.operation_id, &expected.step_id))
     );
+    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Format 8 whatever `LAYRS_STORE_FORMAT` selects: a compact receipt that
+/// does not decode exactly fails closed and leaves the capture pending; the
+/// exact one resolves it (phase 2c).
+#[test]
+fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
+    let root = std::env::temp_dir().join(format!(
+        "layrs-vfs-compact-receipt-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let store_root = root.join("store");
+    let store_id = StoreId::parse("store:compact-receipt").unwrap();
+    let worktree_id = WorktreeId::parse("worktree:compact-receipt").unwrap();
+    drop(
+        super::super::init_with_format(
+            &store_root,
+            store_id.clone(),
+            super::super::HISTORY_FORMAT_VERSION,
+        )
+        .unwrap(),
+    );
+    let identity = PinnedDirectory::open(&store_root).unwrap().identity_token();
+    let metadata = PinnedDirectory::open(&store_root.join("metadata"))
+        .unwrap()
+        .identity_token();
+    let mut journal = VfsRecovery::acquire_bounded(
+        &store_root,
+        &identity,
+        &metadata,
+        &store_id,
+        &worktree_id,
+        true,
+        64,
+    )
+    .unwrap();
+    for event in [
+        VfsEvent::Reserved { locator: vec![1] },
+        VfsEvent::Registered,
+        VfsEvent::ProviderPrepared { ticket: vec![2] },
+        VfsEvent::ProviderPopulated,
+        VfsEvent::ControlPrepared { control: vec![3] },
+        VfsEvent::LocatorPublished { control: vec![3] },
+    ] {
+        journal.append(event, &NoVfsJournalFaults).unwrap();
+    }
+    journal
+        .append_checked(VfsEvent::Ready, &NoVfsJournalFaults)
+        .unwrap();
+    let expected = capture_intent(&worktree_id);
+    journal
+        .prepare_capture(
+            &capture_batch(&worktree_id),
+            &expected.step_id,
+            &NoVfsJournalFaults,
+        )
+        .unwrap();
+    let exact = expected.receipt.compact_bytes();
+    let mut padded = exact.clone();
+    let last = padded.len() - 1;
+    padded[last] |= 0x80;
+    padded.push(0);
+    let mut versioned = exact.clone();
+    versioned[0] = 2;
+    let committed = super::super::open_exclusive(&store_root).unwrap();
+    assert!(compact_receipts(&committed));
+    let connection = committed.begin_write_connection().unwrap();
+    insert_receipt(
+        &committed,
+        &connection,
+        &expected.transaction_id,
+        &expected.request_digest,
+        &expected.receipt,
+    );
+    drop(connection);
+    drop(committed);
+    for damaged in [padded, versioned] {
+        let committed = super::super::open_exclusive(&store_root).unwrap();
+        committed
+            .begin_write_connection()
+            .unwrap()
+            .execute(
+                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
+                rusqlite::params![damaged, expected.transaction_id],
+            )
+            .unwrap();
+        drop(committed);
+        assert!(
+            journal.resolve_capture(&NoVfsJournalFaults).is_err(),
+            "{damaged:?}"
+        );
+        assert!(journal.state().pending_capture.is_some());
+    }
+    let committed = super::super::open_exclusive(&store_root).unwrap();
+    committed
+        .begin_write_connection()
+        .unwrap()
+        .execute(
+            "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
+            rusqlite::params![exact, expected.transaction_id],
+        )
+        .unwrap();
+    drop(committed);
+    assert_eq!(
+        journal.resolve_capture(&NoVfsJournalFaults).unwrap(),
+        Some(true)
+    );
+    assert!(journal.state().pending_capture.is_none());
+    drop(journal);
     assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
     std::fs::remove_dir_all(root).unwrap();
 }

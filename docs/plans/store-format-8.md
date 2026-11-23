@@ -83,8 +83,8 @@ pass git.
    lost-pack tests in 8; no latency regression at 10k and 99k files.
 2. 2b: packs v4 with Operation and observation records, sequence clock,
    initializers, identities; client history paging; drop their tables.
-3. 2c: compact receipts; freeze schema v4 and packs v4 (earlier format-8
-   Stores refused).
+3. 2c: compact receipts. The freeze of schema v4 and packs v4 (earlier
+   format-8 Stores refused) moves after phase 3 (see 2c below).
 4. 2d: `layrs store convert` from 5, 6 and 7.
 5. 2e: default 8.
 
@@ -533,3 +533,37 @@ git: 12.5 MiB as left, 796 KiB after `git gc`. What remains is the packs
 Tests: `compact_receipts_round_trip_and_refuse_other_encodings` (unit),
 `format_8_replays_from_compact_receipts_and_refuses_damaged_ones`; the VFS
 recovery tests seed receipts in the Store's own encoding.
+
+## Council s29 r1 (code review of 2c, 2026-11-23)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 9/10 (ship) |
+| Claude Opus 5.5 (xhigh) | 8/10 (ship) |
+
+- Rejected, with reason (Astra P2): the compact receipt takes its request
+  digest from the row, so the receipt no longer checks that column on its
+  own; a row whose digest was replaced by another batch's (same id, same
+  counts) would replay that batch as applied. Only a deliberate edit of one
+  column produces it (a damaged digest equals no batch's digest), and an
+  editor of the database rewrites both columns as easily; the writer builds
+  both from one batch in one INSERT. Conversion (2d) must check each JCS
+  receipt's own id and digest against its row before writing a compact one.
+- Fixed (Opus P3): one predicate, `schema::compact_receipts` (schema v4),
+  chooses the encoding for the writer, replay and VFS recovery; a VFS
+  recovery test pinned to format 8 (a damaged compact receipt keeps the
+  capture pending, the exact one resolves it); the receipt literals are
+  constants the compact bytes stand for; the replay comment says what is
+  ordered (the digest compare comes before a decoding failure is reported);
+  the landing order says the freeze moved.
+- Rejected (Opus P3): formatting the stored digest as text on a replay
+  costs nothing measurable (replays are retries).
+
+Measured slope (100 files, release CLI, format 8): `.layrs` 1328 KiB at
+1,000 Steps and 2580 KiB at 2,000, 1.25 KiB per Step (packs 1.07, SQLite
+0.18); `git gc` 796 and 1412 KiB, 0.62 KiB per Step. Pack anatomy at 1,000
+Steps (stored bytes per Step): Tree 383, RepositoryView 130, Step 78,
+Operation 74, StepObservation 74, file records 8; pack metadata 293 (keys 150,
+history section about 71 of which 64 are record digests, file records 43,
+locations 28). Phase 3 must halve the slope; see its design.
