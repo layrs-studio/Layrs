@@ -1289,13 +1289,9 @@ fn replace_history_block(image: &mut [u8]) -> bool {
     false
 }
 
-/// The blocks of a pack v4 image holding records of `kind` (only the one
-/// of `key` when given), from its metadata.
-fn record_blocks(
-    image: &[u8],
-    kind: u8,
-    key: Option<&[u8; 32]>,
-) -> std::collections::BTreeSet<usize> {
+/// Every explicit record of a pack v4 image: its kind, key, block and
+/// offset in the block, from its metadata.
+fn record_places(image: &[u8]) -> Vec<(u8, [u8; 32], usize, usize)> {
     let footer = image.len() - 72;
     let at = |range: std::ops::Range<usize>| {
         u64::from_le_bytes(image[range].try_into().unwrap()) as usize
@@ -1322,25 +1318,43 @@ fn record_blocks(
         varint(metadata, &mut cursor);
         cursor += 32;
     }
-    let mut blocks = std::collections::BTreeSet::new();
+    let mut places = Vec::new();
     for _ in 0..varint(metadata, &mut cursor) {
         let run_kind = metadata[cursor];
         cursor += 1;
         let count = varint(metadata, &mut cursor);
-        let keys: Vec<&[u8]> = (0..count)
-            .map(|n| &metadata[cursor + 32 * n..cursor + 32 * (n + 1)])
+        let keys: Vec<[u8; 32]> = (0..count)
+            .map(|n| {
+                metadata[cursor + 32 * n..cursor + 32 * (n + 1)]
+                    .try_into()
+                    .unwrap()
+            })
             .collect();
         cursor += 32 * count;
-        for found in keys {
+        for key in keys {
             let block = varint(metadata, &mut cursor);
+            let offset = varint(metadata, &mut cursor);
             varint(metadata, &mut cursor);
-            varint(metadata, &mut cursor);
-            if run_kind == kind && key.is_none_or(|key| found == key) {
-                blocks.insert(block);
-            }
+            places.push((run_kind, key, block, offset));
         }
     }
-    blocks
+    places
+}
+
+/// The blocks of a pack v4 image holding records of `kind` (only the one
+/// of `key` when given), from its metadata.
+fn record_blocks(
+    image: &[u8],
+    kind: u8,
+    key: Option<&[u8; 32]>,
+) -> std::collections::BTreeSet<usize> {
+    record_places(image)
+        .into_iter()
+        .filter(|(found_kind, found, _, _)| {
+            *found_kind == kind && key.is_none_or(|key| found == key)
+        })
+        .map(|(_, _, block, _)| block)
+        .collect()
 }
 
 /// How many blocks of a pack v4 image hold `needle` in their raw bytes.
@@ -1751,6 +1765,103 @@ fn history_paging_decompresses_each_consolidated_block_once() {
     );
     drop(reader);
     drop(store);
+    assert_fsck_clean(&root.0);
+}
+
+/// Phase 3d: a clustered consolidation into packs v4 keeps the order the
+/// records were written in, not their keys' order: the versions of a folder
+/// stay in the order they were made (they then compress against each
+/// other), and each batch's Step and RepositoryView stay together.
+#[test]
+fn consolidation_keeps_versions_and_batches_in_the_order_written() {
+    let root = TestRoot::new("written-order");
+    create(&root.0, "written-order", "8");
+    let mut files: Vec<File> = (0..40)
+        .map(|n| {
+            file(
+                &format!("f{n}.txt"),
+                format!(
+                    "line {n}
+"
+                )
+                .as_bytes(),
+                Recipe::Fixed,
+            )
+        })
+        .collect();
+    let (mut lane, batch) = Lane::begin("written-order", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let (mut trees, mut steps, mut views) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 1..=60 {
+        let n = k % files.len();
+        files[n] = file(
+            &format!("f{n}.txt"),
+            format!(
+                "line {n}
+edit {k}
+"
+            )
+            .as_bytes(),
+            Recipe::Fixed,
+        );
+        let capture = lane.capture(&files, file_objects(&files[n..=n]));
+        for object in capture.canonical_objects() {
+            match object {
+                CanonicalObject::Tree(tree) => trees.push(tree.id().digest_bytes()),
+                CanonicalObject::Step(step) => steps.push(step.id().digest_bytes()),
+                CanonicalObject::RepositoryView(view) => views.push(view.id().digest_bytes()),
+                _ => {}
+            }
+        }
+        repository.apply_batch(&capture).unwrap();
+    }
+    drop(repository);
+    let MaintenanceOutcome::Consolidated { .. } = maintain(&root.0).unwrap() else {
+        panic!("nothing consolidated");
+    };
+    let mut places = std::collections::HashMap::new();
+    for name in registered_packs(&root.0) {
+        let image = fs::read(root.0.join("objects/packs").join(&name)).unwrap();
+        for (kind, key, block, offset) in record_places(&image) {
+            places.insert((kind, key), (name.clone(), block, offset));
+        }
+    }
+    let place = |kind: u8, key: &[u8; 32]| places.get(&(kind, *key)).unwrap().clone();
+    // In each pack, each folder version after the one before it; most of
+    // them in one consolidated pack.
+    let mut per_pack: std::collections::HashMap<String, usize> = Default::default();
+    for pair in trees.windows(2) {
+        let (before, after) = (place(3, &pair[0]), place(3, &pair[1]));
+        if before.0 == after.0 {
+            assert!(
+                (before.1, before.2) < (after.1, after.2),
+                "{before:?} {after:?}"
+            );
+        }
+        *per_pack.entry(after.0).or_default() += 1;
+    }
+    assert!(
+        per_pack.values().any(|count| *count >= trees.len() / 2),
+        "{per_pack:?}"
+    );
+    // Each batch's Step and View sit together, between the previous
+    // batch's and the next one's in the same pack.
+    let mut previous: Option<(String, (usize, usize))> = None;
+    for (step, view) in steps.iter().zip(&views) {
+        let (step, view) = (place(6, step), place(7, view));
+        assert_eq!(step.0, view.0);
+        let (first, second) = (
+            (step.1, step.2).min((view.1, view.2)),
+            (step.1, step.2).max((view.1, view.2)),
+        );
+        if let Some((pack, last)) = &previous {
+            if *pack == step.0 {
+                assert!(*last < first, "{last:?} {first:?}");
+            }
+        }
+        previous = Some((step.0, second));
+    }
     assert_fsck_clean(&root.0);
 }
 

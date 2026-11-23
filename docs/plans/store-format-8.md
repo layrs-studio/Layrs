@@ -1224,3 +1224,48 @@ All three: ship, P3 only. Fixed:
 Noted, no change: the walk sizes an `INTEGER` past 2^53 - 1 a byte short
 in one case, but the decoder refuses such a body when it re-encodes it,
 before rendering, so nothing expands past its limit.
+
+## Phase 3d progress (2026-11-23)
+
+Found while measuring: a clustered copy read each block's records in the
+order of their ordinals (the keys' order, so hash order), not the order they
+were written. The versions of one folder then sat in random order inside
+each consolidated block, and every later consolidation kept them so; zstd
+could not compress a version against the one before it. Measured offline on
+the 2,000-Step Store of 3c (`scratchpad/packstat`, `treeorder`): neighbours
+differed by 1 to 12 entries; in the order made, by one. Trees: 131 B each in
+256 KiB blocks as stored, 91 in the order made (53 in 1 MiB blocks).
+
+Done (packs v4 only; a copy into packs v1 to v3 is unchanged, byte for
+byte):
+
+- `copy_clustered` orders each group by the place of its records in the
+  candidates (candidate, block, offset in the block): the order written.
+- Each batch's Step, RepositoryView, Operation and StepObservations share
+  one group (`in_batch_group`), so they stay together in the order written.
+  This is the s30 item 2 grouping taken from the order the writer used, not
+  rebuilt from the records' references: a batch's pack holds its content
+  records then its history records, and every copy keeps that order, so no
+  record is decoded to place it.
+- Test: `consolidation_keeps_versions_and_batches_in_the_order_written`
+  (60 captures of a 40-file folder, then maintenance; in each pack, each
+  Tree after the one before it, each batch's Step and View between the
+  previous batch's and the next one's). It fails with either rule turned
+  off.
+
+Measured (release CLI, 100 files, maintained; `history_slope.py`):
+
+| Variant | 1,000 Steps | 2,000 Steps | slope | git slope |
+| --- | --- | --- | --- | --- |
+| 3c | 916 KiB | 1692 KiB | 795 B/Step | 668 |
+| order written | 896 KiB | 1588 KiB | 709 B/Step | 668 |
+| + batch groups | 832 KiB | 1464 KiB | 647 B/Step | 672 |
+
+git after gc: 792 KiB and 1448 KiB. Per record at 2,000 Steps, stored:
+Tree 144 to 100 B, Step 33 to 22, View 66 to 53, Operation 48 to 31,
+Observation 61 to 34, file record 28 to 16. Gate (0.9 times git): slope at
+most 605, total at most 1303 KiB at 2,000 Steps; still short by about 42 on
+the slope and 82 B per Step on the total. Next: Tree blocks of 1 MiB (about
+-47 B/Step, after the latency gate), then 3e (about -55 B/Step: a 17-byte
+receipt key brings a receipt row from 116 to 80 bytes, VACUUM about 19 B per
+Step, measured on a copy of the metadata).

@@ -140,13 +140,39 @@ const CLUSTER_BLOCK: usize = 256 * 1024;
 /// mostly share.
 type ClusterKey = (u8, Vec<u8>, Vec<u8>);
 
-fn cluster_key(loaded: &LoadedPack, raw: &[u8], record: pack2::RecordRef) -> ClusterKey {
+/// Whether a kind is written with its batch's other history records: a
+/// clustered copy into packs v4 keeps each batch's Step, RepositoryView,
+/// Operation and StepObservations together, in the order they were written,
+/// so the ids they share compress against each other (phase 3d).
+fn in_batch_group(code: u8) -> bool {
+    code == pack2::kind_code(StoreObjectKind::Step)
+        || code == pack2::kind_code(StoreObjectKind::RepositoryView)
+        || pack2::is_history_code(code)
+}
+
+/// A record of a clustered copy: (lineage key, order read, candidate, raw
+/// block, record).
+type ClusterRecord = (ClusterKey, (usize, u32), usize, usize, pack2::RecordRef);
+
+fn cluster_key(
+    loaded: &LoadedPack,
+    raw: &[u8],
+    record: pack2::RecordRef,
+    batch_groups: bool,
+) -> ClusterKey {
     let pack2::RecordRef::Explicit(ordinal) = record else {
         return (FILE_KIND, Vec::new(), Vec::new());
     };
     let Some((code, _, location)) = loaded.index.explicit(ordinal) else {
         return (0, Vec::new(), Vec::new());
     };
+    if batch_groups && in_batch_group(code) {
+        return (
+            pack2::kind_code(StoreObjectKind::Step),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
     if code != pack2::kind_code(StoreObjectKind::Tree) {
         return (code, Vec::new(), Vec::new());
     }
@@ -1324,8 +1350,11 @@ impl NativeCas {
     /// (each block once, kept in memory), then written in lineage order (by
     /// kind; Trees by their first and last entry names, the versions of one
     /// folder; each group in the candidates' order, oldest first) into
-    /// blocks of `CLUSTER_BLOCK` raw bytes. The same records, checks and
-    /// remap as the plain copy; only their places differ.
+    /// blocks of `CLUSTER_BLOCK` raw bytes. Into packs v4 (phase 3d), each
+    /// block's records keep the order they were written in, not their keys'
+    /// order, so the versions of a folder stay in the order they were made,
+    /// and each batch's history records stay together. The same records,
+    /// checks and remap as the plain copy; only their places differ.
     fn copy_clustered(
         &self,
         catalog: &RegisteredCatalog,
@@ -1345,8 +1374,8 @@ impl NativeCas {
         let mut keys_of = Vec::with_capacity(candidates.len());
         let mut loaded_of: Vec<&LoadedPack> = Vec::with_capacity(candidates.len());
         let mut raws: Vec<Arc<Vec<u8>>> = Vec::new();
-        // (lineage key, order read, candidate, raw block, record)
-        let mut records: Vec<(ClusterKey, usize, usize, usize, pack2::RecordRef)> = Vec::new();
+        let written_order = open.builder.version() >= pack2::PACK2_VERSION_HISTORY;
+        let mut records: Vec<ClusterRecord> = Vec::new();
         for (candidate, &position) in candidates.iter().enumerate() {
             let registered = catalog.packs.get(position).ok_or_else(|| {
                 failed(
@@ -1371,8 +1400,18 @@ impl NativeCas {
                 raws.push(raw);
                 let at = raws.len() - 1;
                 for record in block_records {
-                    let key = cluster_key(loaded, &raws[at], record);
-                    records.push((key, records.len(), candidate, at, record));
+                    let key = cluster_key(loaded, &raws[at], record, written_order);
+                    // Into packs v4, by place in the block: the order written.
+                    let order = match (written_order, record) {
+                        (true, pack2::RecordRef::Explicit(ordinal)) => {
+                            (at, index.explicit(ordinal).map_or(0, |(_, _, l)| l.offset))
+                        }
+                        (true, pack2::RecordRef::File(file)) => {
+                            (at, index.files.get(file).map_or(0, |f| f.location.offset))
+                        }
+                        (false, _) => (records.len(), 0),
+                    };
+                    records.push((key, order, candidate, at, record));
                 }
             }
             loaded_of.push(loaded);
