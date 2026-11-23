@@ -1165,3 +1165,38 @@ and the size difference is a byte per key at most). Not done: an
 integration test of `history_in_space` with a limit between the binary and
 canonical sizes (its limits are fixed by the reader; the walk-before-decode
 order is the same as the unit-tested decoder's).
+
+## Council s33 r2 (2026-11-23)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 (ship) |
+
+Fixed:
+
+- (P2 Sol) The walk sized a `NUMBER` by its stored text, so a body of
+  noncanonical spellings (`1e20` re-serializes as 21 digits) passed the
+  preflight under its limit and then expanded past it. A `NUMBER` must now
+  be its JCS spelling and not an integer the `INTEGER` tag carries, in the
+  walk and in the decoder alike (`canonical_number`). Test: arrays of
+  `1e20`, `1.50`, `+1.5`, `01.5`, `1E+21`, `5`, `-0`, `1.0` do not walk
+  nor decode; `100000000000000000000` walks to its exact size.
+- (P3 Opus) `rebuild_keys`: a record whose header disagrees with its index
+  in a hash-sound block is the pack's damage (`HistoryUnreadable`), like
+  the walk and decode failures next to it.
+- (P3 Opus) `history_in_space` named the metadata file for a binary body
+  that does not walk: it names the pack.
+- (P3 Opus) The tag codes, varints and time layout are pinned too: the
+  encodings of the five sample records are hashed (`PINNED_ENCODINGS`),
+  and the same test asserts the draft name, so a change to the format
+  fails until a new draft pins it again.
+
+Later (Opus, P3, out of this change): decode binary records straight to
+JCS bytes with no `Value` tree. The tree costs about 5 to 11 times the
+canonical bytes; a hash-sound crafted pack (local write access) can make a
+reader build up to about 0.7 GB for a 64 MiB history record before its
+typed check refuses it. The streaming decoder also removes two passes per
+Step and View read. Also later: one walk instead of two in
+`history_in_space`; `previous` key without a clone.

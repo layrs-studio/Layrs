@@ -1091,7 +1091,13 @@ impl LoadedPack {
             let mut bodies = Vec::with_capacity(group.len());
             let mut extra = 0_u64;
             for (_, ordinal, code, location) in group {
-                let body = pack2::record_body(&raw, *location, *code, index.version, &self.path)?;
+                // A sound block whose record disagrees with its index is
+                // damage, not a keys row problem (council s33 r2).
+                let body =
+                    match pack2::record_body(&raw, *location, *code, index.version, &self.path) {
+                        Ok(body) => body,
+                        Err(error) => return Ok(RebuiltKeys::HistoryUnreadable(error)),
+                    };
                 if pack2::record_codec(index.version, *code) == pack2::CODEC_BINARY {
                     let Some(expanded) = binary_expanded_len(*code, None, body) else {
                         return Ok(RebuiltKeys::HistoryUnreadable(pack2::pack2_corruption(
@@ -2878,7 +2884,10 @@ impl RegisteredCatalog {
                 let raw = self.history_raw_body(cas, position, code, location)?;
                 let expanded = if pack2::binary_trees(index.version) {
                     binary_expanded_len(code, None, &raw).ok_or_else(|| {
-                        pack2::pack2_corruption(&self_path(), "binary history record does not walk")
+                        pack2::pack2_corruption(
+                            &registered.pack.path,
+                            "binary history record does not walk",
+                        )
                     })?
                 } else {
                     raw.len() as u64

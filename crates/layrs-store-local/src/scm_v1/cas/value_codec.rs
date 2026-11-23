@@ -464,7 +464,7 @@ impl Reader<'_> {
             FALSE => Value::Bool(false),
             TRUE => Value::Bool(true),
             INTEGER => Value::Number(Number::from(unzigzag(self.varint()?))),
-            NUMBER => Value::Number(serde_json::from_str(self.text()?).ok()?),
+            NUMBER => Value::Number(canonical_number(self.text()?)?),
             ARRAY => {
                 let count = self.count()?;
                 // The walk already bounded the size: no large reservation
@@ -498,6 +498,21 @@ impl Reader<'_> {
             tag => Value::String(self.string(tag)?),
         })
     }
+}
+
+/// The number a `NUMBER` text spells, if it is the one encoding of it: its
+/// JCS spelling, and not an integer the `INTEGER` tag carries. The walk
+/// checks it too, so a body's size is the size of its canonical form
+/// (council s33).
+fn canonical_number(text: &str) -> Option<Number> {
+    let number: Number = serde_json::from_str(text).ok()?;
+    if number
+        .as_i64()
+        .is_some_and(|integer| (-INTEGER_MAX..=INTEGER_MAX).contains(&integer))
+    {
+        return None;
+    }
+    (layrs_core::scm::canonical_json(&number).ok()? == text.as_bytes()).then_some(number)
 }
 
 /// The canonical JSON bytes a binary record body decodes to, or `None`:
@@ -560,7 +575,11 @@ impl Reader<'_> {
             NULL | TRUE => 4,
             FALSE => 5,
             INTEGER => decimal_len(unzigzag(self.varint()?)),
-            NUMBER => self.text()?.len() as u64,
+            NUMBER => {
+                let text = self.text()?;
+                canonical_number(text)?;
+                text.len() as u64
+            }
             TEXT => quoted_len(self.text()?.as_bytes()),
             WORD => quoted_len(WORDS.get(usize::try_from(self.varint()?).ok()?)?.as_bytes()),
             CONTENT_ID => {
@@ -641,33 +660,39 @@ mod tests {
         assert!(body.len() < canonical.len() || canonical.len() < 40);
     }
 
+    /// Records of each kind with their own ids, then numbers, unknown keys,
+    /// near-miss ids and times that must stay exact.
+    fn samples() -> [(&'static [u8], Option<&'static str>); 5] {
+        [
+            (
+                br#"{"kind":"step","objectId":"blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e","schemaVersion":"layrs.cas-envelope.v1","value":{"parentStepIds":["blake3:bfa0540d101d5dee98cb52b007c368090b20b50f825e5a0df80fd4fe95f0e2d3"],"rootTreeId":"blake3:a396a13a4d763d78239604d0ecf53c1f0e8fef2d4d1c916f8e26091c551f575a","schemaVersion":"layrs.step.v1","stepId":"blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e"}}"#,
+                Some("blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e"),
+            ),
+            (
+                br#"{"kind":"repository_view","objectId":"blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853","schemaVersion":"layrs.cas-envelope.v1","value":{"layerHeads":[{"layerId":"layer:6ccbc9ff-adb0-4197-9558-03206afcf1e5","stepIds":["blake3:13c7a1f07ebde9afae22d49a94c5422c7c4f92b5a747c1e564bb2d1b66290abf"]}],"markerIds":[],"releaseIds":[],"repositoryViewId":"blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853","schemaVersion":"layrs.repository-view.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","worktrees":[{"activeLayerId":"layer:6ccbc9ff-adb0-4197-9558-03206afcf1e5","baseStepId":"blake3:13c7a1f07ebde9afae22d49a94c5422c7c4f92b5a747c1e564bb2d1b66290abf","materializedTreeId":"blake3:14a1b632a54b71edc7e67796ba4131de9c7bbff105d066c5e0d1576d9acd4f9e","status":"ready","worktreeId":"worktree:d4ae26ee-1ef6-4c32-97a7-3b723da2e370"}]}}"#,
+                Some("blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853"),
+            ),
+            (br#"{"actorId":null,"createdAt":"2026-11-22T23:51:55.6826368Z","deviceId":null,"kind":"capture_worktree","metadata":[],"operationId":"operation:d9ca3a5f-9d45-4681-9fdc-6049560969ff","parentOperationIds":["operation:c6916971-2ddc-40ad-a074-bbb5c68c74d2"],"resultingViewId":"blake3:01b39dd5257187e509a5218de1182954fc83de3d381a9f8ce0f5e29fc848cc64","rewriteMap":[],"schemaVersion":"layrs.operation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","summary":"Capture Worktree"}"#, None),
+            (br#"{"actorId":null,"captureReason":"manual_snapshot","deviceId":null,"metadata":[{"key":"a.b","value":"x\ny\u0001\"q\\"}],"observationId":"observation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","observedAt":"2026-11-22T23:51:57Z","operationId":"operation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","schemaVersion":"layrs.step-observation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","stepId":"blake3:5163cb173f212b026677770c1e971c0eb87f5b0ddbd41b82f4c4db5f1a7c8905","worktreeId":"worktree:d4ae26ee-1ef6-4c32-97a7-3b723da2e370"}"#, None),
+            (
+                r#"{"n":[0,-1,9007199254740991,9007199254740992,1.5,-0.25,1e+21],"odd":["blake3:ABC","space:6CCBC9FF-adb0-4197-9558-03206afcf1e5","unknown:6ccbc9ff-adb0-4197-9558-03206afcf1e5","2026-02-30T00:00:00Z","2026-11-22T23:51:57.0Z","2026-11-22T23:51:57.123456789Z","1969-12-31T23:59:59Z","é"],"z":{}}"#.as_bytes(),
+                None,
+            ),
+        ]
+    }
+
     /// Phase 3c: the records' canonical JSON round-trips through the
     /// binary form, which is smaller; its expansion is exact.
     #[test]
     fn records_round_trip() {
-        let step = br#"{"kind":"step","objectId":"blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e","schemaVersion":"layrs.cas-envelope.v1","value":{"parentStepIds":["blake3:bfa0540d101d5dee98cb52b007c368090b20b50f825e5a0df80fd4fe95f0e2d3"],"rootTreeId":"blake3:a396a13a4d763d78239604d0ecf53c1f0e8fef2d4d1c916f8e26091c551f575a","schemaVersion":"layrs.step.v1","stepId":"blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e"}}"#;
-        round_trip(
-            step,
-            Some("blake3:001f1407f734b7f52ab6def76d4977725e2fdf7094cd091de83ea2a325a4398e"),
-        );
-        let view = br#"{"kind":"repository_view","objectId":"blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853","schemaVersion":"layrs.cas-envelope.v1","value":{"layerHeads":[{"layerId":"layer:6ccbc9ff-adb0-4197-9558-03206afcf1e5","stepIds":["blake3:13c7a1f07ebde9afae22d49a94c5422c7c4f92b5a747c1e564bb2d1b66290abf"]}],"markerIds":[],"releaseIds":[],"repositoryViewId":"blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853","schemaVersion":"layrs.repository-view.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","worktrees":[{"activeLayerId":"layer:6ccbc9ff-adb0-4197-9558-03206afcf1e5","baseStepId":"blake3:13c7a1f07ebde9afae22d49a94c5422c7c4f92b5a747c1e564bb2d1b66290abf","materializedTreeId":"blake3:14a1b632a54b71edc7e67796ba4131de9c7bbff105d066c5e0d1576d9acd4f9e","status":"ready","worktreeId":"worktree:d4ae26ee-1ef6-4c32-97a7-3b723da2e370"}]}}"#;
-        round_trip(
-            view,
-            Some("blake3:0101c59eb26307fb40c0061730f72ce42ee7199e8c9a96129e3a23a8b27a0853"),
-        );
-        let operation = br#"{"actorId":null,"createdAt":"2026-11-22T23:51:55.6826368Z","deviceId":null,"kind":"capture_worktree","metadata":[],"operationId":"operation:d9ca3a5f-9d45-4681-9fdc-6049560969ff","parentOperationIds":["operation:c6916971-2ddc-40ad-a074-bbb5c68c74d2"],"resultingViewId":"blake3:01b39dd5257187e509a5218de1182954fc83de3d381a9f8ce0f5e29fc848cc64","rewriteMap":[],"schemaVersion":"layrs.operation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","summary":"Capture Worktree"}"#;
-        round_trip(operation, None);
-        let observation = br#"{"actorId":null,"captureReason":"manual_snapshot","deviceId":null,"metadata":[{"key":"a.b","value":"x\ny\u0001\"q\\"}],"observationId":"observation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","observedAt":"2026-11-22T23:51:57Z","operationId":"operation:ec315d7c-129a-4aea-8d20-f5ea12e6ef00","schemaVersion":"layrs.step-observation.v1","spaceId":"space:6ccbc9ff-adb0-4197-9558-03206afcf1e5","stepId":"blake3:5163cb173f212b026677770c1e971c0eb87f5b0ddbd41b82f4c4db5f1a7c8905","worktreeId":"worktree:d4ae26ee-1ef6-4c32-97a7-3b723da2e370"}"#;
-        round_trip(observation, None);
-        // Numbers, unknown keys, near-miss ids and times stay exact.
-        round_trip(
-            r#"{"n":[0,-1,9007199254740991,9007199254740992,1.5,-0.25,1e+21],"odd":["blake3:ABC","space:6CCBC9FF-adb0-4197-9558-03206afcf1e5","unknown:6ccbc9ff-adb0-4197-9558-03206afcf1e5","2026-02-30T00:00:00Z","2026-11-22T23:51:57.0Z","2026-11-22T23:51:57.123456789Z","1969-12-31T23:59:59Z","é"],"z":{}}"#.as_bytes(),
-            None,
-        );
+        for (canonical, own) in samples() {
+            round_trip(canonical, own);
+        }
     }
 
-    /// The three dictionaries are part of the format (council s33): a
-    /// change to them needs a new draft, and this hash with it.
+    /// The dictionaries, tag codes, varints and time layout are part of the
+    /// format (council s33): a change to any needs a new draft, and these
+    /// hashes with it.
     #[test]
     fn tables_are_pinned() {
         let mut hasher = blake3::Hasher::new();
@@ -679,8 +704,22 @@ mod tests {
             hasher.update(&[1]);
         }
         assert_eq!(hasher.finalize().to_hex().as_str(), PINNED_TABLES);
+        let mut hasher = blake3::Hasher::new();
+        for (canonical, own) in samples() {
+            let body = encode_value_binary(canonical, own).unwrap();
+            hasher.update(&(body.len() as u64).to_le_bytes());
+            hasher.update(&body);
+        }
+        assert_eq!(hasher.finalize().to_hex().as_str(), PINNED_ENCODINGS);
+        assert_eq!(
+            crate::scm_v1::schema::BASELINE_V4_NAME,
+            "native_scm_v4_history_out_draft10",
+            "a new draft pins its tables and encodings again"
+        );
     }
     const PINNED_TABLES: &str = "b3b858ffa5bed20f6aacd9abe6db78b448391872666f4f1030cbcd188bffadb9";
+    const PINNED_ENCODINGS: &str =
+        "7a15156d8eb515cd795f794b584c40c27bc61dad2109c4a43a8190cc53669fee";
 
     /// Only the one encoding of a value decodes; random damage never
     /// panics, and whatever decodes re-encodes to itself.
@@ -725,6 +764,28 @@ mod tests {
         assert!(decode_value_binary(&many, own, canonical - 1).is_none());
         assert!(decode_value_binary(&many, own, canonical).is_some());
         assert!(decode_value_binary(&duplicate, None, u64::MAX).is_none());
+        // A NUMBER not in its JCS spelling, or an integer the INTEGER tag
+        // carries, does not walk: the walk sizes canonical forms only
+        // (council s33 r2).
+        for text in ["1e20", "1.50", "+1.5", "01.5", "1E+21", "5", "-0", "1.0"] {
+            let mut number = vec![ARRAY];
+            put_varint(&mut number, 3);
+            for _ in 0..3 {
+                put_text(&mut number, NUMBER, text);
+            }
+            assert_eq!(value_binary_expanded_len(&number, None), None, "{text}");
+            assert!(
+                decode_value_binary(&number, None, u64::MAX).is_none(),
+                "{text}"
+            );
+        }
+        let mut number = vec![ARRAY, 1];
+        put_text(&mut number, NUMBER, "100000000000000000000");
+        assert_eq!(value_binary_expanded_len(&number, None), Some(23));
+        assert_eq!(
+            decode_value_binary(&number, None, u64::MAX).unwrap(),
+            b"[100000000000000000000]"
+        );
         // Too deep.
         let deep: Vec<u8> = std::iter::repeat_n([ARRAY, 1], 40).flatten().collect();
         assert!(decode_value_binary(&[deep, vec![NULL]].concat(), None, u64::MAX).is_none());
