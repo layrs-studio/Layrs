@@ -2975,9 +2975,13 @@ impl RegisteredCatalog {
         self.placement_length(id, placement).map(Some)
     }
 
-    /// What decoding `id`'s first copy costs: a binary Tree's expanded
-    /// size (its body read to bound it), else its stored length (council
-    /// s32: budgets charge expanded sizes).
+    /// What reading `id` may cost: the sum, over the copies that can be
+    /// sized, of each one's decoded size (a binary Tree's exact expansion,
+    /// else its stored length). A read decodes copies in order until one
+    /// is `id`, so a copy that decodes as another Tree is paid for as well
+    /// as the sound one after it (council s32 r2 and r3: budgets charge
+    /// expanded sizes, and sizing follows the read's fallback). An error
+    /// only when no copy can be sized.
     pub(crate) fn expanded_length(
         &self,
         cas: &NativeCas,
@@ -2987,8 +2991,7 @@ impl RegisteredCatalog {
         if placements.is_empty() {
             return self.complete(|| object_keys(id), None);
         }
-        // Reads fall back across copies: so does sizing (council s32 r2),
-        // the first copy that can be sized; a damaged one is the audit's.
+        let mut total: Option<u64> = None;
         let mut first_error = None;
         for placement in placements {
             let sized = match placement {
@@ -3011,13 +3014,16 @@ impl RegisteredCatalog {
                 placement => self.placement_length(id, placement),
             };
             match sized {
-                Ok(length) => return Ok(Some(length)),
+                Ok(length) => total = Some(total.unwrap_or(0).saturating_add(length)),
                 Err(error) => {
                     first_error.get_or_insert(error);
                 }
             }
         }
-        Err(first_error.unwrap_or_else(|| corruption(id, "no copy could be sized")))
+        match total {
+            Some(total) => Ok(Some(total)),
+            None => Err(first_error.unwrap_or_else(|| corruption(id, "no copy could be sized"))),
+        }
     }
 
     fn placement_length(&self, id: &StoreObjectId, placement: Placement) -> CasResult<u64> {

@@ -162,9 +162,9 @@ fn walk_tree_binary(
     (at == body.len()).then_some(count)
 }
 
-/// Whether a binary Tree body may be a pack record: its expansion bound is
-/// within the pack Tree limit, which is what its decoder accepts (council
-/// s32 r2). A Tree past it is written loose, in JCS.
+/// Whether a binary Tree body may be a pack record: its exact expansion
+/// (its JCS length) is within the pack Tree limit, which is what its
+/// decoder accepts (council s32 r2). A Tree past it is written loose.
 pub(super) fn binary_tree_fits_pack(body: &[u8]) -> bool {
     tree_binary_expanded_len(body)
         .is_some_and(|expanded| expanded <= pack2::MAX_TREE_RECORD_BYTES as u64)
@@ -243,8 +243,8 @@ pub(super) fn decode_tree_binary(
     let bad = |reason: &str| corruption(expected, format!("binary Tree record: {reason}"));
     // Shape and size first, with one bounded buffer: no entry is built for a
     // body whose canonical form would not fit a pack (it belongs loose).
-    tree_binary_expanded_len(body).ok_or_else(|| bad("malformed entries"))?;
-    if !binary_tree_fits_pack(body) {
+    let expanded = tree_binary_expanded_len(body).ok_or_else(|| bad("malformed entries"))?;
+    if expanded > pack2::MAX_TREE_RECORD_BYTES as u64 {
         return Err(bad("its canonical form exceeds the pack Tree limit"));
     }
     let mut entries: Vec<TreeEntry> = Vec::new();

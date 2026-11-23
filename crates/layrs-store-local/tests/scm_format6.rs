@@ -2030,6 +2030,154 @@ fn fsck_reads_a_binary_tree_through_its_sound_copy() {
     }
 }
 
+/// Council s32 r3: fsck charges the expansion of every copy a read may
+/// decode. The first copy of a Tree is forged (its shared control-character
+/// prefix rewritten as ASCII, the block recompressed to its length and its
+/// stored checksum recomputed): it decodes as another, smaller Tree, so a
+/// read decodes it and then the sound copy. With 8 MiB the audit fits and
+/// the logical pass must stop; charging the forged copy alone would let it
+/// decode the sound one past its budget.
+#[test]
+fn fsck_charges_every_copy_a_read_may_decode() {
+    let root = TestRoot::new("tree-forged-copy");
+    create(&root.0, "tree-forged-copy", "8");
+    let (lane, batch) = Lane::begin("tree-forged-copy", &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let shared = file("shared.txt", b"shared", Recipe::Fixed);
+    let prefix = "\u{1}".repeat(200);
+    let entries = (0..3_000)
+        .map(|n| {
+            TreeEntry::new(
+                RepoPathComponent::parse(format!("{prefix}{n:05}")).unwrap(),
+                TreeEntryTarget::file(shared.manifest.file_id().clone()),
+                false,
+            )
+        })
+        .collect();
+    let tree = Tree::new(entries).unwrap();
+    let mut objects = file_objects(std::slice::from_ref(&shared));
+    objects.push(CanonicalObject::Tree(tree.clone()));
+    repository
+        .apply_batch(&carrying(
+            "tree-forged-one",
+            lane.space.id(),
+            objects,
+            false,
+        ))
+        .unwrap();
+    drop(repository);
+    // Forge the copy: the 200 control bytes of the first name become `p`.
+    let mut forged = false;
+    for name in registered_packs(&root.0) {
+        let path = root.0.join("objects/packs").join(&name);
+        let mut image = fs::read(&path).unwrap();
+        // The first name, whole: its length's varint ends in a 0x01 too.
+        let from = [vec![1_u8; 200], b"00000".to_vec()].concat();
+        let to = [vec![b'p'; 200], b"00000".to_vec()].concat();
+        if rewrite_block(&mut image, &from, &to) {
+            fs::write(&path, &image).unwrap();
+            forged = true;
+            break;
+        }
+    }
+    assert!(forged);
+    forget_loaded_packs();
+    // The writer finds the copy is not this Tree and stores a sound one.
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository
+        .apply_batch(&carrying(
+            "tree-forged-two",
+            lane.space.id(),
+            vec![CanonicalObject::Tree(tree.clone())],
+            false,
+        ))
+        .unwrap();
+    assert_eq!(repository.get_tree(tree.id()).unwrap(), Some(tree));
+    drop(repository);
+    forget_loaded_packs();
+    let report = fsck_existing(&root.0, FsckOptions { max_findings: 2 }).unwrap();
+    assert!(report.is_truncated(), "{:#?}", report.findings);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.message.contains("CAS object")),
+        "{:#?}",
+        report.findings
+    );
+}
+
+/// Replaces `from` by `to` (same length) in the first block of a pack v4
+/// image that holds it, recompressing the block to its stored length and
+/// recomputing its stored checksum (its registered hash no longer matches).
+fn rewrite_block(image: &mut [u8], from: &[u8], to: &[u8]) -> bool {
+    let footer = image.len() - 72;
+    let at = |range: std::ops::Range<usize>| {
+        u64::from_le_bytes(image[range].try_into().unwrap()) as usize
+    };
+    let (meta, meta_len) = (at(footer..footer + 8), at(footer + 8..footer + 16));
+    let metadata = image[meta..meta + meta_len].to_vec();
+    fn varint(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return value as usize;
+            }
+        }
+    }
+    let mut cursor = 0;
+    let count = varint(&metadata, &mut cursor);
+    let mut offset = 16;
+    for _ in 0..count {
+        let flags = metadata[cursor];
+        cursor += 1;
+        let raw_len = varint(&metadata, &mut cursor);
+        let stored_len = varint(&metadata, &mut cursor);
+        cursor += 32;
+        let start = offset + 5;
+        offset = start + stored_len + 8;
+        let stored = image[start..start + stored_len].to_vec();
+        let mut raw = if flags & 1 != 0 {
+            stored.clone()
+        } else {
+            zstd::bulk::decompress(&stored, raw_len).unwrap()
+        };
+        let Some(found) = raw.windows(from.len()).position(|w| w == from) else {
+            continue;
+        };
+        raw[found..found + from.len()].copy_from_slice(to);
+        let replacement = if flags & 1 != 0 {
+            raw
+        } else {
+            let Some(mut bytes) = (1..=19)
+                .map(|level| zstd::bulk::compress(&raw, level).unwrap())
+                .find(|bytes| bytes.len() == stored_len || bytes.len() + 8 <= stored_len)
+            else {
+                continue;
+            };
+            if bytes.len() < stored_len {
+                let pad = stored_len - bytes.len() - 8;
+                bytes.extend_from_slice(&0x184D_2A50_u32.to_le_bytes());
+                bytes.extend_from_slice(&(pad as u32).to_le_bytes());
+                bytes.extend(std::iter::repeat_n(0_u8, pad));
+            }
+            bytes
+        };
+        assert_eq!(replacement.len(), stored_len);
+        image[start..start + stored_len].copy_from_slice(&replacement);
+        image[start + stored_len..start + stored_len + 8]
+            .copy_from_slice(&blake3::hash(&replacement).as_bytes()[..8]);
+        return true;
+    }
+    false
+}
+
 /// Format 8: history records are never admitted; fsck reports a bitmap
 /// that admits one (council s28).
 #[test]

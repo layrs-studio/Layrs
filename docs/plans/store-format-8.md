@@ -1041,3 +1041,29 @@ three-way merge 1,373 / 1,161, room drop 481 / 465; Store 11.5 / 10.7 MB.
 No regression beyond noise. git in the same runs: status 52-53, commit
 213-227, worktree add 33-40 s, fast-forward 127-136, three-way merge
 3.2-3.7 s.
+
+## Council s32 r3 (2026-11-23, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 7/10 | 8/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 | 7/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 7/10 | 8/10 (ship) |
+
+- Fixed (P2 Astra, Sol): fsck sized the first copy that could be sized,
+  but a structurally valid copy of another, smaller Tree under this id is
+  decoded by the read before it falls back to the sound copy, so the
+  budget could pay for the small one and decode the large one.
+  `expanded_length` now charges the sum over every copy that can be sized
+  (all a read may decode). Test `fsck_charges_every_copy_a_read_may_decode`
+  (3,000 entries whose shared 200-control-byte prefix is rewritten as
+  ASCII in the first copy, recompressed to its stored length with its
+  stored checksum recomputed: 1.03 MB against 4.03 MB expanded; with 8 MiB
+  fsck stops in its logical pass; charging the first sizable copy alone
+  fails the test).
+- Fixed (P3 Opus): the decoder computes the expansion once; the docs of
+  `expanded_length` and `binary_tree_fits_pack` say what they now do.
+- Kept for 2d (Opus scope note): the consolidation copy's re-encode is
+  unexercised until a format 8 Store reads older packs.
+
+Phase 3b is reviewed (three rounds).
