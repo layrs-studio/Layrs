@@ -1596,14 +1596,18 @@ fn record_places(image: &[u8]) -> Vec<(u8, [u8; 32], usize, usize)> {
         let run_kind = metadata[cursor];
         cursor += 1;
         let count = varint(metadata, &mut cursor);
+        // History keys (Operations, StepObservations) are stored in 16
+        // bytes, the rest zero (draft 12).
+        let stored = if matches!(run_kind, 11 | 12) { 16 } else { 32 };
         let keys: Vec<[u8; 32]> = (0..count)
             .map(|n| {
-                metadata[cursor + 32 * n..cursor + 32 * (n + 1)]
-                    .try_into()
-                    .unwrap()
+                let mut key = [0_u8; 32];
+                key[..stored]
+                    .copy_from_slice(&metadata[cursor + stored * n..cursor + stored * (n + 1)]);
+                key
             })
             .collect();
-        cursor += 32 * count;
+        cursor += stored * count;
         for key in keys {
             let block = varint(metadata, &mut cursor);
             let offset = varint(metadata, &mut cursor);
@@ -1827,10 +1831,10 @@ fn a_replaced_history_block_of_the_same_geometry_is_refused() {
         drop(reader);
         let mut input = vec![11_u8];
         input.extend_from_slice(operation.as_str().as_bytes());
-        let key = format!(
-            "blake3:{}",
-            blake3::Hash::from(blake3::derive_key("layrs history key v1", &input)).to_hex()
-        );
+        let mut derived = blake3::derive_key("layrs history key v1", &input);
+        // Its first 16 bytes, then zeros (draft 12).
+        derived[16..].fill(0);
+        let key = format!("blake3:{}", blake3::Hash::from(derived).to_hex());
         // The audit reports the block once and fails its history records
         // only: the Step beside them in the block still passes its id.
         let scrub = NativeCas::open(&store).unwrap().scrub().unwrap();
@@ -2101,10 +2105,13 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<(u8, [u8; 32])> {
     // Each batch's history records, by their index keys (`history_key`:
     // the kind code and the id, derived).
     let history_key = |code: u8, id: &str| {
-        blake3::derive_key(
+        let mut key = blake3::derive_key(
             "layrs history key v1",
             &[&[code][..], id.as_bytes()].concat(),
-        )
+        );
+        // Its first 16 bytes, then zeros (draft 12).
+        key[16..].fill(0);
+        key
     };
     let mut history_keys = Vec::new();
     for k in 1..=80 {
@@ -2472,7 +2479,11 @@ fn tree_record_codecs(image: &[u8]) -> Vec<u8> {
         let kind = metadata[cursor];
         cursor += 1;
         let count = varint(metadata, &mut cursor);
-        cursor += 32 * count;
+        cursor += if version >= 4 && matches!(kind, 11 | 12) {
+            16
+        } else {
+            32
+        } * count;
         for _ in 0..count {
             let block = varint(metadata, &mut cursor);
             let record = varint(metadata, &mut cursor);

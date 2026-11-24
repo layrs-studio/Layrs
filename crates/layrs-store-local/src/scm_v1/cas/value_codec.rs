@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(hasher.finalize().to_hex().as_str(), PINNED_ENCODINGS);
         assert_eq!(
             crate::scm_v1::schema::BASELINE_V4_NAME,
-            "native_scm_v4_history_out_draft11",
+            "native_scm_v4_history_out_draft12",
             "a new draft pins its tables and encodings again"
         );
     }

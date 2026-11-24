@@ -2177,6 +2177,8 @@ pub use compact::{
     blocks_read_on_this_thread, forget_loaded_packs, set_cluster_max_raw, set_consolidation_budget,
     set_inline_pack_limit,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use pack2::set_history_key_bytes;
 
 /// Test support: how many pack files `cas`'s catalog keeps open now
 /// (`NativeCas::hold_pack_files`).

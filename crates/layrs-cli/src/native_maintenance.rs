@@ -1,7 +1,8 @@
 use crate::{error::CliError, render::Rendered};
 use layrs_client_core::native_scm::NativeWorkspace;
 use layrs_store_local::scm_v1::{
-    MaintenanceOutcome, MetadataRewrite, maintain as maintain_store, rewrite_metadata,
+    MaintenanceOutcome, MetadataRewrite, ProjectionTrim, maintain as maintain_store,
+    maintain_explicit, rewrite_metadata, trim_projections,
 };
 use std::path::Path;
 
@@ -21,12 +22,18 @@ struct Passes {
 }
 
 /// Passes over the Store at `store_root` while they consolidate (or a
-/// candidate moved meanwhile), at most `MAX_PASSES`.
-fn passes(store_root: &Path) -> Result<Passes, String> {
+/// candidate moved meanwhile), at most `MAX_PASSES`; `explicit` passes
+/// consolidate every pack into one first in format 8 (council s36, D).
+fn passes(store_root: &Path, explicit: bool) -> Result<Passes, String> {
     let mut consolidated = 0;
     let mut last = MaintenanceOutcome::NothingToDo;
     for _ in 0..MAX_PASSES {
-        last = match maintain_store(store_root) {
+        let pass = if explicit {
+            maintain_explicit(store_root)
+        } else {
+            maintain_store(store_root)
+        };
+        last = match pass {
             Ok(outcome) => outcome,
             // What earlier passes consolidated stays done; the failure is
             // recorded by the Store and reported.
@@ -118,12 +125,16 @@ pub fn run_detached(args: &[String]) -> i32 {
     let [root] = args else {
         return 2;
     };
-    let code = match passes(Path::new(root)) {
+    let code = match passes(Path::new(root), false) {
         Ok(Passes { failure: None, .. }) => 0,
         Ok(_) | Err(_) => 1,
     };
-    // Then the metadata rewrite, bounded for automatic runs; its failure is
-    // recorded by the Store and does not change the code (format 8).
+    // Then (format 8) the projection cache trim and the metadata rewrite,
+    // bounded for automatic runs; their failures do not change the code (the
+    // rewrite's is recorded by the Store).
+    if let Ok(ProjectionTrim::Trimmed { bases, .. }) = trim_projections(Path::new(root)) {
+        layrs_client_core::native_scm::warm_step_projections(Path::new(root), &bases);
+    }
     let _ = rewrite_metadata(Path::new(root), true);
     // Opt-in diagnostics (`LAYRS_PERF_OUT` for a process without stderr).
     layrs_store_local::perf::emit(MAINTENANCE_COMMAND);
@@ -134,7 +145,19 @@ pub fn run_detached(args: &[String]) -> i32 {
 /// consolidate the pack files batches leave out, building outside the
 /// Store lock.
 pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
-    let passes = passes(store_root);
+    let passes = passes(store_root, true);
+    // Format 8: the cached projections no Worktree or Room stands on are
+    // removed and the others read again, so the next command finds them
+    // (best effort, reported in the data only).
+    let projections = match trim_projections(store_root) {
+        Ok(ProjectionTrim::Unsupported) => None,
+        Ok(ProjectionTrim::Trimmed { removed, bases }) => {
+            layrs_client_core::native_scm::warm_step_projections(store_root, &bases);
+            Some(serde_json::json!({ "status": "trimmed", "removed": removed }))
+        }
+        Ok(ProjectionTrim::Skipped) => Some(serde_json::json!({ "status": "skipped" })),
+        Err(error) => Some(serde_json::json!({ "status": "failed", "error": error })),
+    };
     // Format 8: the metadata database is rewritten once it has grown enough
     // (any size when asked explicitly), even after a failed pass; a failure
     // is reported, not fatal. Other formats have no rewrite and no field.
@@ -170,10 +193,13 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
         if let Some(metadata) = &rewrite_data {
             data["metadata"] = metadata.clone();
         }
+        if let Some(projections) = &projections {
+            data["projections"] = projections.clone();
+        }
         data
     };
     if consolidated > 0 {
-        let mut human = format!("Consolidated {consolidated} pack files.");
+        let mut human = format!("Consolidated {consolidated} packs.");
         if let Some(failure) = &failure {
             human.push_str(&format!("\nA later pass failed: {failure}"));
         }
@@ -200,7 +226,7 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
             0,
         ),
         MaintenanceOutcome::Consolidated { packs } => (
-            format!("Consolidated {packs} pack files into one."),
+            format!("Consolidated {packs} packs into one."),
             "consolidated",
             packs,
         ),

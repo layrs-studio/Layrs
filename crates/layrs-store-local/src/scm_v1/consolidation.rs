@@ -127,7 +127,16 @@ pub enum MaintenanceOutcome {
 /// they are then, so admissions made meanwhile are kept). A crash before
 /// that commit leaves only the temporary file, removed by the next pass.
 pub fn maintain(root: impl AsRef<std::path::Path>) -> Result<MaintenanceOutcome, String> {
-    maintain_recorded(root.as_ref(), &mut || Ok(()))
+    maintain_recorded(root.as_ref(), &mut || Ok(()), false)
+}
+
+/// An explicit `layrs maintenance` pass: `maintain`, except that in format
+/// 8 it first consolidates every pack, inline or not, into one, as `git gc`
+/// repacks all into one (council s36, D), while their decompressed total
+/// stays within the clustering bound; packs past it are left to the
+/// geometric groups of `maintain`.
+pub fn maintain_explicit(root: impl AsRef<std::path::Path>) -> Result<MaintenanceOutcome, String> {
+    maintain_recorded(root.as_ref(), &mut || Ok(()), true)
 }
 
 /// Test support: `maintain`, running `between` once the pack is built and
@@ -137,7 +146,7 @@ pub fn maintain_with_pause(
     root: impl AsRef<std::path::Path>,
     between: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<MaintenanceOutcome, String> {
-    maintain_recorded(root.as_ref(), between)
+    maintain_recorded(root.as_ref(), between, false)
 }
 
 /// `maintain_pausing`, its general failures recorded in a row
@@ -145,12 +154,13 @@ pub fn maintain_with_pause(
 fn maintain_recorded(
     root: &std::path::Path,
     between: &mut dyn FnMut() -> Result<(), String>,
+    whole: bool,
 ) -> Result<MaintenanceOutcome, String> {
     // The maintenance lock, once the pass holds it, is kept until its
     // outcome is recorded: passes record in turn (council s19 r2). Only a
     // pass that held it records (the Store opened, its metadata validated).
     let mut held = None;
-    let result = maintain_pausing(root, between, &mut held);
+    let result = maintain_pausing(root, between, &mut held, whole);
     if held.is_none() {
         return result;
     }
@@ -238,6 +248,111 @@ pub fn rewrite_metadata(
         return Ok(MetadataRewrite::NotDue);
     }
     rewrite_now(root, automatic, page_size)
+}
+
+/// What trimming the projection cache did (`trim_projections`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectionTrim {
+    /// Not a format 8 Store, or no projection cache to trim.
+    Unsupported,
+    /// The Store stayed busy longer than the trim waits for it, or a
+    /// Worktree transition is pending: nothing was removed.
+    Skipped,
+    /// `removed` cached projections were removed; `bases` are the Steps
+    /// the Worktrees and Rooms stand on, by Space (their projections kept).
+    Trimmed {
+        removed: usize,
+        bases: Vec<(layrs_core::scm::SpaceId, layrs_core::scm::StepId)>,
+    },
+}
+
+/// Format 8 (council s36, A): removes the cached checkout projections no
+/// Worktree or Room stands on, as `git gc` keeps only the index. Run once
+/// after a maintenance run's passes. Under a shared Store session (no
+/// RepositoryView moves meanwhile): the cache's newest sequence first, then
+/// the root Trees of every current RepositoryView's Worktrees (their base
+/// Steps' and their materialized Trees), then the trim, which keeps what
+/// was written or touched since and the complete projections kept deltas
+/// apply to (`projection_cache::trim`). Skipped while a Worktree transition
+/// is pending. Best effort: a removed projection is read from the Store
+/// when needed. The caller may then read the kept ones again (`bases`):
+/// a consolidation retires the packs a cached projection names files in.
+pub fn trim_projections(root: impl AsRef<std::path::Path>) -> Result<ProjectionTrim, String> {
+    use layrs_store::scm::ScmReader;
+    let root = root.as_ref();
+    match super::format::inspect(root).map_err(|error| error.to_string())? {
+        super::NativeStoreInspection::NativeReady { marker, .. }
+            if marker.format_version() == super::format::HISTORY_FORMAT_VERSION => {}
+        _ => return Ok(ProjectionTrim::Unsupported),
+    }
+    let store =
+        match super::acquisition::acquire("projection trim", super::acquisition::SHORT_WAIT, || {
+            super::open(root)
+        }) {
+            Ok(store) => store,
+            Err(error) if timed_out(&error) => return Ok(ProjectionTrim::Skipped),
+            Err(error) => return Err(error.to_string()),
+        };
+    let Some(through) = super::projection_cache::newest_seq(root) else {
+        return Ok(ProjectionTrim::Unsupported);
+    };
+    let error = |error: layrs_store::scm::StoreError| error.to_string();
+    let sql = |error: rusqlite::Error| error.to_string();
+    let spaces = {
+        let connection = store.connection().map_err(error)?;
+        let pending: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM recovery_operations \
+                 WHERE state IN ('pending', 'prepared', 'applying'))",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if pending {
+            return Ok(ProjectionTrim::Skipped);
+        }
+        let mut statement = connection
+            .prepare("SELECT space_id FROM current_repository_views")
+            .map_err(sql)?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?
+    };
+    let reader = super::NativeScmReader::new(&store).map_err(error)?;
+    let mut needed = BTreeSet::new();
+    let mut bases = Vec::new();
+    for space in spaces {
+        let space = layrs_core::scm::SpaceId::parse(space).map_err(|error| error.to_string())?;
+        let Some(view) = reader
+            .current_repository_view(&space)
+            .map_err(error)?
+            .and_then(|current| current.view_id().cloned())
+        else {
+            continue;
+        };
+        let Some(view) = reader.get_repository_view(&view).map_err(error)? else {
+            continue;
+        };
+        for worktree in view.worktrees() {
+            if let Some(tree) = worktree.materialized_tree_id() {
+                needed.insert(tree.to_string());
+            }
+            if let Some(step_id) = worktree.base_step_id() {
+                if let Some(step) = reader.get_step(step_id).map_err(error)? {
+                    needed.insert(step.root_tree_id().to_string());
+                    if !bases.iter().any(|(_, known)| known == step_id) {
+                        bases.push((space.clone(), step_id.clone()));
+                    }
+                }
+            }
+        }
+    }
+    let removed = super::projection_cache::trim(root, &needed, through);
+    drop(reader);
+    drop(store);
+    Ok(ProjectionTrim::Trimmed { removed, bases })
 }
 
 /// The page size of the metadata database of a Store of `format`.
@@ -431,6 +546,7 @@ fn maintain_pausing(
     root: &std::path::Path,
     between: &mut dyn FnMut() -> Result<(), String>,
     held: &mut Option<std::fs::File>,
+    whole: bool,
 ) -> Result<MaintenanceOutcome, String> {
     let _span = crate::perf::span("store.maintenance");
     // The group, from a short shared session.
@@ -478,7 +594,17 @@ fn maintain_pausing(
         let mut candidates = Vec::new();
         let mut exhausted = true;
         for _ in 0..MAX_ATTEMPTS {
-            let group = catalog.maintenance_candidates(&excluded);
+            // An explicit pass in format 8: every pack into one, within the
+            // clustering bound; else (or when that leaves fewer than two) a
+            // geometric group of pack files.
+            let mut group = if whole {
+                cas.whole_maintenance_candidates(&catalog, &excluded)
+            } else {
+                Vec::new()
+            };
+            if group.len() < 2 {
+                group = catalog.maintenance_candidates(&excluded);
+            }
             if group.len() < 2 {
                 exhausted = false;
                 break;

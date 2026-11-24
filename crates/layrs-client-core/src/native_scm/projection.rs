@@ -343,6 +343,24 @@ fn projection_cache(
     CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+/// Maintenance (council s36, A): reads the projection of each Step a
+/// Worktree or Room stands on (`bases`, by Space) through the persistent
+/// cache, so that a value the maintenance made unreadable (a consolidation
+/// retires the packs it names files in) is rebuilt there, not by the next
+/// command. Best effort: a failure leaves the next command to rebuild it.
+pub fn warm_step_projections(store_root: &std::path::Path, bases: &[(SpaceId, StepId)]) {
+    let _span = layrs_store_local::perf::span("projection.warm");
+    let Ok(store) = layrs_store_local::scm_v1::open(store_root) else {
+        return;
+    };
+    let Ok(reader) = NativeScmReader::new(&store) else {
+        return;
+    };
+    for (space, step) in bases {
+        let _ = read_admitted_step_projection(&reader, space, step, Some(store_root));
+    }
+}
+
 /// The admitted Step's checkout projection. With `cache` (the Store root),
 /// the persistent projection cache answers by root Tree when it holds a
 /// sound entry; a sample of hits (every hit in debug builds) is checked

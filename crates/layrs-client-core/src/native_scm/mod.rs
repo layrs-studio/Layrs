@@ -112,6 +112,7 @@ pub use partial::{checkout_kind, execute_projection, ProjectionAction};
 pub use prepare::{
     prepare_initialize, CaptureBase, CapturePlan, MutationStamp, NativeClient, PreparedMutation,
 };
+pub use projection::warm_step_projections;
 pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
 pub use selection::ResolvedStep;
 pub use snapshot::{PreparedSnapshot, SnapshotBuilder, SnapshotLimits};

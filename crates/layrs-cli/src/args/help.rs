@@ -48,6 +48,10 @@ Commands:
   layrs maintenance
     Consolidate the pack files batches leave out (compact Store formats), as git maintenance repacks.
     Builds outside the Store lock; one pass at a time. Safe to run while other commands work.
+    Store format 8: an explicit run first consolidates every pack into one while they hold at most
+    16,384 records and 64 MiB decompressed, as git gc repacks all into one; larger packs are left to
+    the geometric groups (as git keeps packs past gc.bigPackThreshold). Every run also removes the
+    cached checkout projections no Worktree or Room stands on and reads the others again.
     Store format 8: also rewrites the metadata database once it has grown by a quarter (as git gc
     repacks refs). The rewrite holds the Store lock while it runs: automatic runs rewrite databases up
     to 16 MiB; an explicit run rewrites any size, and other commands wait for it up to their own lock

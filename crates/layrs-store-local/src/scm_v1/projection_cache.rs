@@ -876,6 +876,50 @@ fn prune(cache: &Projections, kept: &str) {
     }
 }
 
+/// The sequence of the most recently written or touched projection of the
+/// Store at `store_root` (0 when none); `None` without a readable cache.
+pub(crate) fn newest_seq(store_root: &Path) -> Option<i64> {
+    Projections::open(store_root, Access::Write)?.newest_seq()
+}
+
+/// Maintenance (council s36, A), as `git gc` keeps only the index: removes
+/// the projections recorded at or before sequence `through` whose root is
+/// not `needed` (the Trees Worktrees and Rooms stand on, read after
+/// `through`) and that no kept delta applies to. A value written or touched
+/// since `through` stays, and so does the complete projection it applies
+/// to. Best effort: a removed projection is read from the Store when
+/// needed. How many were removed.
+pub(crate) fn trim(
+    store_root: &Path,
+    needed: &std::collections::BTreeSet<String>,
+    through: i64,
+) -> usize {
+    let Some(cache) = Projections::open(store_root, Access::Write) else {
+        return 0;
+    };
+    let rows = cache.rows();
+    let kept =
+        |row: &super::derived_cache::ProjectionRow| row.seq > through || needed.contains(&row.root);
+    let bases: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| kept(row))
+        .filter_map(|row| row.base.as_deref())
+        .collect();
+    let mut removed = 0;
+    for row in &rows {
+        if kept(row) || bases.contains(row.root.as_str()) {
+            continue;
+        }
+        if cache.remove_through(&row.root, through) {
+            removed += 1;
+            if let Ok(tree) = TreeId::parse(row.root.clone()) {
+                forget_complete(&tree);
+            }
+        }
+    }
+    removed
+}
+
 /// Forgets a cached projection found to differ from its recomputation.
 pub fn remove(store_root: &Path, root_tree: &TreeId) {
     // Removed, then forgotten (council s9 r3): a read that saw the value
@@ -1190,6 +1234,55 @@ mod tests {
         assert_eq!(load(&root, &tree(1), None), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
         drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Maintenance's trim (council s36, A) keeps the needed projections and
+    /// the complete ones their deltas apply to, and whatever was written or
+    /// touched after the sequence it read first; it removes the rest.
+    #[test]
+    fn a_trim_keeps_what_worktrees_stand_on_and_what_came_after() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-trim-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 55]))).unwrap();
+        let base = many(300, 3);
+        let near = |n: usize| {
+            let mut next = base.clone();
+            next.remove(n);
+            next
+        };
+        // 0 complete, 1 and 2 deltas to it, 3 complete, 4 a delta to it.
+        save(&root, &tree(0), &tree(0), &base, None);
+        save(&root, &tree(1), &tree(1), &near(1), None);
+        save(&root, &tree(2), &tree(2), &near(2), None);
+        let far = many(300, 4);
+        save(&root, &tree(3), &tree(3), &far, None);
+        let mut far_next = far.clone();
+        far_next.remove(0);
+        save(&root, &tree(4), &tree(4), &far_next, None);
+        let through = newest_seq(&root).unwrap();
+        // Written after the trim's snapshot: kept.
+        let mut later = far.clone();
+        later.remove(5);
+        save(&root, &tree(5), &tree(5), &later, None);
+        let needed = [tree(1).as_str().to_owned()].into_iter().collect();
+        assert_eq!(trim(&root, &needed, through), 2);
+        let cache = Projections::open(&root, Access::Write).unwrap();
+        let mut kept: Vec<String> = cache.rows().into_iter().map(|row| row.root).collect();
+        kept.sort();
+        let mut expected: Vec<String> = [0, 1, 3, 5]
+            .into_iter()
+            .map(|n| tree(n).as_str().to_owned())
+            .collect();
+        expected.sort();
+        assert_eq!(kept, expected);
+        drop(cache);
+        assert_eq!(load(&root, &tree(1), None), Some(near(1)));
+        assert_eq!(load(&root, &tree(5), None), Some(later));
+        assert_eq!(load(&root, &tree(2), None), None);
         let _ = fs::remove_dir_all(&root);
     }
 

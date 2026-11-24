@@ -62,13 +62,58 @@ pub(crate) const OBSERVATION_KIND: u8 = 12;
 /// Longest Space id a history section names.
 const MAX_SPACE_ID_BYTES: u64 = 4096;
 
+/// Bytes of a history record's index key (draft 12, council s36 B): 128
+/// bits, as an id names one record (every read checks the decoded id), not
+/// content. A pack v4 stores only these; the rest of the key is zero.
+pub(crate) const HISTORY_KEY_BYTES: usize = 16;
+
 /// A history record's index key: derived from its kind and id, which are
-/// not content addresses (every read checks the decoded id).
+/// not content addresses (every read checks the decoded id); its first
+/// `HISTORY_KEY_BYTES`, then zeros.
 pub(crate) fn history_key(code: u8, id: &str) -> [u8; 32] {
     let mut input = Vec::with_capacity(1 + id.len());
     input.push(code);
     input.extend_from_slice(id.as_bytes());
-    blake3::derive_key("layrs history key v1", &input)
+    let derived = blake3::derive_key("layrs history key v1", &input);
+    let kept = history_key_bytes();
+    let mut key = [0_u8; 32];
+    key[..kept].copy_from_slice(&derived[..kept]);
+    key
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static HISTORY_KEY_FORCED_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Test support: history keys keep only their first `bytes` (1 to 16)
+/// derived bytes, so that ids collide on purpose; `None` restores
+/// `HISTORY_KEY_BYTES`. For the whole process: only a test binary of its own
+/// sets it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_history_key_bytes(bytes: Option<usize>) {
+    let bytes = bytes.map_or(0, |bytes| bytes.clamp(1, HISTORY_KEY_BYTES));
+    HISTORY_KEY_FORCED_BYTES.store(bytes, std::sync::atomic::Ordering::Release);
+}
+
+/// `HISTORY_KEY_BYTES`, unless a test forced fewer.
+fn history_key_bytes() -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let forced = HISTORY_KEY_FORCED_BYTES.load(std::sync::atomic::Ordering::Acquire);
+        if forced != 0 {
+            return forced;
+        }
+    }
+    HISTORY_KEY_BYTES
+}
+
+/// The bytes a pack of `version` stores of a key of kind `code`.
+fn stored_key_bytes(version: u32, code: u8) -> usize {
+    if version >= PACK2_VERSION_HISTORY && is_history_code(code) {
+        HISTORY_KEY_BYTES
+    } else {
+        32
+    }
 }
 
 /// Whether `code` is a history record's kind.
@@ -626,8 +671,13 @@ impl<'a> Reader<'a> {
     }
 
     fn id(&mut self) -> CasResult<[u8; 32]> {
+        self.key(32)
+    }
+
+    /// A key of which `stored` bytes are stored, the rest zero.
+    fn key(&mut self, stored: usize) -> CasResult<[u8; 32]> {
         let mut id = [0_u8; 32];
-        id.copy_from_slice(self.take(32)?);
+        id[..stored].copy_from_slice(self.take(stored)?);
         Ok(id)
     }
 
@@ -855,8 +905,9 @@ fn decode_checked(
             return Err(pack2_corruption(path, "pack index kind count is invalid"));
         }
         let start = ids.len();
+        let stored = stored_key_bytes(version, kind);
         for _ in 0..count {
-            let id = reader.id()?;
+            let id = reader.key(stored)?;
             if ids.len() > start && ids.last().is_some_and(|last: &[u8; 32]| *last >= id) {
                 return Err(pack2_corruption(path, "pack index is not strictly sorted"));
             }
@@ -1720,8 +1771,12 @@ impl Pack2Builder {
                 .collect();
             metadata.push(kind);
             put_varint(&mut metadata, run.len() as u64);
+            let stored = stored_key_bytes(self.version, kind);
             for entry in &run {
-                metadata.extend_from_slice(&entry.1);
+                if entry.1[stored..].iter().any(|byte| *byte != 0) {
+                    return Err(invalid("a history key longer than a pack stores"));
+                }
+                metadata.extend_from_slice(&entry.1[..stored]);
             }
             for entry in &run {
                 write_location(&mut metadata, entry.2);
@@ -2094,10 +2149,10 @@ mod tests {
             )
             .unwrap();
         let records = [
-            (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
-            (OBSERVATION_KIND, [3_u8; 32], 6, None),
-            (OPERATION_KIND, [1_u8; 32], 9, Some("space:a")),
-            (OBSERVATION_KIND, [9_u8; 32], 2, Some("space:b")),
+            (OPERATION_KIND, short(7), 5, Some("space:b")),
+            (OBSERVATION_KIND, short(3), 6, None),
+            (OPERATION_KIND, short(1), 9, Some("space:a")),
+            (OBSERVATION_KIND, short(9), 2, Some("space:b")),
         ];
         for (code, key, sequence, space) in records {
             builder
@@ -2127,10 +2182,10 @@ mod tests {
         assert_eq!(
             listed,
             [
-                (OBSERVATION_KIND, [3_u8; 32], 6, None),
-                (OPERATION_KIND, [1_u8; 32], 9, Some("space:a")),
-                (OBSERVATION_KIND, [9_u8; 32], 2, Some("space:b")),
-                (OPERATION_KIND, [7_u8; 32], 5, Some("space:b")),
+                (OBSERVATION_KIND, short(3), 6, None),
+                (OPERATION_KIND, short(1), 9, Some("space:a")),
+                (OBSERVATION_KIND, short(9), 2, Some("space:b")),
+                (OPERATION_KIND, short(7), 5, Some("space:b")),
             ]
         );
         // Every block's raw bytes are committed by the index (council s30):
@@ -2158,18 +2213,52 @@ mod tests {
         let mut older = Pack2Builder::start_for(&mut sink, true, false).unwrap();
         assert!(
             older
-                .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"{\"x\":1}", 1, None)
+                .add_history_record(&mut sink, OPERATION_KIND, short(1), b"{\"x\":1}", 1, None)
                 .is_err()
         );
         let mut sink = Vec::new();
         let mut twice = Pack2Builder::start_for(&mut sink, true, true).unwrap();
         twice
-            .add_history_record(&mut sink, OPERATION_KIND, [1; 32], b"{\"x\":1}", 4, None)
+            .add_history_record(&mut sink, OPERATION_KIND, short(1), b"{\"x\":1}", 4, None)
             .unwrap();
         twice
-            .add_history_record(&mut sink, OBSERVATION_KIND, [2; 32], b"{\"y\":1}", 4, None)
+            .add_history_record(&mut sink, OBSERVATION_KIND, short(2), b"{\"y\":1}", 4, None)
             .unwrap();
         assert!(twice.finish(&mut sink).is_err());
+        // A history key is stored in 16 bytes (draft 12): the index holds
+        // them, not 32, and a key with more is refused.
+        let metadata = |key: [u8; 32]| {
+            let mut sink = Vec::new();
+            let mut builder = Pack2Builder::start_for(&mut sink, true, true).unwrap();
+            builder
+                .add_history_record(&mut sink, OPERATION_KIND, key, b"{\"x\":1}", 1, None)
+                .unwrap();
+            builder.finish(&mut sink).map(|_| {
+                let footer = sink.len() - FOOTER_LEN as usize;
+                let at = |from: usize| {
+                    u64::from_le_bytes(sink[footer + from..footer + from + 8].try_into().unwrap())
+                        as usize
+                };
+                sink[at(0)..at(0) + at(8)].to_vec()
+            })
+        };
+        let stored = metadata(short(5)).unwrap();
+        assert!(
+            stored
+                .windows(HISTORY_KEY_BYTES)
+                .any(|window| window == [5; 16])
+        );
+        assert!(!stored.windows(32).any(|window| window == short(5)));
+        let mut long = short(5);
+        long[31] = 1;
+        assert!(metadata(long).is_err());
+    }
+
+    /// A history key as `history_key` makes them: 16 bytes, then zeros.
+    fn short(byte: u8) -> [u8; 32] {
+        let mut key = [0_u8; 32];
+        key[..HISTORY_KEY_BYTES].fill(byte);
+        key
     }
 
     fn id_of(object: &StoreObjectId) -> [u8; 32] {

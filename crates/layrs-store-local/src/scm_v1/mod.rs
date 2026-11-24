@@ -46,11 +46,12 @@ pub use cas::{
 #[cfg(any(test, feature = "test-support"))]
 pub use cas::{
     blocks_read_on_this_thread, forget_loaded_packs, held_pack_files, set_cluster_max_raw,
-    set_consolidation_budget, set_inline_pack_limit,
+    set_consolidation_budget, set_history_key_bytes, set_inline_pack_limit,
 };
 pub use consolidation::{
-    MaintenanceOutcome, MetadataRewrite, maintain, maintenance_paused, maintenance_running,
-    rewrite_metadata, take_maintenance_due,
+    MaintenanceOutcome, MetadataRewrite, ProjectionTrim, maintain, maintain_explicit,
+    maintenance_paused, maintenance_running, rewrite_metadata, take_maintenance_due,
+    trim_projections,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use consolidation::{maintain_with_pause, set_vacuum_min_pages};

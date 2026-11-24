@@ -103,10 +103,11 @@ pub fn schema_v3_checksum() -> String {
 /// records are binary (phase 3c, schema unchanged). Draft 10: their
 /// dictionaries gain the rewrite map's keys (council s33). Draft 11: a
 /// receipt's key is its transaction id as a tagged UUID or text (phase 3e).
-/// Drafts change until format 8 is frozen; a Store of an earlier draft is
+/// Draft 12: packs v4 store a history record's index key in 16 bytes
+/// (council s36, schema unchanged). Drafts change until format 8 is frozen; a Store of an earlier draft is
 /// refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft11";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft12";
 pub const SCHEMA_V4_CHECKSUM: &str =
     "4f3f5078db4ac09758348494f167385b9d7468d7e2b8a11b802c05b2f237bd22";
 pub const SCHEMA_V4_FINGERPRINT: &str =

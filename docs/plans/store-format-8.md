@@ -1615,3 +1615,127 @@ Later: measure the rewrite's lock time on a large Store before 2e, with the
 rewrite outside the lock (`VACUUM INTO` and a journaled swap, sharing what
 `compact_metadata` already has) as the way to lift the automatic bound;
 fsck checking every compact receipt's tag (only replays do, since s29).
+
+## Council s36 r1 (2026-11-24): closing the phase 3 size gate
+
+Question: after 3a to 3e, the s30 size gate (Layrs after `layrs
+maintenance` at most 0.9 times git after `git gc`, slope and total, 1,000
+and 2,000 Steps, flat and nested) failed on the 1,000-Step totals (flat
+0.911, nested 1.060) and the nested 2,000 total (0.963); the slopes were at
+0.83.
+
+Chair's decision:
+
+- Step 0 (Opus): the pack inventory first. Nested, 2,000 Steps, maintained:
+  two pack files (1,044,133 and 100,705 bytes) and two inline packs.
+- A (all three): maintenance trims the derived projection cache, aware of
+  delta dependencies, best effort, after the passes, format 8 only.
+- D (Opus): an explicit `layrs maintenance` consolidates every pack into
+  one while they fit the clustering bound (64 MiB decompressed), as
+  `git gc` repacks all into one: the tail of unconsolidated packs restarts
+  every Tree lineage.
+- C (1 KiB pages in `derived.sqlite3`): rejected, a small gain against a
+  real latency risk at 99k files.
+- B (16-byte history keys): only if A and D do not close the gate, with
+  s30's conditions.
+
+## Size gate progress (s36)
+
+- D: `maintain_explicit` (the CLI's explicit run; automatic runs keep the
+  geometric groups) first takes every sound pack, inline or not, smallest
+  first, within the clustering bound, half the reader's limits and
+  `QUICK_REWRITE_RECORDS` (16,384) records
+  (`RegisteredCatalog::whole_candidates`); larger packs are left to the
+  geometric groups. Format 8 only.
+- A: `trim_projections`, after the passes (explicit and detached runs),
+  under a shared Store session (no RepositoryView moves meanwhile): the
+  cache's newest sequence, then the root Trees of every current
+  RepositoryView's Worktrees (base Steps' roots and materialized Trees),
+  then `projection_cache::trim`, which removes the values written at or
+  before that sequence whose root is not needed and that no kept delta
+  applies to. Skipped while a Worktree transition is pending (recovery
+  operations pending, prepared or applying). Then the CLI reads the kept
+  bases' projections again (`warm_step_projections`): a consolidation
+  retires the packs a cached projection names files in (by position), and
+  the first command after it rebuilt the projection (300 ms at 99k files).
+  Reported in the explicit run's data (`projections`), format 8 only.
+- Measured with A and D (release, `history_slope.py`,
+  `history_slope_nested.py`):
+
+  | Scenario | 1,000 Steps | 2,000 Steps | slope |
+  | --- | --- | --- | --- |
+  | flat | 688 / 796 KiB (0.864) | 1236 / 1448 (0.854) | 561 / 668 (0.84) |
+  | nested | 912 / 1004 KiB (0.908) | 1520 / 1736 (0.876) | 623 / 750 (0.83) |
+
+  Nested at 1,000 Steps still missed: B.
+- B (draft 12): packs v4 store a history record's index key (Operations,
+  StepObservations) in 16 bytes; `history_key` keeps the first 16 derived
+  bytes, the rest zero, so every identity, filter, admission and fsck check
+  uses the same 32-byte form. The pack metadata was 604 KB of the nested
+  pack's 1.11 MB at 2,000 Steps (explicit keys 386 KB).
+
+  Deviation from s30's conditions, for council s37: a pack does not keep
+  full keys when two keys share 16 bytes; colliding ids are refused
+  instead. A batch whose history record's key a stored record already has
+  fails its admission (the stored bytes differ), two colliding records in
+  one pack are refused by the builder ("two copies of a history record
+  differ"), a copy of two colliding records in consolidation fails its
+  candidate, and every read compares the decoded id (`get_*` refuses
+  another id). Legitimate ids are random (UUIDs): about n²/2^129 for n
+  records. A forced collision needs 2^64 work on two ids of the forger's
+  own choosing (no second preimage at 128 bits), and only those refuse.
+  Test: `history_key_collision.rs`, keys cut to one byte through a test
+  hook (`set_history_key_bytes`).
+- Measured with A, D and B:
+
+  | Scenario | 1,000 Steps | 2,000 Steps | slope |
+  | --- | --- | --- | --- |
+  | flat | 660 / 796 KiB (0.829) | 1176 / 1452 (0.810) | 528 / 672 (0.79) |
+  | nested | 880 / 1000 KiB (0.880) | 1456 / 1732 (0.841) | 590 / 750 (0.79) |
+
+- Speed gate (`maint_bench.py`, 10 folders, 10 Steps of 5 edits, then
+  `layrs maintenance` against `git gc`, alternating with 3e's build). At
+  99k files the first build of D rewrote the whole 99,000-file pack on
+  every explicit run: 1.6 to 1.9 s against `git gc`'s 0.6 s (17 µs per
+  record: each is read, checked and remapped; git reuses its packed
+  objects). The same cost showed inside `layrs step`: a batch's own
+  consolidation took the import pack once the small packs grew to half
+  its size, 2 s for that step (1.6 s consolidating), every few Steps
+  (formats 6 to 8). Both are now bounded by `QUICK_REWRITE_RECORDS`:
+  larger groups wait for maintenance (detached after a batch, as
+  `git gc --auto`). Steps at 99k: 360 to 730 ms with the bound, against
+  2,026 and 2,069 ms before (`steps99.py`). Moved there, the same group
+  made the first explicit maintenance take 2.4 to 3.3 s (`git gc`: 1.1 to
+  1.6 s): a geometric group now takes a pack past `QUICK_REWRITE_RECORDS`
+  only while the others hold half its records (not only while the group
+  holds half its size), so a large import waits until the packs after it
+  hold half as many records, where ten Steps of wide Trees made them
+  larger than it on disk. Formats 6 to 8 (the same policy); below the
+  bound, records never hold a group back (no pile-up of small packs).
+- Speed gate, final (`maint_bench.py`, ms, two runs each; base is 3e's
+  build):
+
+  | Files | Command | git | base | new |
+  | --- | --- | --- | --- | --- |
+  | 10k | maintenance | 470 / 441 | 66 / 69 | 237 / 290 |
+  | 10k | status after | 38 / 38 | 33 / 25 | 24 / 37 |
+  | 10k | commit after | 152 / 163 | 93 / 89 | 82 / 96 |
+  | 10k | maintenance again | 288 / 301 | 30 / 44 | 267 / 235 |
+  | 99k | maintenance | 1182 / 952 | 82 / 90 | 500 / 490 |
+  | 99k | status after | 124 / 118 | 60 / 60 | 62 / 76 |
+  | 99k | status 2 changes | 92 / 88 | 73 / 72 | 71 / 75 |
+  | 99k | commit after | 334 / 339 | 520 / 582 | 353 / 322 |
+  | 99k | maintenance again | 674 / 689 | 48 / 38 | 451 / 530 |
+
+  Base's maintenance had nothing to do (its Steps had consolidated
+  in-batch, 2 s for one of them); base's commit after it rebuilt the
+  projection. A commit at 99k stays at parity with git (wide Trees, see
+  below). Sizes with the final build: flat 668 / 800 KiB (0.835), 1184 /
+  1452 (0.815), slope 0.79; nested 888 / 1004 (0.884), 1460 / 1740
+  (0.839), slope 0.78.
+- Found, not in this change: at 99k files in 10 folders, each Step
+  rewrites folder Trees of 9,900 entries (405 KB decompressed, 320 KB
+  stored alone, 160 KB per version in 1 MiB clustered blocks). git deltas
+  them: its objects grew 14 KiB over 10 commits (`git99.py`: `.git` 15.0
+  MiB at 0 and 10 commits, 15.8 at 50), Layrs's pack 6.5 MB. A design
+  question for the next council (Tree deltas or chunked large Trees).

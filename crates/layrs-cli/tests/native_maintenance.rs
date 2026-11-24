@@ -327,6 +327,125 @@ fn format_8_maintenance_rewrites_the_metadata() {
     assert!(!other.join(".layrs/metadata/metadata-rewritten").exists());
 }
 
+/// Format 8 (council s36): an explicit `layrs maintenance` consolidates
+/// every pack, inline or not, into one, as `git gc` repacks all into one, and
+/// removes the cached projections no Worktree or Room stands on; the next
+/// Steps in the project and in a Room on an older Step still find theirs.
+/// The detached run trims too; format 7 has neither.
+#[test]
+fn format_8_explicit_maintenance_packs_all_into_one_and_trims_projections() {
+    let fixture = Fixture::new();
+    let checkout = fixture.directory("format-8");
+    fs::create_dir(checkout.join("src")).unwrap();
+    for n in 0..5 {
+        fs::write(checkout.join(format!("src/f{n}.txt")), format!("f{n}\n")).unwrap();
+    }
+    let layrs_in = |dir: &Path, args: &[&str], format: &str, perf: Option<&Path>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_layrs"));
+        command
+            .current_dir(dir)
+            .env("LAYRS_STORE_FORMAT", format)
+            .env("LAYRS_AUTO_MAINTENANCE", "0")
+            .arg("--json")
+            .args(args);
+        if let Some(perf) = perf {
+            command.env("LAYRS_PERF", "1").env("LAYRS_PERF_OUT", perf);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["data"].clone()
+    };
+    let json = |args: &[&str]| layrs_in(&checkout, args, "8", None);
+    let append = |dir: &Path, n: usize, text: &str| {
+        let path = dir.join(format!("src/f{n}.txt"));
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(text.as_bytes());
+        fs::write(&path, bytes).unwrap();
+    };
+    json(&["init", "Format 8"]);
+    for k in 0..12 {
+        append(&checkout, k % 5, &format!("e{k}\n"));
+        json(&["step"]);
+    }
+    let room = fixture.0.join("room");
+    json(&["room", "new", "agent", "--dir", room.to_str().unwrap()]);
+    for k in 12..15 {
+        append(&checkout, 1, &format!("e{k}\n"));
+        json(&["step"]);
+    }
+    let store = checkout.join(".layrs");
+    let metadata = store.join("metadata");
+    let projections = || -> i64 {
+        rusqlite::Connection::open(metadata.join("derived.sqlite3"))
+            .unwrap()
+            .query_row("SELECT count(*) FROM projection", [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = projections();
+    assert!(before > 2, "{before}");
+    let data = json(&["maintenance"]);
+    assert_eq!(data["status"], "consolidated", "{data}");
+    assert!(data["packs"].as_u64().unwrap() >= 2, "{data}");
+    assert_eq!(data["projections"]["status"], "trimmed", "{data}");
+    let removed = data["projections"]["removed"].as_i64().unwrap();
+    assert!(removed > 0, "{data}");
+    assert_eq!(projections(), before - removed);
+    // One pack, a file: no inline pack is left.
+    let packs: (i64, i64) = rusqlite::Connection::open(metadata.join("layrs.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*), coalesce(sum(stored_inline), 0) FROM cas_packs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(packs, (1, 0));
+    // The next Steps find the projections they stand on.
+    for (dir, args, label) in [
+        (&checkout, &["step"][..], "project"),
+        (&room, &["room", "step"][..], "room"),
+    ] {
+        append(dir, 3, &format!("after maintenance, {label}\n"));
+        let perf = fixture.0.join(format!("{label}.perf"));
+        layrs_in(dir, args, "8", Some(&perf));
+        let report = fs::read_to_string(&perf).unwrap();
+        // A hit (debug builds check every hit against a walk).
+        assert!(
+            report.contains("\"projection_cache.hit\"")
+                || report.contains("\"projection_cache.sampled_ok\""),
+            "{label}: {report}"
+        );
+    }
+    let data = json(&["status"]);
+    assert_eq!(data["dirty"], false, "{data}");
+    // The detached run trims too.
+    for k in 15..20 {
+        append(&checkout, k % 5, &format!("e{k}\n"));
+        json(&["step"]);
+    }
+    let before = projections();
+    let detached = Command::new(env!("CARGO_BIN_EXE_layrs"))
+        .args([
+            std::ffi::OsStr::new(layrs_cli::native::MAINTENANCE_COMMAND),
+            store.as_os_str(),
+        ])
+        .status()
+        .unwrap();
+    assert_eq!(detached.code(), Some(0));
+    assert!(projections() < before);
+    // Format 7: no trim, no field.
+    let other = fixture.directory("format-7");
+    fs::write(other.join("file"), b"base").unwrap();
+    layrs_in(&other, &["init", "Format 7"], "7", None);
+    let data = layrs_in(&other, &["maintenance"], "7", None);
+    assert!(data.get("projections").is_none(), "{data}");
+}
+
 /// The detached maintenance run a batch starts takes the Store root as its
 /// only argument and exits 0 (council s17, B2c).
 #[test]

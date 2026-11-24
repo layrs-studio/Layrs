@@ -149,6 +149,14 @@ fn pack_load_gate(key: &(String, OsString)) -> Option<Arc<Mutex<()>>> {
 /// Candidates of at most this many raw bytes are copied clustered
 /// (`copy_clustered`, held in memory meanwhile).
 const CLUSTER_MAX_RAW: u64 = 64 * 1024 * 1024;
+/// The most records a batch's own consolidation, or an explicit
+/// maintenance pass's group of every pack, rewrites (council s36). A
+/// rewrite costs about 17 µs per record here (each is read, checked and
+/// remapped: 1.6 s for a pack of 99,000 files, inside a `step`), where git
+/// commits without repacking and `git gc` reuses its packed objects (0.6 s
+/// there): a larger group waits for maintenance's geometric groups, run
+/// detached after a batch, as git leaves a pack past `gc.bigPackThreshold`.
+const QUICK_REWRITE_RECORDS: u64 = 16 * 1024;
 /// Raw bytes a clustered pack's records share a block up to (council s24
 /// phase 0: 256 KiB brings 1,000 versions of a 100-entry folder from 4.7 to
 /// 0.6 KiB per version).
@@ -703,25 +711,31 @@ const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// it costs, not by its size on disk.
 const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-/// What one consolidation may write: its new pack's size on disk and its
-/// decompressed bytes (half the reader's limits always apply too).
+/// What one consolidation may write: its new pack's size on disk, its
+/// decompressed bytes and its records (half the reader's limits always
+/// apply too).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Budget {
     bytes: u64,
     raw: u64,
+    records: u64,
 }
 
 impl Budget {
-    /// Inside a batch's exclusive session (council s6).
+    /// Inside a batch's exclusive session (council s6), and at most
+    /// `QUICK_REWRITE_RECORDS` records (council s36): a larger group waits
+    /// for maintenance, started detached, as `git gc --auto` is.
     pub(crate) const IN_BATCH: Self = Self {
         bytes: INLINE_BUDGET_BYTES,
         raw: INLINE_RAW_BUDGET_BYTES,
+        records: QUICK_REWRITE_RECORDS,
     };
     /// A maintenance pass, built outside the lock (council s17, B2b): only
     /// the reader's limits.
     pub(crate) const MAINTENANCE: Self = Self {
         bytes: u64::MAX,
         raw: u64::MAX,
+        records: u64::MAX,
     };
 }
 
@@ -839,6 +853,30 @@ impl RegisteredCatalog {
     /// only, leaving out `excluded`; empty when none.
     pub(crate) fn maintenance_candidates(&self, excluded: &[usize]) -> Vec<usize> {
         consolidation_group_within(&self.by_size(excluded, false), Budget::MAINTENANCE)
+    }
+
+    /// The packs an explicit `layrs maintenance` consolidates into one in
+    /// format 8 (council s36, D), as `git gc` repacks all into one: every
+    /// pack, inline or not, leaving out `excluded`, smallest first while
+    /// they hold at most `QUICK_REWRITE_RECORDS` records and their decompressed
+    /// total stays within `raw` (the clustering bound, so the new pack is
+    /// written clustered) and half the reader's limits; a pack past them is
+    /// left as it is, to the geometric groups. Positions in increasing
+    /// order; empty when fewer than two.
+    pub(crate) fn whole_candidates(&self, excluded: &[usize], raw: u64) -> Vec<usize> {
+        let mut all = self.by_size(excluded, false);
+        all.extend(self.by_size(excluded, true));
+        all.sort_unstable();
+        let group = bounded_group_within(
+            &all,
+            false,
+            Budget {
+                bytes: u64::MAX,
+                raw,
+                records: QUICK_REWRITE_RECORDS,
+            },
+        );
+        if group.len() >= 2 { group } else { Vec::new() }
     }
 
     /// (size, records, blocks, decompressed bytes, position) of the inline
@@ -1023,7 +1061,8 @@ fn consolidation_group_within(
 /// The packs taken from `by_size` (smallest first) while the group stays
 /// within the inline budgets (on disk and decompressed) and half the
 /// reader's limits for one pack, and, `geometric`, while each next pack is
-/// at most twice the group's total. Without the geometric rule a pack that
+/// at most twice the group's total and no pack past `QUICK_REWRITE_RECORDS`
+/// holds more than twice the records of the others. Without the geometric rule a pack that
 /// does not fit is skipped, so one oversized pack never blocks the others
 /// (council s8 r3). Positions in increasing order.
 #[cfg(test)]
@@ -1039,15 +1078,27 @@ fn bounded_group_within(
 ) -> Vec<usize> {
     let mut chosen = Vec::new();
     let (mut total, mut records, mut blocks, mut raw) = (0_u64, 0_u64, 0_u64, 0_u64);
+    let mut heaviest = 0_u64;
     for &(size, pack_records, pack_blocks, pack_raw, position) in by_size {
-        if geometric && !chosen.is_empty() && size > total.saturating_mul(2) {
-            break;
+        if geometric && !chosen.is_empty() {
+            // Balanced in records too (council s36): a rewrite costs per
+            // record, so a pack past `QUICK_REWRITE_RECORDS` (a large
+            // import's file records) is rewritten only once the others
+            // hold half as many records, not only half its size (a few
+            // wide Trees make small packs large on disk).
+            let heaviest = heaviest.max(pack_records);
+            let others = records + pack_records - heaviest;
+            if size > total.saturating_mul(2)
+                || (heaviest > QUICK_REWRITE_RECORDS && heaviest > others.saturating_mul(2))
+            {
+                break;
+            }
         }
         // Within the inline budgets, and half the reader's limits for one
         // pack so the new pack always loads.
         let fits = total.saturating_add(size) <= budget.bytes
             && raw.saturating_add(pack_raw) <= budget.raw
-            && records + pack_records <= pack2::MAX_PACK_ENTRIES / 2
+            && records + pack_records <= (pack2::MAX_PACK_ENTRIES / 2).min(budget.records)
             && blocks + pack_blocks <= pack2::MAX_PACK_BLOCKS / 2;
         if !fits {
             if geometric {
@@ -1058,6 +1109,7 @@ fn bounded_group_within(
         total = total.saturating_add(size);
         raw = raw.saturating_add(pack_raw);
         records += pack_records;
+        heaviest = heaviest.max(pack_records);
         blocks += pack_blocks;
         chosen.push(position);
     }
@@ -1430,6 +1482,7 @@ impl NativeCas {
         let mut raws: Vec<Arc<Vec<u8>>> = Vec::new();
         let written_order = open.builder.version() >= pack2::PACK2_VERSION_HISTORY;
         let mut records: Vec<ClusterRecord> = Vec::new();
+        let read_span = crate::perf::span("cas.cluster_read");
         for (candidate, &position) in candidates.iter().enumerate() {
             let registered = catalog.packs.get(position).ok_or_else(|| {
                 failed(
@@ -1472,7 +1525,12 @@ impl NativeCas {
                 loaded.is_inline(),
             ));
         }
-        records.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+        drop(read_span);
+        {
+            let _span = crate::perf::span("cas.cluster_sort");
+            records.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+        }
+        let _write_span = crate::perf::span("cas.cluster_write");
         open.builder.set_block_target(CLUSTER_BLOCK);
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
@@ -1638,16 +1696,25 @@ impl NativeCas {
         let (packs, keys_of) = self.copy_candidates(catalog, candidates, &mut open)?;
         drop(hold);
         let builder = std::mem::replace(&mut open.builder, empty_builder());
-        let sealed = builder
-            .finish(&mut open.sink)
-            .map_err(|error| general(io_error("write CAS pack index", &open.path, error)))?;
-        open.file()
-            .map_err(general)?
-            .file()
-            .sync_all()
-            .map_err(|error| general(io_error("sync CAS pack", &open.path, error)))?;
-        pack2::verify_written(open.file().map_err(general)?.file(), &open.path, &sealed)
-            .map_err(general)?;
+        let sealed = {
+            let _span = crate::perf::span("cas.maintenance_seal");
+            builder
+                .finish(&mut open.sink)
+                .map_err(|error| general(io_error("write CAS pack index", &open.path, error)))?
+        };
+        {
+            let _span = crate::perf::span("cas.maintenance_sync");
+            open.file()
+                .map_err(general)?
+                .file()
+                .sync_all()
+                .map_err(|error| general(io_error("sync CAS pack", &open.path, error)))?;
+        }
+        {
+            let _span = crate::perf::span("cas.maintenance_verify");
+            pack2::verify_written(open.file().map_err(general)?.file(), &open.path, &sealed)
+                .map_err(general)?;
+        }
         // The remap too, from the verified file under its temporary name and
         // for the name it is published under: the exclusive session only
         // publishes it and registers it against the current bitmaps.
@@ -1667,6 +1734,7 @@ impl NativeCas {
                 "maintenance pack changed after it was verified",
             )));
         }
+        let _span = crate::perf::span("cas.maintenance_remap");
         let consolidation = Self::remap_consolidation(
             &new,
             (pack2::new_pack2_name(), sealed.digest, sealed.logical),
@@ -4340,6 +4408,20 @@ pub fn set_cluster_max_raw(root: &Path, bytes: Option<u64>) {
 }
 
 impl NativeCas {
+    /// The packs of `catalog` an explicit maintenance pass consolidates
+    /// into one (`RegisteredCatalog::whole_candidates`, within the
+    /// clustering bound): format 8 only, else empty.
+    pub(crate) fn whole_maintenance_candidates(
+        &self,
+        catalog: &RegisteredCatalog,
+        excluded: &[usize],
+    ) -> Vec<usize> {
+        if !self.bitmap_admissions() {
+            return Vec::new();
+        }
+        catalog.whole_candidates(excluded, self.cluster_max_raw())
+    }
+
     /// `CLUSTER_MAX_RAW`, unless a test forced another bound.
     fn cluster_max_raw(&self) -> u64 {
         if CLUSTER_MAX_FORCED.load(std::sync::atomic::Ordering::Acquire) {
@@ -4363,7 +4445,11 @@ impl NativeCas {
                 .ok()
                 .and_then(|overrides| overrides.get(&self.root).copied())
             {
-                return Budget { bytes, raw: bytes };
+                return Budget {
+                    bytes,
+                    raw: bytes,
+                    records: u64::MAX,
+                };
             }
         }
         Budget::IN_BATCH
@@ -5832,7 +5918,9 @@ mod recent_block_tests {
 
 #[cfg(test)]
 mod consolidation_tests {
-    use super::{bounded_group, candidates_among, consolidation_group};
+    use super::{
+        Budget, bounded_group, candidates_among, consolidation_group, consolidation_group_within,
+    };
 
     fn packs(sizes: &[u64]) -> Vec<(u64, u64, u64, u64, usize)> {
         let mut packs: Vec<_> = sizes
@@ -5871,6 +5959,42 @@ mod consolidation_tests {
         // The first two would exceed the entries limit: the second and
         // third form the group.
         assert_eq!(consolidation_group(&packs), vec![1, 2]);
+    }
+
+    /// A rewrite costs per record (council s36): a batch rewrites at most
+    /// `QUICK_REWRITE_RECORDS` records, and a geometric group rewrites a
+    /// pack past them only once the others hold half its records. A pack of
+    /// 99,000 files waits beside packs of a few wide Trees, smaller or
+    /// larger on disk.
+    #[test]
+    fn a_group_is_balanced_in_records_and_a_batch_rewrites_few() {
+        let mib = 1024 * 1024;
+        let import = (8 * mib, 99_000, 1, 8 * mib, 0);
+        // Tails smaller, then larger on disk than the import.
+        let small = vec![(mib, 10, 1, mib, 1), (mib, 10, 1, mib, 2), import];
+        assert_eq!(
+            consolidation_group_within(&small, Budget::MAINTENANCE),
+            vec![1, 2]
+        );
+        let large = vec![import, (10 * mib, 200, 1, 10 * mib, 1)];
+        assert!(consolidation_group_within(&large, Budget::MAINTENANCE).is_empty());
+        // Once the others hold half its records, maintenance takes it.
+        let grown = vec![import, (10 * mib, 50_000, 1, 10 * mib, 1)];
+        assert_eq!(
+            consolidation_group_within(&grown, Budget::MAINTENANCE),
+            vec![0, 1]
+        );
+        // A batch's own consolidation leaves it to maintenance.
+        assert!(consolidation_group(&grown).is_empty());
+        // Below the bound, records never hold a group back.
+        let lopsided = vec![(mib, 1, 1, mib, 0), (mib, 9_000, 1, mib, 1)];
+        assert_eq!(consolidation_group(&lopsided), vec![0, 1]);
+        let few = vec![(mib, 9_000, 1, mib, 0), (mib, 9_000, 1, mib, 1)];
+        assert!(consolidation_group(&few).is_empty());
+        assert_eq!(
+            consolidation_group_within(&few, Budget::MAINTENANCE),
+            vec![0, 1]
+        );
     }
 
     #[test]

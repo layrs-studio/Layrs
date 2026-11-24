@@ -632,11 +632,12 @@ impl Drop for Projections {
     }
 }
 
-/// A cached projection's row: its root, and the root of the complete
-/// projection it is a delta to.
+/// A cached projection's row: its root, the root of the complete
+/// projection it is a delta to, and its sequence (larger is more recent).
 pub(crate) struct ProjectionRow {
     pub root: String,
     pub base: Option<String>,
+    pub seq: i64,
 }
 
 impl Projections {
@@ -732,7 +733,7 @@ impl Projections {
     pub(crate) fn rows(&self) -> Vec<ProjectionRow> {
         let Ok(mut statement) = self
             .connection()
-            .prepare("SELECT root, base FROM projection ORDER BY seq DESC")
+            .prepare("SELECT root, base, seq FROM projection ORDER BY seq DESC")
         else {
             return Vec::new();
         };
@@ -741,6 +742,7 @@ impl Projections {
                 Ok(ProjectionRow {
                     root: row.get(0)?,
                     base: row.get(1)?,
+                    seq: row.get(2)?,
                 })
             })
             .and_then(|rows| rows.collect())
@@ -753,6 +755,26 @@ impl Projections {
                 row.get::<_, i64>(0)
             })
             .map_or(0, |count| usize::try_from(count).unwrap_or(usize::MAX))
+    }
+
+    /// The sequence of the most recently written or touched projection (0
+    /// when there is none); `None` when the database cannot answer.
+    pub(crate) fn newest_seq(&self) -> Option<i64> {
+        self.connection()
+            .query_row("SELECT coalesce(max(seq), 0) FROM projection", [], |row| {
+                row.get(0)
+            })
+            .ok()
+    }
+
+    /// Removes the value of `root` unless it was written or touched after
+    /// sequence `through`; whether it was removed.
+    pub(crate) fn remove_through(&self, root: &str, through: i64) -> bool {
+        self.noted(self.connection().execute(
+            "DELETE FROM projection WHERE root = ?1 AND seq <= ?2",
+            params![root, through],
+        ))
+        .is_ok_and(|changed| changed > 0)
     }
 
     /// Whether the value is gone (removed, or was never there).
