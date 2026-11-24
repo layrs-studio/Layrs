@@ -39,6 +39,64 @@ const MAINTENANCE_LOCK: &str = "maintenance.lock";
 /// Under `metadata/`: the general failures in a row of maintenance passes
 /// (as `FAILED_FILE`); automatic maintenance pauses as consolidation does.
 const MAINTENANCE_FAILED_FILE: &str = "maintenance-failed";
+/// Under `metadata/` (format 8): the metadata database's page count before
+/// its last rewrite (phase 3e), so a rewrite waits for a quarter more data,
+/// not for pages refilling after the last one (council s35).
+const REWRITTEN_FILE: &str = "metadata-rewritten";
+/// Under `metadata/`: the rewrite's failures in a row and the time of the
+/// last; automatic maintenance stops rewriting for `FAILURE_PAUSE_MS` after
+/// `FAILURES_BEFORE_PAUSE` of them. A failed rewrite never fails a pass.
+const REWRITE_FAILED_FILE: &str = "metadata-rewrite-failed";
+/// Maintenance rewrites the metadata database once it holds at least this
+/// many pages (1 KiB each in format 8) and a quarter more than before the
+/// last rewrite: its receipts fill B-tree pages in random key order, as
+/// `git gc` repacks refs.
+const VACUUM_MIN_PAGES: u64 = 64;
+/// Automatic maintenance rewrites a metadata database of at most this many
+/// bytes: the rewrite holds the exclusive Store lock while it runs (council
+/// s35). An explicit `layrs maintenance` rewrites any size.
+const AUTOMATIC_REWRITE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Test support: per Store root, the page threshold of the metadata
+/// rewrite tests force.
+#[cfg(any(test, feature = "test-support"))]
+fn vacuum_overrides()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>> {
+    static OVERRIDES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>,
+    > = std::sync::OnceLock::new();
+    OVERRIDES.get_or_init(Default::default)
+}
+
+/// Test support: forces the page threshold past which maintenance rewrites
+/// the metadata database of the Store at `root`; `None` restores it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_vacuum_min_pages(root: &std::path::Path, pages: Option<u64>) {
+    if let Ok(mut overrides) = vacuum_overrides().lock() {
+        match pages {
+            Some(pages) => {
+                overrides.insert(root.to_path_buf(), pages);
+            }
+            None => {
+                overrides.remove(root);
+            }
+        }
+    }
+}
+
+/// `VACUUM_MIN_PAGES`, unless a test forced another threshold.
+fn vacuum_min_pages(root: &std::path::Path) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(pages) = vacuum_overrides()
+        .lock()
+        .ok()
+        .and_then(|overrides| overrides.get(root).copied())
+    {
+        return pages;
+    }
+    let _ = root;
+    VACUUM_MIN_PAGES
+}
 
 /// What a maintenance pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +177,162 @@ fn maintain_recorded(
         }
     }
     drop(held);
+    result
+}
+
+/// What a metadata rewrite did (`rewrite_metadata`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataRewrite {
+    /// Not a format 8 Store, or the database has not grown enough, or it
+    /// is past what automatic maintenance rewrites.
+    NotDue,
+    /// The Store stayed busy longer than the rewrite waits for it.
+    Busy,
+    /// Automatic maintenance stopped rewriting after failures in a row.
+    Paused,
+    /// The database was rewritten from `before` to `after` pages.
+    Rewritten { before: u64, after: u64 },
+}
+
+/// Format 8 (phase 3e): rewrites the metadata database (`VACUUM`, then the
+/// checked checkpoint) in a short exclusive session when it holds at least
+/// `VACUUM_MIN_PAGES` pages and a quarter more than before the last rewrite
+/// (`REWRITTEN_FILE`). Whether it is due is read with no Store lock, from
+/// the database's length; only a due rewrite takes the exclusive session.
+/// Run once after a maintenance run's passes. `automatic` maintenance
+/// rewrites at most `AUTOMATIC_REWRITE_MAX_BYTES` and pauses after failures
+/// in a row (`REWRITE_FAILED_FILE`); a failure never undoes what the passes
+/// did, and is returned for the caller to report.
+pub fn rewrite_metadata(
+    root: impl AsRef<std::path::Path>,
+    automatic: bool,
+) -> Result<MetadataRewrite, String> {
+    let root = root.as_ref();
+    let metadata = root.join(super::layout::METADATA_DIR_NAME);
+    let (format, sqlite_path) = match super::acquisition::acquire(
+        "metadata rewrite read",
+        super::acquisition::SHORT_WAIT,
+        || super::open(root),
+    ) {
+        Ok(store) => (
+            store.format_version(),
+            store.layout().sqlite_path().to_path_buf(),
+        ),
+        Err(error) if timed_out(&error) => return Ok(MetadataRewrite::Busy),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !super::schema::compact_receipts(format) {
+        return Ok(MetadataRewrite::NotDue);
+    }
+    if automatic
+        && failures_at(&metadata, REWRITE_FAILED_FILE).is_some_and(|(count, at)| {
+            count >= FAILURES_BEFORE_PAUSE && now_ms().saturating_sub(at) < FAILURE_PAUSE_MS
+        })
+    {
+        return Ok(MetadataRewrite::Paused);
+    }
+    let page_size = super::schema::baseline_for_format(format)
+        .page_size
+        .unwrap_or(4096) as u64;
+    let length = std::fs::metadata(&sqlite_path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if !rewrite_due(root, length / page_size, last_rewrite(&metadata))
+        || (automatic && length > AUTOMATIC_REWRITE_MAX_BYTES)
+    {
+        return Ok(MetadataRewrite::NotDue);
+    }
+    let rewritten = rewrite_now(root);
+    match &rewritten {
+        Ok(_) => {
+            let note = metadata.join(REWRITE_FAILED_FILE);
+            if std::fs::symlink_metadata(&note).is_ok_and(|found| found.is_file()) {
+                let _ = std::fs::remove_file(&note);
+            }
+        }
+        Err(message) => {
+            let count =
+                failures_at(&metadata, REWRITE_FAILED_FILE).map_or(0, |(count, _)| count) + 1;
+            write_note_at(
+                &metadata,
+                REWRITE_FAILED_FILE,
+                &format!("{count} {}\n{message}\n", now_ms()),
+            );
+        }
+    }
+    rewritten
+}
+
+/// The page count before the last rewrite (0 when none was recorded).
+fn last_rewrite(metadata: &std::path::Path) -> u64 {
+    read_note_at(metadata, REWRITTEN_FILE)
+        .and_then(|note| note.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Whether a database of `pages` pages is due for a rewrite after one that
+/// started from `before_last` pages: a quarter more data.
+fn rewrite_due(root: &std::path::Path, pages: u64, before_last: u64) -> bool {
+    pages >= vacuum_min_pages(root) && pages.saturating_mul(4) >= before_last.saturating_mul(5)
+}
+
+/// The rewrite itself, in an exclusive session, checked again under it; the
+/// note of its starting size is written durably (a failure to write it is
+/// the rewrite's failure).
+fn rewrite_now(root: &std::path::Path) -> Result<MetadataRewrite, String> {
+    let store = match super::acquisition::acquire(
+        "metadata rewrite",
+        super::acquisition::SHORT_WAIT,
+        || super::open_exclusive(root),
+    ) {
+        Ok(store) => store,
+        Err(error) if timed_out(&error) => return Ok(MetadataRewrite::Busy),
+        Err(error) => return Err(error.to_string()),
+    };
+    let metadata = store.layout().metadata_dir().to_path_buf();
+    let connection = store
+        .begin_session_writer()
+        .map_err(|error| error.to_string())?;
+    let sql = |error: rusqlite::Error| error.to_string();
+    let before: u64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .map_err(sql)?;
+    if !rewrite_due(root, before, last_rewrite(&metadata)) {
+        sqlite::finish_writer(connection, store.layout().sqlite_path())
+            .map_err(|error| error.to_string())?;
+        return Ok(MetadataRewrite::NotDue);
+    }
+    let after = {
+        let _span = crate::perf::span("store.metadata_rewrite");
+        connection.execute_batch("VACUUM").map_err(sql)?;
+        connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(sql)?
+    };
+    sqlite::finish_writer(connection, store.layout().sqlite_path())
+        .map_err(|error| error.to_string())?;
+    write_note_checked(&metadata, REWRITTEN_FILE, &format!("{before}\n"))
+        .map_err(|error| format!("record the metadata rewrite: {error}"))?;
+    Ok(MetadataRewrite::Rewritten { before, after })
+}
+
+/// `write_note_at`, checked and durable: the staged file and the directory
+/// are flushed, and any failure is returned.
+fn write_note_checked(directory: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
+    let staged = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    let mut created = false;
+    let result = (|| -> std::io::Result<()> {
+        let mut file = crate::layout::create_new_file_no_follow(&staged)?;
+        created = true;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        super::format::atomic_replace(&staged, &directory.join(name))?;
+        crate::layout::sync_directory(directory)
+    })();
+    if result.is_err() && created {
+        let _ = std::fs::remove_file(&staged);
+    }
     result
 }
 

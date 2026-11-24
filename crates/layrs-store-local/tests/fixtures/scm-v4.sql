@@ -16,9 +16,20 @@ CREATE TABLE migrations (
 -- Format 8 (council s25, phase 2c): compact replay receipts. The request
 -- digest is its 32 bytes; the receipt is a version, the outcome, the four
 -- counts as LEB128 and an 8-byte tag binding it to the row's transaction id
--- and digest (council s29).
+-- and digest (council s29). The key (phase 3e) is the transaction id: byte
+-- 1 then the 16 bytes of the UUID of `transaction:` plus a canonical
+-- lowercase UUID, else byte 0 then the id's text (1 to 255 bytes of the id
+-- alphabet, never that UUID shape: one key per id).
 CREATE TABLE applied_transactions (
-    transaction_id TEXT PRIMARY KEY CHECK (length(transaction_id) > 0),
+    transaction_key BLOB PRIMARY KEY CHECK (
+        (substr(transaction_key, 1, 1) = x'01' AND length(transaction_key) = 17)
+        OR (
+            substr(transaction_key, 1, 1) = x'00'
+            AND length(transaction_key) BETWEEN 2 AND 256
+            AND CAST(substr(transaction_key, 2) AS TEXT) NOT GLOB '*[^A-Za-z0-9._:-]*'
+            AND CAST(substr(transaction_key, 2) AS TEXT) NOT GLOB 'transaction:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        )
+    ),
     request_digest BLOB NOT NULL CHECK (length(request_digest) = 32),
     receipt BLOB NOT NULL CHECK (length(receipt) BETWEEN 14 AND 50),
     applied_at_ms INTEGER NOT NULL CHECK (applied_at_ms >= 0)

@@ -1,6 +1,8 @@
 use crate::{error::CliError, render::Rendered};
 use layrs_client_core::native_scm::NativeWorkspace;
-use layrs_store_local::scm_v1::{MaintenanceOutcome, maintain as maintain_store};
+use layrs_store_local::scm_v1::{
+    MaintenanceOutcome, MetadataRewrite, maintain as maintain_store, rewrite_metadata,
+};
 use std::path::Path;
 
 /// Hidden first argument of the detached maintenance pass (council s17,
@@ -120,6 +122,9 @@ pub fn run_detached(args: &[String]) -> i32 {
         Ok(Passes { failure: None, .. }) => 0,
         Ok(_) | Err(_) => 1,
     };
+    // Then the metadata rewrite, bounded for automatic runs; its failure is
+    // recorded by the Store and does not change the code (format 8).
+    let _ = rewrite_metadata(Path::new(root), true);
     // Opt-in diagnostics (`LAYRS_PERF_OUT` for a process without stderr).
     layrs_store_local::perf::emit(MAINTENANCE_COMMAND);
     code
@@ -134,17 +139,40 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
         consolidated,
         failure,
     } = passes(store_root).map_err(CliError::runtime)?;
+    // Format 8: the metadata database is rewritten once it has grown enough
+    // (any size when asked explicitly); a failure is reported, not fatal.
+    let (rewrite_human, rewrite_data) = match rewrite_metadata(store_root, false) {
+        Ok(MetadataRewrite::Rewritten { before, after }) => (
+            Some(format!(
+                "Rewrote the metadata database: {before} KiB to {after} KiB."
+            )),
+            serde_json::json!({ "status": "rewritten", "beforePages": before, "afterPages": after }),
+        ),
+        Ok(MetadataRewrite::Busy) => (None, serde_json::json!({ "status": "busy" })),
+        Ok(MetadataRewrite::NotDue | MetadataRewrite::Paused) => {
+            (None, serde_json::json!({ "status": "notDue" }))
+        }
+        Err(error) => (
+            Some(format!("Rewriting the metadata database failed: {error}")),
+            serde_json::json!({ "status": "failed", "error": error }),
+        ),
+    };
+    let with_rewrite = |human: String| match &rewrite_human {
+        Some(line) => format!("{human}\n{line}"),
+        None => human,
+    };
     if consolidated > 0 {
         let mut human = format!("Consolidated {consolidated} pack files.");
         if let Some(failure) = &failure {
             human.push_str(&format!("\nA later pass failed: {failure}"));
         }
         return Ok(Rendered {
-            human,
+            human: with_rewrite(human),
             data: serde_json::json!({
                 "status": "consolidated",
                 "packs": consolidated,
                 "warning": failure,
+                "metadata": rewrite_data,
             }),
         });
     }
@@ -168,8 +196,8 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
         ),
     };
     Ok(Rendered {
-        human,
-        data: serde_json::json!({ "status": status, "packs": packs }),
+        human: with_rewrite(human),
+        data: serde_json::json!({ "status": status, "packs": packs, "metadata": rewrite_data }),
     })
 }
 

@@ -12,6 +12,8 @@ fn digest_bytes(digest: &str) -> Vec<u8> {
         .collect()
 }
 
+use super::super::write_batch::receipt_key;
+
 /// Seeds an accepted receipt in the store's own encoding.
 fn insert_receipt(
     store: &super::super::NativeStoreExclusive,
@@ -23,8 +25,8 @@ fn insert_receipt(
     if compact_receipts(store) {
         connection
             .execute(
-                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,0)",
-                rusqlite::params![transaction_id, digest_bytes(request_digest), receipt.compact_bytes()],
+                "INSERT INTO applied_transactions(transaction_key,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,0)",
+                rusqlite::params![receipt_key(transaction_id), digest_bytes(request_digest), receipt.compact_bytes()],
             )
             .unwrap();
     } else {
@@ -50,8 +52,8 @@ fn set_receipt_digest(
     if compact_receipts(store) {
         connection
             .execute(
-                "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_id=?2",
-                rusqlite::params![digest_bytes(request_digest), transaction_id],
+                "UPDATE applied_transactions SET request_digest=?1 WHERE transaction_key=?2",
+                rusqlite::params![digest_bytes(request_digest), receipt_key(transaction_id)],
             )
             .unwrap();
     } else {
@@ -73,8 +75,8 @@ fn set_receipt(
     if compact_receipts(store) {
         connection
             .execute(
-                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
-                rusqlite::params![receipt.compact_bytes(), transaction_id],
+                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_key=?2",
+                rusqlite::params![receipt.compact_bytes(), receipt_key(transaction_id)],
             )
             .unwrap();
     } else {
@@ -549,8 +551,8 @@ fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
             .begin_write_connection()
             .unwrap()
             .execute(
-                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_id=?2",
-                rusqlite::params![damaged, expected.transaction_id],
+                "UPDATE applied_transactions SET receipt=?1 WHERE transaction_key=?2",
+                rusqlite::params![damaged, receipt_key(&expected.transaction_id)],
             )
             .unwrap();
         drop(committed);
@@ -566,8 +568,8 @@ fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
         .begin_write_connection()
         .unwrap()
         .execute(
-            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
-            rusqlite::params![vec![0_u8; 32], exact, expected.transaction_id],
+            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_key=?3",
+            rusqlite::params![vec![0_u8; 32], exact, receipt_key(&expected.transaction_id)],
         )
         .unwrap();
     drop(committed);
@@ -578,11 +580,11 @@ fn a_damaged_compact_receipt_keeps_a_format_8_capture_pending() {
         .begin_write_connection()
         .unwrap()
         .execute(
-            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
+            "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_key=?3",
             rusqlite::params![
                 digest_bytes(&expected.request_digest),
                 exact,
-                expected.transaction_id
+                receipt_key(&expected.transaction_id)
             ],
         )
         .unwrap();

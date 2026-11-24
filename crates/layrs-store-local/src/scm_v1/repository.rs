@@ -440,7 +440,8 @@ impl NativeScmRepository {
         };
         let (held, has_receipt) = {
             let writer = Mutex::new(held);
-            let has_receipt = Self::precheck_new(&writer, batch)?;
+            let compact = super::schema::compact_receipts(store.format_version());
+            let has_receipt = Self::precheck_new(&writer, batch, compact)?;
             (writer.into_inner().map_err(|_| poisoned())?, has_receipt)
         };
         store.verify_filesystem_identity().map_err(native_backend)?;
@@ -781,11 +782,12 @@ impl NativeScmRepository {
                 params![batch.transaction_id().as_str(), batch.request_digest().to_string(), receipt_json],
             ).map_err(sql_backend)?;
         } else {
-            // Format 8: a compact receipt (council s25, phase 2c).
+            // Format 8: a compact receipt (council s25, phase 2c) under its
+            // transaction's key (phase 3e).
             guard.execute(
-                "INSERT INTO applied_transactions(transaction_id,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+                "INSERT INTO applied_transactions(transaction_key,request_digest,receipt,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
                 params![
-                    batch.transaction_id().as_str(),
+                    super::write_batch::receipt_key(batch.transaction_id().as_str()),
                     &batch.request_digest().as_bytes()[..],
                     receipt.compact_bytes()
                 ],
@@ -823,16 +825,17 @@ impl NativeScmRepository {
     /// Before any byte is installed: a batch with no receipt yet must still
     /// match every compare-and-swap target (a stale request installs
     /// nothing).
-    fn precheck_new(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<bool> {
-        let has_receipt: bool = connection
-            .lock()
-            .map_err(|_| poisoned())?
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_id=?1)",
-                [batch.transaction_id().as_str()],
-                |row| row.get(0),
-            )
-            .map_err(sql_backend)?;
+    fn precheck_new(
+        connection: &Mutex<Connection>,
+        batch: &WriteBatch,
+        compact_receipts: bool,
+    ) -> Result<bool> {
+        let has_receipt: bool = has_receipt(
+            &*connection.lock().map_err(|_| poisoned())?,
+            batch.transaction_id().as_str(),
+            compact_receipts,
+        )
+        .map_err(sql_backend)?;
         if !has_receipt {
             precheck_mutations(connection, batch)?;
         }
@@ -993,8 +996,29 @@ fn replay(
 /// receipt, or why it does not decode.
 pub(super) type StoredReceipt = (String, std::result::Result<ApplyBatchReceipt, String>);
 
+/// Whether `transaction_id` has a receipt (format 8, `compact`: under its
+/// key).
+fn has_receipt(
+    connection: &Connection,
+    transaction_id: &str,
+    compact: bool,
+) -> rusqlite::Result<bool> {
+    if compact {
+        return connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_key=?1)",
+            [super::write_batch::receipt_key(transaction_id)],
+            |row| row.get(0),
+        );
+    }
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_id=?1)",
+        [transaction_id],
+        |row| row.get(0),
+    )
+}
+
 /// The receipt of `transaction_id`: canonical JCS in formats 5 to 7, compact
-/// in format 8 (`compact`).
+/// in format 8 (`compact`, under the transaction's key).
 pub(super) fn read_receipt(
     connection: &Connection,
     transaction_id: &str,
@@ -1003,8 +1027,8 @@ pub(super) fn read_receipt(
     if compact {
         let row: Option<(Vec<u8>, Vec<u8>)> = connection
             .query_row(
-                "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_id=?1",
-                [transaction_id],
+                "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_key=?1",
+                [super::write_batch::receipt_key(transaction_id)],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;

@@ -52,6 +52,76 @@ const COMPACT_RECEIPT_V1: u8 = 1;
 const COMPACT_APPLIED: u8 = 1;
 /// Bytes of the tag binding a compact receipt to its row (council s29 r2).
 const COMPACT_TAG_LEN: usize = 8;
+/// Format 8 receipt keys (phase 3e, council s30 item 5a): a tag byte, then
+/// the 16 bytes of the UUID of `transaction:` plus a canonical lowercase
+/// UUID, or else the id's text.
+const RECEIPT_KEY_TEXT: u8 = 0;
+const RECEIPT_KEY_UUID: u8 = 1;
+const TRANSACTION_PREFIX: &str = "transaction:";
+
+/// The 16 bytes of a canonical lowercase hyphenated UUID, if `text` is one.
+fn canonical_uuid(text: &str) -> Option<[u8; 16]> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 36 {
+        return None;
+    }
+    let mut out = [0_u8; 16];
+    let mut nibbles = 0;
+    for (at, byte) in bytes.iter().enumerate() {
+        if matches!(at, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return None;
+            }
+            continue;
+        }
+        let value = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => return None,
+        };
+        out[nibbles / 2] |= value << (4 * (1 - nibbles % 2));
+        nibbles += 1;
+    }
+    Some(out)
+}
+
+/// The key of a transaction's receipt row in format 8: one encoding per id
+/// (a text key never has the shape a UUID key encodes).
+pub(crate) fn receipt_key(transaction_id: &str) -> Vec<u8> {
+    match transaction_id
+        .strip_prefix(TRANSACTION_PREFIX)
+        .and_then(canonical_uuid)
+    {
+        Some(uuid) => [&[RECEIPT_KEY_UUID][..], &uuid].concat(),
+        None => [&[RECEIPT_KEY_TEXT][..], transaction_id.as_bytes()].concat(),
+    }
+}
+
+/// The transaction id a receipt key stands for, if the key is that id's
+/// one encoding (`receipt_key`).
+pub(crate) fn receipt_transaction(key: &[u8]) -> Option<String> {
+    match key.split_first()? {
+        (&RECEIPT_KEY_UUID, uuid) if uuid.len() == 16 => {
+            let mut text = String::with_capacity(TRANSACTION_PREFIX.len() + 36);
+            text.push_str(TRANSACTION_PREFIX);
+            for (at, byte) in uuid.iter().enumerate() {
+                if matches!(at, 4 | 6 | 8 | 10) {
+                    text.push('-');
+                }
+                use std::fmt::Write as _;
+                let _ = write!(text, "{byte:02x}");
+            }
+            Some(text)
+        }
+        (&RECEIPT_KEY_TEXT, text) => {
+            let text = std::str::from_utf8(text).ok()?;
+            (TransactionId::new(text).is_ok()
+                && receipt_key(text).first() == Some(&RECEIPT_KEY_TEXT))
+            .then(|| text.to_owned())
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -210,7 +280,58 @@ impl ApplyBatchReceipt {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplyBatchReceipt, RECEIPT_APPLIED, RECEIPT_SCHEMA};
+    use super::{
+        ApplyBatchReceipt, RECEIPT_APPLIED, RECEIPT_SCHEMA, receipt_key, receipt_transaction,
+    };
+
+    /// Phase 3e: a receipt key is 17 bytes for `transaction:` plus a
+    /// canonical lowercase UUID, the tagged text otherwise; each id has one
+    /// key, and a key stands for one id.
+    #[test]
+    fn receipt_keys_are_reversible_and_unique() {
+        let uuid = "transaction:d9ca3a5f-9d45-4681-9fdc-6049560969ff";
+        let key = receipt_key(uuid);
+        assert_eq!(key.len(), 17);
+        assert_eq!(key[0], 1);
+        assert_eq!(key[1..3], [0xd9, 0xca]);
+        assert_eq!(receipt_transaction(&key).as_deref(), Some(uuid));
+        for text in [
+            "transaction:compact",
+            "transaction:D9CA3A5F-9d45-4681-9fdc-6049560969ff",
+            "transaction:d9ca3a5f9d4546819fdc6049560969ff",
+            "transaction:d9ca3a5f-9d45-4681-9fdc-6049560969f",
+            "transaction:d9ca3a5f-9d45-4681-9fdc-6049560969ffa",
+            "transaction:d9ca3a5f_9d45-4681-9fdc-6049560969ff",
+            "d9ca3a5f-9d45-4681-9fdc-6049560969ff",
+            "transaction:paging-0",
+        ] {
+            let key = receipt_key(text);
+            assert_eq!(key[0], 0, "{text}");
+            assert_eq!(&key[1..], text.as_bytes());
+            assert_eq!(receipt_transaction(&key).as_deref(), Some(text));
+        }
+        // The text form of a UUID id, an empty text, a short UUID key, an
+        // unknown tag: no id.
+        assert_eq!(
+            receipt_transaction(&[&[0][..], uuid.as_bytes()].concat()),
+            None
+        );
+        assert_eq!(receipt_transaction(&[0]), None);
+        assert_eq!(
+            receipt_transaction(b" transaction:{d9ca3a5f-9d45-4681-9fdc-6049560969ff}"),
+            None
+        );
+        assert_eq!(receipt_transaction(&key[..16]), None);
+        assert_eq!(receipt_transaction(&[&[2][..], &key[1..]].concat()), None);
+        assert_eq!(receipt_transaction(&[]), None);
+        assert_eq!(receipt_transaction(&[0, 0xff]), None);
+        // Text that is not a transaction id: no id either.
+        assert_eq!(receipt_transaction(b"\0transaction:a b"), None);
+        assert_eq!(
+            receipt_transaction(&[&[0][..], "t".repeat(256).as_bytes()].concat()),
+            None
+        );
+    }
 
     fn receipt(counts: [usize; 4]) -> ApplyBatchReceipt {
         ApplyBatchReceipt {

@@ -48,11 +48,12 @@ pub use cas::{
     blocks_read_on_this_thread, forget_loaded_packs, held_pack_files, set_cluster_max_raw,
     set_consolidation_budget, set_inline_pack_limit,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub use consolidation::maintain_with_pause;
 pub use consolidation::{
-    MaintenanceOutcome, maintain, maintenance_paused, maintenance_running, take_maintenance_due,
+    MaintenanceOutcome, MetadataRewrite, maintain, maintenance_paused, maintenance_running,
+    rewrite_metadata, take_maintenance_due,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use consolidation::{maintain_with_pause, set_vacuum_min_pages};
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
     NativeFsck, ProjectionAction, ProjectionRebuildPlan, fsck, fsck_existing,

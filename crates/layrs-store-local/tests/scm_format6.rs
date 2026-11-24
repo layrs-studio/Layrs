@@ -18,11 +18,12 @@ use layrs_store::scm::{
 };
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
-    MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
-    RepositoryFaultPoint, blocks_read_on_this_thread, existence_proofs_on_this_thread,
-    forget_loaded_packs, fsck_existing, held_pack_files, init, maintain, maintain_with_pause,
-    maintenance_paused, open, open_exclusive, set_cluster_max_raw, set_consolidation_budget,
-    set_inline_pack_limit, take_maintenance_due,
+    MaintenanceOutcome, MetadataRewrite, NativeCas, NativeScmReader, NativeScmRepository,
+    RepositoryFaultInjector, RepositoryFaultPoint, blocks_read_on_this_thread,
+    existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing, held_pack_files, init,
+    maintain, maintain_with_pause, maintenance_paused, open, open_exclusive, rewrite_metadata,
+    set_cluster_max_raw, set_consolidation_budget, set_inline_pack_limit, set_vacuum_min_pages,
+    take_maintenance_due,
 };
 use rusqlite::Connection;
 
@@ -1099,6 +1100,226 @@ fn a_replay_beside_its_lost_history_pack_takes_no_sequence() {
     assert_eq!(clock(), before);
 }
 
+/// Phase 3e: the metadata database is rewritten (VACUUM) once it holds a
+/// quarter more pages than before its last rewrite, not before; an
+/// automatic run pauses after failures in a row, an explicit one does not;
+/// a Store of another format is never rewritten; receipts still replay and
+/// fsck stays clean.
+#[test]
+fn the_metadata_is_rewritten_once_it_grew() {
+    let root = TestRoot::new("vacuum");
+    create(&root.0, "vacuum", "8");
+    set_vacuum_min_pages(&root.0, Some(1));
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("vacuum", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let mut captures = Vec::new();
+    for _ in 0..20 {
+        let capture = lane.capture(&files, vec![]);
+        repository.apply_batch(&capture).unwrap();
+        captures.push(capture);
+    }
+    drop(repository);
+    let note = root.0.join("metadata/metadata-rewritten");
+    let pages = || -> u64 {
+        sql(&root.0)
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .unwrap()
+    };
+    assert!(!note.exists());
+    let before = pages();
+    let MetadataRewrite::Rewritten {
+        before: from,
+        after,
+    } = rewrite_metadata(&root.0, false).unwrap()
+    else {
+        panic!("not rewritten");
+    };
+    assert_eq!(from, before);
+    assert!(after <= before, "{after} {before}");
+    assert_eq!(fs::read_to_string(&note).unwrap(), format!("{before}\n"));
+    // Not a quarter more than before the last rewrite: not due.
+    assert_eq!(
+        rewrite_metadata(&root.0, false).unwrap(),
+        MetadataRewrite::NotDue
+    );
+    // Exactly a quarter more is due; just under is not.
+    let now = pages();
+    fs::write(&note, format!("{}\n", now * 4 / 5 + 1)).unwrap();
+    assert_eq!(
+        rewrite_metadata(&root.0, false).unwrap(),
+        MetadataRewrite::NotDue
+    );
+    fs::write(&note, format!("{}\n", now * 4 / 5)).unwrap();
+    assert!(matches!(
+        rewrite_metadata(&root.0, false).unwrap(),
+        MetadataRewrite::Rewritten { .. }
+    ));
+    // Failures in a row pause automatic rewrites, not explicit ones.
+    fs::write(&note, "1\n").unwrap();
+    let failed = root.0.join("metadata/metadata-rewrite-failed");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    fs::write(&failed, format!("2 {now_ms}\nan earlier failure\n")).unwrap();
+    assert_eq!(
+        rewrite_metadata(&root.0, true).unwrap(),
+        MetadataRewrite::Paused
+    );
+    assert!(matches!(
+        rewrite_metadata(&root.0, false).unwrap(),
+        MetadataRewrite::Rewritten { .. }
+    ));
+    assert!(!failed.exists());
+    let mut repository = NativeScmRepository::new(&root.0);
+    assert!(repository.apply_batch(&captures[3]).unwrap().was_replay());
+    drop(repository);
+    set_vacuum_min_pages(&root.0, None);
+    assert_fsck_clean(&root.0);
+    // A format 7 Store: never rewritten, no note.
+    let other = TestRoot::new("vacuum-7");
+    create(&other.0, "vacuum-7", "7");
+    set_vacuum_min_pages(&other.0, Some(1));
+    let (_lane, batch) = Lane::begin("vacuum-7", &files);
+    NativeScmRepository::new(&other.0)
+        .apply_batch(&batch)
+        .unwrap();
+    assert_eq!(
+        rewrite_metadata(&other.0, false).unwrap(),
+        MetadataRewrite::NotDue
+    );
+    assert!(!other.0.join("metadata/metadata-rewritten").exists());
+    set_vacuum_min_pages(&other.0, None);
+}
+
+/// The format 8 receipt key of a transaction id that is not `transaction:`
+/// plus a canonical UUID (phase 3e): byte 0, then the id.
+fn text_receipt_key(id: &str) -> Vec<u8> {
+    assert!(!id.contains('-') || !id.starts_with("transaction:") || id.len() != 48);
+    [&[0_u8][..], id.as_bytes()].concat()
+}
+
+/// Phase 3e: a `transaction:` plus canonical UUID id is kept as 17 bytes,
+/// its replay finds it, and fsck refuses the same id kept as text (a replay
+/// would never find it).
+#[test]
+fn format_8_keeps_uuid_transaction_keys_in_17_bytes() {
+    let root = TestRoot::new("receipt-key");
+    create(&root.0, "receipt-key", "8");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (_lane, batch) = Lane::begin("receipt-key", &files);
+    let id = "transaction:6ccbc9ff-adb0-4197-9558-03206afcf1e5";
+    let batch = WriteBatch::new(
+        TransactionId::new(id).unwrap(),
+        batch.canonical_objects().to_vec(),
+        batch.entity_records().to_vec(),
+        batch.admissions().to_vec(),
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    assert!(repository.apply_batch(&batch).unwrap().was_replay());
+    drop(repository);
+    let keys = || -> Vec<Vec<u8>> {
+        sql(&root.0)
+            .prepare("SELECT transaction_key FROM applied_transactions")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let mut uuid = vec![1_u8];
+    uuid.extend([
+        0x6c, 0xcb, 0xc9, 0xff, 0xad, 0xb0, 0x41, 0x97, 0x95, 0x58, 0x03, 0x20, 0x6a, 0xfc, 0xf1,
+        0xe5,
+    ]);
+    assert_eq!(keys(), [uuid.clone()]);
+    assert_fsck_clean(&root.0);
+    // The schema refuses a UUID key of another length or an unknown tag.
+    let connection = sql(&root.0);
+    for bad in [&uuid[..16], &[2, 0x74][..], &[0][..]] {
+        assert!(
+            connection
+                .execute("UPDATE applied_transactions SET transaction_key=?1", [bad],)
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+    // Text keys: the id's alphabet, at most 255 bytes, never the UUID
+    // shape (that id's text form).
+    for bad in [
+        [&[0_u8][..], id.as_bytes()].concat(),
+        [&[0_u8][..], b"transaction:a b"].concat(),
+        [&[0_u8][..], "t".repeat(256).as_bytes()].concat(),
+    ] {
+        assert!(
+            connection
+                .execute("UPDATE applied_transactions SET transaction_key=?1", [&bad])
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+    // Another UUID's key: the same content under that id is corruption
+    // (the receipt's tag binds the id it was written for).
+    let moved = "transaction:6ccbc9ff-adb0-4197-9558-03206afcf1e6";
+    let mut moved_key = uuid.clone();
+    moved_key[16] = 0xe6;
+    connection
+        .execute(
+            "UPDATE applied_transactions SET transaction_key=?1",
+            [&moved_key],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    let same_content = WriteBatch::new(
+        TransactionId::new(moved).unwrap(),
+        batch.canonical_objects().to_vec(),
+        batch.entity_records().to_vec(),
+        batch.admissions().to_vec(),
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&same_content)
+            .unwrap_err()
+            .code(),
+        "corruption"
+    );
+    // The same id as text, forged past the schema's checks: fsck reports
+    // the key and the missing receipt.
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE applied_transactions SET transaction_key=?1",
+            [[&[0_u8][..], id.as_bytes()].concat()],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(connection);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    let codes: std::collections::BTreeSet<&str> = report
+        .findings
+        .iter()
+        .map(|finding| finding.code.as_str())
+        .collect();
+    assert!(
+        codes.contains("sqlite_integrity_failure") && codes.contains("current_reference_invalid"),
+        "{:#?}",
+        report.findings
+    );
+}
+
 /// Format 8 keeps compact receipts (phase 2c): a replay decodes them; another
 /// request digest is a replay mismatch even when the receipt does not decode; a
 /// receipt that does not decode exactly, or disagrees with the batch, is
@@ -1114,10 +1335,11 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
     assert!(repository.apply_batch(&batch).unwrap().was_replay());
     drop(repository);
     let id = batch.transaction_id().as_str().to_owned();
+    let key = text_receipt_key(&id);
     let (digest, original): (Vec<u8>, Vec<u8>) = sql(&root.0)
         .query_row(
-            "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_id=?1",
-            [&id],
+            "SELECT request_digest,receipt FROM applied_transactions WHERE transaction_key=?1",
+            [&key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
@@ -1133,8 +1355,8 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
         let connection = sql(&root.0);
         connection
             .execute(
-                "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_id=?3",
-                rusqlite::params![digest, receipt, id],
+                "UPDATE applied_transactions SET request_digest=?1,receipt=?2 WHERE transaction_key=?3",
+                rusqlite::params![digest, receipt, key],
             )
             .unwrap();
         connection
@@ -1183,8 +1405,8 @@ fn format_8_replays_from_compact_receipts_and_refuses_damaged_ones() {
     let connection = sql(&root.0);
     connection
         .execute(
-            "UPDATE applied_transactions SET transaction_id=?1 WHERE transaction_id=?2",
-            rusqlite::params![moved.as_str(), id],
+            "UPDATE applied_transactions SET transaction_key=?1 WHERE transaction_key=?2",
+            rusqlite::params![text_receipt_key(moved.as_str()), key],
         )
         .unwrap();
     connection

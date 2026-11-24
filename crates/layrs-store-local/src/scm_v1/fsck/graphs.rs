@@ -423,14 +423,79 @@ impl Context<'_> {
                 format!("Operation head {operation} is missing or cross-Space"),
             );
         }
-        let missing_transactions = query_pairs(
-            self.connection,
-            "SELECT c.space_id, c.updated_by_transaction_id FROM current_repository_views c
-             WHERE NOT EXISTS (SELECT 1 FROM applied_transactions t WHERE t.transaction_id=c.updated_by_transaction_id)
-             UNION ALL
-             SELECT h.space_id, h.updated_by_transaction_id FROM operation_heads h
-             WHERE NOT EXISTS (SELECT 1 FROM applied_transactions t WHERE t.transaction_id=h.updated_by_transaction_id)",
-        )?;
+        let compact_receipts = crate::scm_v1::schema::compact_receipts(self.audit.format_version());
+        let missing_transactions = if compact_receipts {
+            // Format 8: receipts are found under their transaction's key
+            // (phase 3e).
+            let cited = query_pairs(
+                self.connection,
+                "SELECT space_id, updated_by_transaction_id FROM current_repository_views
+                 UNION ALL
+                 SELECT space_id, updated_by_transaction_id FROM operation_heads",
+            )?;
+            let mut missing = Vec::new();
+            for (space, transaction) in cited {
+                let present: bool = self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_key=?1)",
+                    [crate::scm_v1::write_batch::receipt_key(&transaction)],
+                    |row| row.get(0),
+                )?;
+                if !present {
+                    missing.push((space, transaction));
+                }
+            }
+            missing
+        } else {
+            query_pairs(
+                self.connection,
+                "SELECT c.space_id, c.updated_by_transaction_id FROM current_repository_views c
+                 WHERE NOT EXISTS (SELECT 1 FROM applied_transactions t WHERE t.transaction_id=c.updated_by_transaction_id)
+                 UNION ALL
+                 SELECT h.space_id, h.updated_by_transaction_id FROM operation_heads h
+                 WHERE NOT EXISTS (SELECT 1 FROM applied_transactions t WHERE t.transaction_id=h.updated_by_transaction_id)",
+            )?
+        };
+        if compact_receipts {
+            // Each key is its transaction id's one encoding: a UUID id kept
+            // as text would never be found by a replay.
+            // Streamed and charged a CPU unit a row; a key past the
+            // schema's bound is reported by its length, never loaded.
+            let mut statement = self.connection.prepare(
+                "SELECT length(transaction_key),
+                        CASE WHEN length(transaction_key) <= 256 THEN transaction_key END
+                 FROM applied_transactions",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                if !self.consume_cpu(1) {
+                    break;
+                }
+                let length: i64 = row.get(0)?;
+                let key: Option<Vec<u8>> = row.get(1)?;
+                let readable = key
+                    .as_deref()
+                    .and_then(crate::scm_v1::write_batch::receipt_transaction);
+                if readable.is_none() {
+                    let shown = key.as_deref().map_or_else(
+                        || format!("of {length} bytes"),
+                        |key| {
+                            key.iter().fold(String::new(), |mut text, byte| {
+                                use std::fmt::Write as _;
+                                let _ = write!(text, "{byte:02x}");
+                                text
+                            })
+                        },
+                    );
+                    self.error(
+                        FsckFindingCode::SqliteIntegrityFailure,
+                        None,
+                        format!("receipt key {shown} is not a transaction id's one encoding"),
+                    );
+                }
+            }
+            drop(rows);
+            drop(statement);
+        }
         for (space, transaction) in missing_transactions {
             self.error(
                 FsckFindingCode::CurrentReferenceInvalid,

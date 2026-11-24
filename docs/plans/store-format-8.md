@@ -1460,3 +1460,86 @@ Chair's decision: no regression is established; the s30 latency gate for
 Later (performance, not format 8): a plain `diff` of an old Step takes 5 to
 9 s at 99k files whatever the format, like the rewrites (see s34 r2's later
 list).
+
+## Phase 3e progress (2026-11-24)
+
+Done (format 8, schema v4 draft 11; formats 5 to 7 unchanged):
+
+- `applied_transactions` is keyed by `transaction_key`: byte 1 then the 16
+  bytes of the UUID when the id is `transaction:` plus a canonical lowercase
+  hyphenated UUID, else byte 0 then the id's text (`receipt_key`). Each id
+  has one key; `receipt_transaction` reads a key back only when it is its
+  id's one encoding (a text key of the UUID shape is refused). The schema
+  checks the tag and lengths. The compact receipt's tag still covers the
+  id's text (s29), so a moved key is corruption, not a replay.
+- Writers, the replay, the precheck and VFS recovery look receipts up by
+  key. fsck finds the receipts the current references cite by key and
+  reports a key that is not its id's one encoding (a UUID id kept as text,
+  which no replay would find).
+- `layrs maintenance` (explicit or automatic, format 8 only) rewrites the metadata
+  database (`VACUUM`, then the checked checkpoint) in a short exclusive
+  session once it holds at least 256 pages and a quarter more than after
+  the last rewrite (`metadata/metadata-vacuumed`). Receipts are inserted in
+  random key order and leave B-tree pages about two-thirds full; git
+  repacks its refs in `gc` likewise. A busy Store skips it.
+- Not done: UUIDv7 transaction ids (ordered keys). The VACUUM gives the
+  same fill after maintenance without changing how ids are made.
+- Tests: `receipt_keys_are_reversible_and_unique`,
+  `format_8_keeps_uuid_transaction_keys_in_17_bytes` (17-byte key, replay,
+  schema checks, fsck on the text form), the compact receipt tests by key.
+
+Measured (release CLI at 4e74061, 100 files, maintained; `history_slope.py`):
+1,000 Steps 744 KiB (git gc 816), 2,000 Steps 1280 KiB (git 1464), slope
+549 B/Step (git 664): 0.83 of git on the slope, 0.87 on the total at 2,000
+Steps, 0.912 at 1,000 Steps (the gate is 0.9: about 10 KiB short there; git's
+own total varies between runs, 792 to 816 KiB). `layrs.sqlite3` at 2,000
+Steps: 343 KiB (464 at 3c, 443 at 3d).
+
+## Council s35 r1 (code review of 3e, 2026-11-24)
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 (ship after fixes) |
+
+All three: the key is one per id and every format 8 reader and writer uses
+it; the tag still binds the id; the VACUUM is safe beside other sessions
+and durable; formats 5 to 7 keep their paths. Fixed:
+
+- (P2 all three) fsck loaded every receipt key before charging its budget,
+  and a text key had no length bound. The schema now bounds a text key
+  (1 to 255 bytes of the id alphabet, never the UUID shape: s30's "a text
+  key of that shape is refused" is the schema's), and fsck streams the keys,
+  a CPU unit a row, reading a key only within that bound.
+- (P2 Astra, Sol) The note of the last rewrite was written best effort: a
+  failure to write it made every later pass rewrite again. It is written
+  durably (file and directory flushed) and its failure is the rewrite's.
+- (P2 Opus) A failed rewrite failed a pass that had already consolidated,
+  and counted towards pausing pack consolidation. The rewrite left the
+  pass: `rewrite_metadata` runs once after a maintenance run's passes,
+  never undoes them, and records its own failures
+  (`metadata-rewrite-failed`); automatic runs pause rewriting after two in
+  an hour, explicit ones do not.
+- (P2 Opus) The quarter was measured from the size after the last rewrite,
+  which pages refilling alone regain: it is measured from the size before
+  it (`metadata-rewritten`).
+- (P2 Opus) The floor of 256 pages is 256 KiB with 1 KiB pages: the
+  1,000-Step database (247 KiB) was never rewritten. The floor is 64 pages.
+- (P2 Astra, Opus) The rewrite holds the exclusive Store lock for a time
+  proportional to the database. Whether it is due is read with no lock
+  (the database's length) and only a due rewrite takes the session (P3
+  Opus: no exclusive session per pass); automatic runs rewrite at most
+  32 MiB; an explicit `layrs maintenance` rewrites any size (the help says
+  so). A rewrite outside the lock (`VACUUM INTO` and a journaled swap, as
+  `compact_metadata` does under its lock) is left for later.
+- (P3 Opus) A text key must be a valid transaction id to read back; the
+  output of `layrs maintenance` reports the rewrite (human and JSON); the
+  literal with a raw line break; tests: a second rewrite and the quarter's
+  boundary, the pause for automatic runs only, a format 7 Store never
+  rewritten, a moved 17-byte key failing on the tag, the schema refusing
+  text keys of the UUID shape, of other characters or past 255 bytes, and
+  fsck reporting a key forged past the schema's checks.
+
+Not done: a fault between the VACUUM and the checkpoint (SQLite's own
+atomicity; the checked checkpoint is unchanged).

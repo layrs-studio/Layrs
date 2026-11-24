@@ -101,14 +101,16 @@ pub fn schema_v3_checksum() -> String {
 /// schema unchanged). Draft 8: Tree records are binary (phase 3b, schema
 /// unchanged). Draft 9: Step, RepositoryView, Operation and StepObservation
 /// records are binary (phase 3c, schema unchanged). Draft 10: their
-/// dictionaries gain the rewrite map's keys (council s33). Drafts change until format 8 is frozen; a Store of an
-/// earlier draft is refused.
+/// dictionaries gain the rewrite map's keys (council s33). Draft 11: a
+/// receipt's key is its transaction id as a tagged UUID or text (phase 3e).
+/// Drafts change until format 8 is frozen; a Store of an earlier draft is
+/// refused.
 pub const SCHEMA_V4_VERSION: u32 = 4;
-pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft10";
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_history_out_draft11";
 pub const SCHEMA_V4_CHECKSUM: &str =
-    "aa0cad80ca675783fb88b2a1d57d8585b05ad410b7f0967db5b731b5a44e67f2";
+    "428d51f992050b023fbd02e9be013fdf7d990c166cf4aa45415a13cc26588fb1";
 pub const SCHEMA_V4_FINGERPRINT: &str =
-    "59ad5d88bbd43e9d8f7e9fa808ab2a88b22f2a9aa4311648392d72daa440be37";
+    "b7765ac2762ab282533e3b58a9f618963218492b12fc2d438b0de1f249a9f3a2";
 pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
 
 pub fn schema_v4_checksum() -> String {
