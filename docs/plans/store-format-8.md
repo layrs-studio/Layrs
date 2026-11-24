@@ -1396,10 +1396,12 @@ Fixed:
 
 Chair's amendments to s30 item 2, recorded:
 
-- Tree blocks of 1 MiB are written oldest first within a lineage (the order
-  written) and read by whole blocks: s30's newest-first order and partial
-  decompression are not done; the latency gate decides, and the measured
-  cold reads (above) did not need them.
+- Tree blocks of 1 MiB keep the candidates' registration order, then each
+  block's order (block and offset): the order written, a locality heuristic
+  and not a guaranteed chronology (council s34 r1, r3). They are read by
+  whole blocks: s30's newest-first order and partial decompression are not
+  done; the latency gate decides, and the measured cold reads (above) did
+  not need them.
 - The batch grouping comes from the order the writer used. Its limit (Opus):
   `WriteBatch::new` sorts objects and entity records by kind and id, so a
   batch of several Steps (clone, fetch, import) is written in id order: its

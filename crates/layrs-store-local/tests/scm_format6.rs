@@ -1838,10 +1838,8 @@ fn consolidation_keeps_versions_and_batches_in_the_order_written() {
 type BatchSpan = (String, (usize, usize), (usize, usize));
 
 /// The scenario, clustered or plain; returns every (kind, key) the
-/// registered packs hold.
-fn consolidation_keeps_the_order_written(
-    plain: bool,
-) -> std::collections::BTreeSet<(u8, [u8; 32])> {
+/// registered packs hold, each once (a record written twice fails).
+fn consolidation_keeps_the_order_written(plain: bool) -> Vec<(u8, [u8; 32])> {
     let root = TestRoot::new("written-order");
     create(&root.0, "written-order", "8");
     if plain {
@@ -2016,7 +2014,7 @@ fn consolidation_keeps_the_order_written(
         checked += 1;
     }
     assert!(checked >= steps.len() / 2, "{checked}");
-    let mut keys = std::collections::BTreeSet::new();
+    let mut keys = Vec::new();
     for name in registered_packs(&root.0) {
         let image = fs::read(root.0.join("objects/packs").join(&name)).unwrap();
         keys.extend(
@@ -2025,8 +2023,69 @@ fn consolidation_keeps_the_order_written(
                 .map(|(kind, key, _, _)| (kind, key)),
         );
     }
+    keys.sort_unstable();
+    let written = keys.len();
+    keys.dedup();
+    assert_eq!(keys.len(), written, "a record is held twice");
     assert_fsck_clean(&root.0);
     keys
+}
+
+/// Council s34: a whole read of a batch pack of more than 64 blocks of
+/// 16 KiB, in random order (a rewrite's checkout of an unconsolidated pack),
+/// decompresses each block once: the recent blocks keep up to 1,024 of them
+/// within their bytes.
+#[test]
+fn a_whole_read_of_a_batch_pack_decompresses_each_block_once() {
+    let root = TestRoot::new("many-blocks");
+    create(&root.0, "many-blocks", "8");
+    let files: Vec<File> = (0..3000)
+        .map(|n| {
+            file(
+                &format!("f{n:04}.txt"),
+                format!("{n:04} {}", "x".repeat(600)).as_bytes(),
+                Recipe::Whole,
+            )
+        })
+        .collect();
+    let (_lane, batch) = Lane::begin("many-blocks", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    drop(repository);
+    let mut holding = std::collections::BTreeSet::new();
+    for name in registered_packs(&root.0) {
+        let image = fs::read(root.0.join("objects/packs").join(&name)).unwrap();
+        for (kind, _, block, _) in record_places(&image) {
+            if kind == 10 {
+                holding.insert((name.clone(), block));
+            }
+        }
+    }
+    assert!(holding.len() > 64, "{}", holding.len());
+    forget_loaded_packs();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    // A fixed shuffle of the files.
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    for at in (1..order.len()).rev() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        order.swap(at, (state >> 33) as usize % (at + 1));
+    }
+    let before = blocks_read_on_this_thread();
+    for at in order {
+        let chunk = reader.get_chunk(files[at].chunks[0].id()).unwrap().unwrap();
+        assert_eq!(chunk.bytes(), files[at].chunks[0].bytes());
+    }
+    let read = blocks_read_on_this_thread() - before;
+    assert_eq!(
+        read,
+        holding.len(),
+        "{read} blocks read for {} holding",
+        holding.len()
+    );
 }
 
 /// Council s31: rebuilding a pack's keys row reads its history bodies, under
