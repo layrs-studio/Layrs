@@ -1825,7 +1825,8 @@ fn history_paging_decompresses_each_consolidated_block_once() {
 /// which hold nothing else. A plain copy (past the clustering bound) keeps
 /// the order written too. The same batches give the same records (a
 /// batch's pack is written by parallel workers, so the order of its own
-/// records, and so the layout after it, may differ between runs).
+/// records, and so the layout and pack split after it, may differ between
+/// runs).
 #[test]
 fn consolidation_keeps_versions_and_batches_in_the_order_written() {
     let first = consolidation_keeps_the_order_written(false);
@@ -1836,9 +1837,11 @@ fn consolidation_keeps_versions_and_batches_in_the_order_written() {
 /// A batch's pack and the first and last places of its Step and View.
 type BatchSpan = (String, (usize, usize), (usize, usize));
 
-/// The scenario, clustered or plain; returns the registered packs' keys
-/// digests.
-fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
+/// The scenario, clustered or plain; returns every (kind, key) the
+/// registered packs hold.
+fn consolidation_keeps_the_order_written(
+    plain: bool,
+) -> std::collections::BTreeSet<(u8, [u8; 32])> {
     let root = TestRoot::new("written-order");
     create(&root.0, "written-order", "8");
     if plain {
@@ -1857,6 +1860,15 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
     let mut repository = NativeScmRepository::new(&root.0);
     repository.apply_batch(&batch).unwrap();
     let (mut trees, mut steps, mut views) = (Vec::new(), Vec::new(), Vec::new());
+    // Each batch's history records, by their index keys (`history_key`:
+    // the kind code and the id, derived).
+    let history_key = |code: u8, id: &str| {
+        blake3::derive_key(
+            "layrs history key v1",
+            &[&[code][..], id.as_bytes()].concat(),
+        )
+    };
+    let mut history_keys = Vec::new();
     for k in 1..=80 {
         let n = k % files.len();
         files[n] = file(
@@ -1879,6 +1891,17 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
         }
         // Each batch observes its Step.
         let mut entities = capture.entity_records().to_vec();
+        let operation = entities
+            .iter()
+            .find_map(|record| match record {
+                EntityRecord::Operation(value) => Some(value.id().as_str().to_owned()),
+                _ => None,
+            })
+            .unwrap();
+        history_keys.push((
+            history_key(11, &operation),
+            history_key(12, &format!("observation:written-order-{k}")),
+        ));
         entities.push(EntityRecord::StepObservation(StepObservation::new(
             ObservationId::parse(format!("observation:written-order-{k}")).unwrap(),
             step_id.unwrap(),
@@ -1905,7 +1928,7 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
     // The batches' own consolidations or this one: every pack is checked.
     maintain(&root.0).unwrap();
     let mut places = std::collections::HashMap::new();
-    let mut history: std::collections::HashMap<String, Vec<(u8, usize, usize)>> =
+    let mut batch_kinds: std::collections::HashMap<String, Vec<(usize, usize)>> =
         Default::default();
     let mut large_tree_block = false;
     for name in registered_packs(&root.0) {
@@ -1916,11 +1939,11 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
         for (kind, key, block, offset) in record_places(&image) {
             places.insert((kind, key), (name.clone(), block, offset));
             kinds_of.entry(block).or_default().insert(kind);
-            if kind == 11 || kind == 12 {
-                history
+            if matches!(kind, 6 | 7 | 11 | 12) {
+                batch_kinds
                     .entry(name.clone())
                     .or_default()
-                    .push((kind, block, offset));
+                    .push((block, offset));
             }
         }
         for (block, kinds) in kinds_of {
@@ -1951,9 +1974,9 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
         per_pack.values().any(|count| *count >= trees.len() / 2),
         "{per_pack:?}"
     );
-    // Each batch's Step and View sit together, between the previous
-    // batch's and the next one's in the same pack, and its Operation and
-    // StepObservation follow them, before the next batch's Step and View.
+    // Each batch's Step and View sit together (no record of the batch group
+    // between them), then its own Operation, then its own Observation,
+    // before the next batch's Step and View in the same pack.
     let batches: Vec<BatchSpan> = steps
         .iter()
         .zip(&views)
@@ -1965,32 +1988,45 @@ fn consolidation_keeps_the_order_written(plain: bool) -> Vec<Vec<u8>> {
         })
         .collect();
     let mut checked = 0;
-    for pair in batches.windows(2) {
-        let ((pack, _, last), (next_pack, next, _)) = (&pair[0], &pair[1]);
+    for (index, (pack, first, last)) in batches.iter().enumerate() {
+        let inside = batch_kinds[pack]
+            .iter()
+            .filter(|place| *first < **place && **place < *last)
+            .count();
+        assert_eq!(inside, 0, "{first:?} {last:?}");
+        let Some((next_pack, next, _)) = batches.get(index + 1) else {
+            continue;
+        };
         if pack != next_pack {
             continue;
         }
-        assert!(last < next, "{last:?} {next:?}");
-        let between: Vec<u8> = history
-            .get(pack)
-            .into_iter()
-            .flatten()
-            .filter(|(_, block, offset)| *last < (*block, *offset) && (*block, *offset) < *next)
-            .map(|(kind, _, _)| *kind)
-            .collect();
-        assert_eq!(between, [11, 12], "{last:?} {next:?}");
+        let (operation, observation) = history_keys[index];
+        let (operation, observation) = (place(11, &operation), place(12, &observation));
+        assert_eq!((&operation.0, &observation.0), (pack, pack));
+        let (operation, observation) = ((operation.1, operation.2), (observation.1, observation.2));
+        assert!(
+            *last < operation && operation < observation && observation < *next,
+            "{last:?} {operation:?} {observation:?} {next:?}"
+        );
+        let between = batch_kinds[pack]
+            .iter()
+            .filter(|place| *last < **place && **place < *next)
+            .count();
+        assert_eq!(between, 2, "{last:?} {next:?}");
         checked += 1;
     }
     assert!(checked >= steps.len() / 2, "{checked}");
-    let digests = sql(&root.0)
-        .prepare("SELECT keys_digest FROM cas_pack_keys ORDER BY pack_seq")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
+    let mut keys = std::collections::BTreeSet::new();
+    for name in registered_packs(&root.0) {
+        let image = fs::read(root.0.join("objects/packs").join(&name)).unwrap();
+        keys.extend(
+            record_places(&image)
+                .into_iter()
+                .map(|(kind, key, _, _)| (kind, key)),
+        );
+    }
     assert_fsck_clean(&root.0);
-    digests
+    keys
 }
 
 /// Council s31: rebuilding a pack's keys row reads its history bodies, under

@@ -1004,7 +1004,8 @@ Fixed:
   envelope, per entry 40 bytes (39 when executable), the target's spelling
   (File and Tree 98, Conflict 106, Symlink 104, Tombstone 108), the name as
   serde_json escapes it (`"`, `\`, ` 	 
-  ` two bytes, other
+  
+` two bytes, other
   control bytes six) and the commas between entries. The randomized test
   asserts equality with the encoder over every escape kind. The writer
   decides pack or loose before the decode-back (`binary_tree_fits_pack`,
@@ -1277,10 +1278,13 @@ Then (Tree blocks, plain copy):
   1 MiB raw (`TREE_CLUSTER_BLOCK`); the other groups keep 256 KiB. A block
   of Trees holds nothing else, so a history read never decompresses Trees.
 - The recent-block cache keeps blocks of up to 1 MiB (`RECENT_BLOCK_MAX`),
-  within the same 16 MiB.
+  within the same 16 MiB. (Superseded by s34 r1: only blocks of Trees of
+  packs v4 pass 256 KiB, `kept_in_recent`.)
 - Past the clustering bound (64 MiB of candidates), the plain copy into
   packs v4 keeps each block's records in the order written, in blocks of
   256 KiB (s30: the copy path past 64 MiB takes the large block target too).
+  (Superseded by s34 r1: the order written, in blocks of the default
+  target.)
 - Test: the same test, clustered and plain (`set_cluster_max_raw(0)`); in
   the clustered run, a Tree block holds Trees only and one passes 256 KiB
   raw (120 files, 80 versions). It fails with Trees at 256 KiB, without the
@@ -1335,7 +1339,9 @@ Fixed:
 
 Found while fixing: a batch's pack is written by parallel workers
 (`put_ordered`), so the order of a batch's own records varies between
-runs; before 3d a consolidation normalized it (ordinal order), now it keeps
+runs; before 3d a consolidation sorted each block's records by ordinal,
+but which block a record landed in already followed the workers' order, so
+consolidated layouts already differed between runs; now it keeps
 it. A consolidation is still a function of its candidates' bytes, but two
 Stores fed the same batches may differ in layout (not in records, ids or
 keys digests).
@@ -1349,3 +1355,64 @@ Not done (later list):
   (s27) and needs its own review; the size gate measures one-Step captures.
 - (P3 Opus) Nested lineages and a golden test of packs v3 bytes; cold block
   reads not deduplicated across threads (pre-existing).
+
+## Council s34 r2 (2026-11-24)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 (blocked on the latency gate) |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 (blocked on the latency gate) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 (ship after fixes) |
+
+The latency gate, measured (release, quiet machine, `history_lat.py`: files
+in folders of 100, 1,000 Steps, maintenance, median of five cold runs): at
+10k files 3d matched 3c on every read; at 99k files, in one session, status,
+history, path history and a Room at an old Step matched, but the revert
+preview of an old Step went from 8,972 to 14,496 ms. A revert preview
+rebuilds the whole result checkout, reading the content of each of the 99k
+files in path order (`checkout_entries`). In 3d's run, maintenance had left
+the initial batch pack unconsolidated (smaller packs move the size tiers):
+its 99,000 file records sit in 90 blocks of 16 KiB, read in random order
+through a recent-block cache of 64 entries, so about 1 - 64/90 of the reads
+decompressed a block (29,600 to 30,800). Opus found the bound: the count,
+not the bytes (90 blocks of 16 KiB are 1.4 MiB of the 16 MiB).
+
+Fixed:
+
+- (P1 Astra, P2 Sol, P2 Opus) The recent blocks are a table by key with
+  their order beside it (`RecentBlocks`), at most 1,024 blocks and the same
+  16 MiB: a whole checkout of an unconsolidated pack of 16 KiB blocks stays
+  cached. Lookups are by key, not a scan. Test:
+  `recent_blocks_keep_many_small_blocks_within_their_bytes`.
+- (P3 Opus) A block read cold by several readers at once is kept once (the
+  first insert wins; the others serve their own copy).
+- (P3 Astra, Opus) Test: each batch's own Operation and Observation (by
+  their index keys) sit after its Step and View, in that order, before the
+  next batch's; nothing of the batch group sits between a batch's Step and
+  View; the two runs compare every (kind, key) of the Store, not keys rows
+  pack by pack (the pack split may differ).
+- (P3 Opus) Stale plan passages marked superseded; the note on layouts
+  before 3d corrected.
+
+Chair's amendments to s30 item 2, recorded:
+
+- Tree blocks of 1 MiB are written oldest first within a lineage (the order
+  written) and read by whole blocks: s30's newest-first order and partial
+  decompression are not done; the latency gate decides, and the measured
+  cold reads (above) did not need them.
+- The batch grouping comes from the order the writer used. Its limit (Opus):
+  `WriteBatch::new` sorts objects and entity records by kind and id, so a
+  batch of several Steps (clone, fetch, import) is written in id order: its
+  folder versions in random order within their lineage, all Steps, then all
+  Views, then the history, and every later copy keeps that order. Captures
+  (one Step per batch) are what the size gate measures. Later: write a
+  multi-Step batch in Step order (parent before child, each Step with its
+  Trees, View and history), and measure a received Store before 2e.
+
+Later (out of 3d):
+
+- A revert, replay or squash rebuilds and reads the whole result checkout,
+  preview included (99k files: 9 to 19 s whatever the format); git touches
+  the changed paths only. A preview shows only the summary and conflicts.
+- Cut a block only at the Tree group's edges (Opus, optional: small groups
+  of an inline merge pay about 60 bytes each).

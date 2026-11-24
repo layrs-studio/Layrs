@@ -22,8 +22,11 @@ use std::sync::{Mutex, OnceLock};
 /// many small records of the same block in a row). Every record is still
 /// verified against its id at each read, and the cache lives only as long
 /// as the catalog (one SQLite snapshot): a later operation rereads the disk,
-/// as format 5 rereads every object, and sees any damage done since.
-const RECENT_BLOCKS: usize = 64;
+/// as format 5 rereads every object, and sees any damage done since. The
+/// count bound matters for small blocks: a batch pack's 16 KiB blocks read
+/// in random order (a whole checkout of an unconsolidated pack) need many
+/// more than 64 entries within the byte bound (council s34).
+const RECENT_BLOCKS: usize = 1024;
 /// Raw bytes the recent blocks of a catalog may hold together (council s30:
 /// consolidated blocks are up to 256 KiB, larger than the former per-block
 /// bound, so every read decompressed them again).
@@ -2038,25 +2041,67 @@ pub(crate) enum RebuiltKeys {
     HistoryUnreadable(CasError),
 }
 
-/// A decompressed block a catalog keeps: ((pack, block), raw bytes, its
-/// registered hash check: not yet, passed, or failed).
-type RecentBlock = ((usize, u32), Arc<Vec<u8>>, Option<bool>);
+/// A kept block's raw bytes and its registered hash check.
+type RecentBlock = (Arc<Vec<u8>>, Option<bool>);
 
-/// Records the hash check of `raw` on its cache entry, only if that entry
-/// still holds the very buffer that was hashed: meanwhile the block may have
-/// been evicted and read again, other bytes under the same key (council
-/// s31 r2).
-fn mark_checked(
-    recent: &mut VecDeque<RecentBlock>,
-    key: (usize, u32),
-    raw: &Arc<Vec<u8>>,
-    passed: bool,
-) {
-    if let Some(entry) = recent
-        .iter_mut()
-        .find(|entry| entry.0 == key && Arc::ptr_eq(&entry.1, raw))
-    {
-        entry.2 = Some(passed);
+/// The decompressed blocks a catalog keeps, by (pack, block): the raw
+/// bytes and their registered hash check (not yet, passed, or failed); the
+/// newest first in `order`, within `RECENT_BLOCKS` and `RECENT_BYTES`.
+#[derive(Default)]
+struct RecentBlocks {
+    entries: HashMap<(usize, u32), RecentBlock>,
+    order: VecDeque<(usize, u32)>,
+    bytes: usize,
+}
+
+impl fmt::Debug for RecentBlocks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecentBlocks")
+            .field("blocks", &self.order.len())
+            .field("bytes", &self.bytes)
+            .finish()
+    }
+}
+
+impl RecentBlocks {
+    fn get(&self, key: (usize, u32)) -> Option<RecentBlock> {
+        self.entries
+            .get(&key)
+            .map(|(raw, checked)| (Arc::clone(raw), *checked))
+    }
+
+    /// Keeps a block read cold, unless another reader kept it meanwhile
+    /// (council s34: one copy per block), then drops the oldest past the
+    /// bounds (the newest always stays).
+    fn insert(&mut self, key: (usize, u32), raw: Arc<Vec<u8>>, checked: Option<bool>) {
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        self.bytes += raw.len();
+        self.entries.insert(key, (raw, checked));
+        self.order.push_front(key);
+        while self.order.len() > 1
+            && (self.order.len() > RECENT_BLOCKS || self.bytes > RECENT_BYTES)
+        {
+            if let Some(old) = self.order.pop_back() {
+                if let Some((raw, _)) = self.entries.remove(&old) {
+                    self.bytes -= raw.len();
+                }
+            }
+        }
+    }
+
+    /// Records the hash check of `raw` on its entry, only if that entry
+    /// still holds the very buffer that was hashed: meanwhile the block may
+    /// have been evicted and read again, other bytes under the same key
+    /// (council s31 r2).
+    fn mark_checked(&mut self, key: (usize, u32), raw: &Arc<Vec<u8>>, passed: bool) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            if Arc::ptr_eq(&entry.0, raw) {
+                entry.1 = Some(passed);
+            }
+        }
     }
 }
 
@@ -2267,9 +2312,9 @@ pub(crate) struct RegisteredCatalog {
     /// file length.
     loose_by_file: BTreeMap<[u8; 32], Vec<([u8; 32], u64)>>,
     admissions: Mutex<HashMap<String, Arc<SpaceAdmissions>>>,
-    /// Last decompressed blocks, most recent first, at most `RECENT_BLOCKS`
-    /// and `RECENT_BYTES`.
-    recent: Mutex<VecDeque<RecentBlock>>,
+    /// Last decompressed blocks, at most `RECENT_BLOCKS` and
+    /// `RECENT_BYTES`.
+    recent: Mutex<RecentBlocks>,
     /// Pack files kept open while a bulk read holds this catalog
     /// (`hold_pack_files`), by pack position, at most `HELD_PACKS_MAX`;
     /// closed when the last hold ends (ADR 0026, council s9 r1). Opened for
@@ -2341,12 +2386,11 @@ impl RegisteredCatalog {
                 format!("pack block {block} differs from its registered hash"),
             )
         };
-        let cached = self.recent.lock().ok().and_then(|recent| {
-            recent
-                .iter()
-                .find(|entry| entry.0 == (pack, block))
-                .map(|entry| (Arc::clone(&entry.1), entry.2))
-        });
+        let cached = self
+            .recent
+            .lock()
+            .ok()
+            .and_then(|recent| recent.get((pack, block)));
         if let Some((raw, checked)) = cached {
             match (check, checked) {
                 (false, _) | (true, Some(true)) => return Ok(raw),
@@ -2356,7 +2400,7 @@ impl RegisteredCatalog {
                     let passed =
                         pack2::check_block_hash(&loaded.index, block, &raw, &loaded.path).is_ok();
                     if let Ok(mut recent) = self.recent.lock() {
-                        mark_checked(&mut recent, (pack, block), &raw, passed);
+                        recent.mark_checked((pack, block), &raw, passed);
                     }
                     return if passed { Ok(raw) } else { Err(failed()) };
                 }
@@ -2372,17 +2416,7 @@ impl RegisteredCatalog {
             .then(|| pack2::check_block_hash(&loaded.index, block, &raw, &loaded.path).is_ok());
         if kept_in_recent(loaded.index.version, &raw) {
             if let Ok(mut recent) = self.recent.lock() {
-                recent.push_front(((pack, block), Arc::clone(&raw), checked));
-                let mut bytes = 0;
-                let mut keep = 0;
-                for entry in recent.iter() {
-                    if keep == RECENT_BLOCKS || bytes + entry.1.len() > RECENT_BYTES {
-                        break;
-                    }
-                    bytes += entry.1.len();
-                    keep += 1;
-                }
-                recent.truncate(keep.max(1));
+                recent.insert((pack, block), Arc::clone(&raw), checked);
             }
         }
         if checked == Some(false) {
@@ -2659,7 +2693,7 @@ impl RegisteredCatalog {
             loose,
             loose_by_file,
             admissions: Mutex::new(HashMap::new()),
-            recent: Mutex::new(VecDeque::with_capacity(RECENT_BLOCKS)),
+            recent: Mutex::new(RecentBlocks::default()),
             open_packs: Mutex::new(HashMap::new()),
             holds: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -5713,8 +5747,7 @@ fn create_staging_pack(
 
 #[cfg(test)]
 mod recent_block_tests {
-    use super::{RecentBlock, mark_checked};
-    use std::collections::VecDeque;
+    use super::{RECENT_BLOCKS, RECENT_BYTES, RecentBlocks};
     use std::sync::Arc;
 
     /// Council s31 r2: a check is recorded only on the buffer that was
@@ -5723,15 +5756,43 @@ mod recent_block_tests {
     fn a_check_marks_only_the_buffer_it_hashed() {
         let hashed = Arc::new(vec![1_u8; 8]);
         let replaced = Arc::new(vec![1_u8; 8]);
-        let mut recent: VecDeque<RecentBlock> = VecDeque::new();
-        recent.push_front(((0, 7), Arc::clone(&replaced), None));
-        mark_checked(&mut recent, (0, 7), &hashed, true);
-        assert_eq!(recent[0].2, None);
-        mark_checked(&mut recent, (0, 7), &replaced, false);
-        assert_eq!(recent[0].2, Some(false));
-        recent.push_front(((0, 8), Arc::clone(&hashed), None));
-        mark_checked(&mut recent, (0, 8), &hashed, true);
-        assert_eq!(recent[0].2, Some(true));
+        let mut recent = RecentBlocks::default();
+        recent.insert((0, 7), Arc::clone(&replaced), None);
+        recent.mark_checked((0, 7), &hashed, true);
+        assert_eq!(recent.get((0, 7)).unwrap().1, None);
+        recent.mark_checked((0, 7), &replaced, false);
+        assert_eq!(recent.get((0, 7)).unwrap().1, Some(false));
+        recent.insert((0, 8), Arc::clone(&hashed), None);
+        recent.mark_checked((0, 8), &hashed, true);
+        assert_eq!(recent.get((0, 8)).unwrap().1, Some(true));
+    }
+
+    /// Council s34: up to `RECENT_BLOCKS` small blocks stay (a whole
+    /// checkout of 16 KiB blocks in random order), the bytes stay within
+    /// `RECENT_BYTES`, the oldest leave first, the newest always stays, and
+    /// a block kept already is not kept twice.
+    #[test]
+    fn recent_blocks_keep_many_small_blocks_within_their_bytes() {
+        let mut recent = RecentBlocks::default();
+        for block in 0..RECENT_BLOCKS as u32 {
+            recent.insert((0, block), Arc::new(vec![0; 16 * 1024]), None);
+        }
+        assert!((0..RECENT_BLOCKS as u32).all(|block| recent.get((0, block)).is_some()));
+        recent.insert((0, 0), Arc::new(vec![1; 16 * 1024]), Some(true));
+        assert_eq!(recent.get((0, 0)).unwrap().1, None);
+        recent.insert((1, 0), Arc::new(vec![0; 16 * 1024]), None);
+        assert!(recent.get((0, 0)).is_none());
+        assert!(recent.get((0, 1)).is_some());
+        assert_eq!(recent.order.len(), RECENT_BLOCKS);
+        let large = RECENT_BYTES / 4 + 1;
+        for block in 0..4 {
+            recent.insert((2, block), Arc::new(vec![0; large]), None);
+        }
+        assert!(recent.bytes <= RECENT_BYTES);
+        assert!(recent.get((2, 3)).is_some() && recent.get((2, 0)).is_none());
+        recent.insert((3, 0), Arc::new(vec![0; RECENT_BYTES + 1]), None);
+        assert!(recent.get((3, 0)).is_some());
+        assert_eq!(recent.order.len(), 1);
     }
 
     /// Council s34: blocks past 256 KiB join the recent blocks only as
