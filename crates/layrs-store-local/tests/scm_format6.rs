@@ -1173,6 +1173,34 @@ fn the_metadata_is_rewritten_once_it_grew() {
         MetadataRewrite::Rewritten { .. }
     ));
     assert!(!failed.exists());
+    // A busy Store leaves the failure count as it is: only a completed
+    // rewrite clears it.
+    fs::write(
+        &note, "1
+",
+    )
+    .unwrap();
+    fs::write(
+        &failed,
+        format!(
+            "1 {now_ms}
+an earlier failure
+"
+        ),
+    )
+    .unwrap();
+    let held = open_exclusive(&root.0).unwrap();
+    assert_eq!(
+        rewrite_metadata(&root.0, true).unwrap(),
+        MetadataRewrite::Busy
+    );
+    drop(held);
+    assert!(fs::read_to_string(&failed).unwrap().starts_with("1 "));
+    assert!(matches!(
+        rewrite_metadata(&root.0, true).unwrap(),
+        MetadataRewrite::Rewritten { .. }
+    ));
+    assert!(!failed.exists());
     let mut repository = NativeScmRepository::new(&root.0);
     assert!(repository.apply_batch(&captures[3]).unwrap().was_replay());
     drop(repository);
@@ -1188,7 +1216,7 @@ fn the_metadata_is_rewritten_once_it_grew() {
         .unwrap();
     assert_eq!(
         rewrite_metadata(&other.0, false).unwrap(),
-        MetadataRewrite::NotDue
+        MetadataRewrite::Unsupported
     );
     assert!(!other.0.join("metadata/metadata-rewritten").exists());
     set_vacuum_min_pages(&other.0, None);
@@ -1255,6 +1283,8 @@ fn format_8_keeps_uuid_transaction_keys_in_17_bytes() {
         [&[0_u8][..], id.as_bytes()].concat(),
         [&[0_u8][..], b"transaction:a b"].concat(),
         [&[0_u8][..], "t".repeat(256).as_bytes()].concat(),
+        vec![0, 0],
+        [&[0_u8][..], b"a\0b"].concat(),
     ] {
         assert!(
             connection

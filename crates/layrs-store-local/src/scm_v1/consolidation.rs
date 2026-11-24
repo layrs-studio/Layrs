@@ -183,8 +183,10 @@ fn maintain_recorded(
 /// What a metadata rewrite did (`rewrite_metadata`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetadataRewrite {
-    /// Not a format 8 Store, or the database has not grown enough, or it
-    /// is past what automatic maintenance rewrites.
+    /// Not a format 8 Store: nothing is read or locked.
+    Unsupported,
+    /// The database has not grown enough, or it is past what automatic
+    /// maintenance rewrites.
     NotDue,
     /// The Store stayed busy longer than the rewrite waits for it.
     Busy,
@@ -197,44 +199,34 @@ pub enum MetadataRewrite {
 /// Format 8 (phase 3e): rewrites the metadata database (`VACUUM`, then the
 /// checked checkpoint) in a short exclusive session when it holds at least
 /// `VACUUM_MIN_PAGES` pages and a quarter more than before the last rewrite
-/// (`REWRITTEN_FILE`). Whether it is due is read with no Store lock, from
-/// the database's length; only a due rewrite takes the exclusive session.
+/// (`REWRITTEN_FILE`). The format and whether a rewrite is due are read with
+/// no Store lock (the format marker, the database's length); only a due
+/// rewrite takes the exclusive session, which checks everything again.
 /// Run once after a maintenance run's passes. `automatic` maintenance
 /// rewrites at most `AUTOMATIC_REWRITE_MAX_BYTES` and pauses after failures
-/// in a row (`REWRITE_FAILED_FILE`); a failure never undoes what the passes
-/// did, and is returned for the caller to report.
+/// in a row (`REWRITE_FAILED_FILE`), both checked under the session, where
+/// failures are also recorded; a failure never undoes what the passes did,
+/// and is returned for the caller to report.
 pub fn rewrite_metadata(
     root: impl AsRef<std::path::Path>,
     automatic: bool,
 ) -> Result<MetadataRewrite, String> {
     let root = root.as_ref();
-    let metadata = root.join(super::layout::METADATA_DIR_NAME);
-    let (format, sqlite_path) = match super::acquisition::acquire(
-        "metadata rewrite read",
-        super::acquisition::SHORT_WAIT,
-        || super::open(root),
-    ) {
-        Ok(store) => (
-            store.format_version(),
-            store.layout().sqlite_path().to_path_buf(),
-        ),
-        Err(error) if timed_out(&error) => return Ok(MetadataRewrite::Busy),
-        Err(error) => return Err(error.to_string()),
+    let (format, layout) = match super::format::inspect(root).map_err(|error| error.to_string())? {
+        super::NativeStoreInspection::NativeReady { layout, marker } => {
+            (marker.format_version(), layout)
+        }
+        _ => return Ok(MetadataRewrite::Unsupported),
     };
     if !super::schema::compact_receipts(format) {
-        return Ok(MetadataRewrite::NotDue);
+        return Ok(MetadataRewrite::Unsupported);
     }
-    if automatic
-        && failures_at(&metadata, REWRITE_FAILED_FILE).is_some_and(|(count, at)| {
-            count >= FAILURES_BEFORE_PAUSE && now_ms().saturating_sub(at) < FAILURE_PAUSE_MS
-        })
-    {
+    let metadata = layout.metadata_dir().to_path_buf();
+    if automatic && rewrite_paused(&metadata) {
         return Ok(MetadataRewrite::Paused);
     }
-    let page_size = super::schema::baseline_for_format(format)
-        .page_size
-        .unwrap_or(4096) as u64;
-    let length = std::fs::metadata(&sqlite_path)
+    let page_size = page_size_of(format);
+    let length = std::fs::metadata(layout.sqlite_path())
         .map_err(|error| error.to_string())?
         .len();
     if !rewrite_due(root, length / page_size, last_rewrite(&metadata))
@@ -242,25 +234,23 @@ pub fn rewrite_metadata(
     {
         return Ok(MetadataRewrite::NotDue);
     }
-    let rewritten = rewrite_now(root);
-    match &rewritten {
-        Ok(_) => {
-            let note = metadata.join(REWRITE_FAILED_FILE);
-            if std::fs::symlink_metadata(&note).is_ok_and(|found| found.is_file()) {
-                let _ = std::fs::remove_file(&note);
-            }
-        }
-        Err(message) => {
-            let count =
-                failures_at(&metadata, REWRITE_FAILED_FILE).map_or(0, |(count, _)| count) + 1;
-            write_note_at(
-                &metadata,
-                REWRITE_FAILED_FILE,
-                &format!("{count} {}\n{message}\n", now_ms()),
-            );
-        }
-    }
-    rewritten
+    rewrite_now(root, automatic, page_size)
+}
+
+/// The page size of the metadata database of a Store of `format`.
+fn page_size_of(format: u32) -> u64 {
+    u64::from(
+        super::schema::baseline_for_format(format)
+            .page_size
+            .unwrap_or(4096),
+    )
+}
+
+/// Whether automatic rewrites are paused after failures in a row.
+fn rewrite_paused(metadata: &std::path::Path) -> bool {
+    failures_at(metadata, REWRITE_FAILED_FILE).is_some_and(|(count, at)| {
+        count >= FAILURES_BEFORE_PAUSE && now_ms().saturating_sub(at) < FAILURE_PAUSE_MS
+    })
 }
 
 /// The page count before the last rewrite (0 when none was recorded).
@@ -276,10 +266,15 @@ fn rewrite_due(root: &std::path::Path, pages: u64, before_last: u64) -> bool {
     pages >= vacuum_min_pages(root) && pages.saturating_mul(4) >= before_last.saturating_mul(5)
 }
 
-/// The rewrite itself, in an exclusive session, checked again under it; the
-/// note of its starting size is written durably (a failure to write it is
-/// the rewrite's failure).
-fn rewrite_now(root: &std::path::Path) -> Result<MetadataRewrite, String> {
+/// The rewrite in the exclusive session: the pause and every bound checked
+/// again under it, and its outcome recorded before the session ends (a
+/// failure counted, a completed rewrite clearing the count; a busy Store or
+/// a rewrite not due leave the count as it is), so attempts are serialized.
+fn rewrite_now(
+    root: &std::path::Path,
+    automatic: bool,
+    page_size: u64,
+) -> Result<MetadataRewrite, String> {
     let store = match super::acquisition::acquire(
         "metadata rewrite",
         super::acquisition::SHORT_WAIT,
@@ -290,6 +285,42 @@ fn rewrite_now(root: &std::path::Path) -> Result<MetadataRewrite, String> {
         Err(error) => return Err(error.to_string()),
     };
     let metadata = store.layout().metadata_dir().to_path_buf();
+    if automatic && rewrite_paused(&metadata) {
+        return Ok(MetadataRewrite::Paused);
+    }
+    let outcome = rewrite_locked(&store, root, automatic, page_size);
+    match &outcome {
+        Ok(MetadataRewrite::Rewritten { .. }) => {
+            let note = metadata.join(REWRITE_FAILED_FILE);
+            if std::fs::symlink_metadata(&note).is_ok_and(|found| found.is_file()) {
+                let _ = std::fs::remove_file(&note);
+            }
+        }
+        Ok(_) => {}
+        Err(message) => {
+            let count =
+                failures_at(&metadata, REWRITE_FAILED_FILE).map_or(0, |(count, _)| count) + 1;
+            write_note_at(
+                &metadata,
+                REWRITE_FAILED_FILE,
+                &format!("{count} {}\n{message}\n", now_ms()),
+            );
+        }
+    }
+    drop(store);
+    outcome
+}
+
+/// `rewrite_now`'s work under the session; the note of the rewrite's
+/// starting size is written durably (a failure to write it is the
+/// rewrite's failure).
+fn rewrite_locked(
+    store: &NativeStoreExclusive,
+    root: &std::path::Path,
+    automatic: bool,
+    page_size: u64,
+) -> Result<MetadataRewrite, String> {
+    let metadata = store.layout().metadata_dir().to_path_buf();
     let connection = store
         .begin_session_writer()
         .map_err(|error| error.to_string())?;
@@ -297,7 +328,9 @@ fn rewrite_now(root: &std::path::Path) -> Result<MetadataRewrite, String> {
     let before: u64 = connection
         .query_row("PRAGMA page_count", [], |row| row.get(0))
         .map_err(sql)?;
-    if !rewrite_due(root, before, last_rewrite(&metadata)) {
+    if !rewrite_due(root, before, last_rewrite(&metadata))
+        || (automatic && before.saturating_mul(page_size) > AUTOMATIC_REWRITE_MAX_BYTES)
+    {
         sqlite::finish_writer(connection, store.layout().sqlite_path())
             .map_err(|error| error.to_string())?;
         return Ok(MetadataRewrite::NotDue);

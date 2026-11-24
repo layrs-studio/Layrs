@@ -267,6 +267,66 @@ fn cli_maintenance_runs_a_pass_on_the_checkout_store() {
     );
 }
 
+/// Phase 3e (council s35): in Store format 8, `layrs maintenance` rewrites
+/// the metadata database once it has grown (and says so), a second run finds
+/// it not due, and the detached run rewrites it too; in other formats the
+/// output has no `metadata` field.
+#[test]
+fn format_8_maintenance_rewrites_the_metadata() {
+    let fixture = Fixture::new();
+    let checkout = fixture.directory("format-8");
+    fs::write(checkout.join("file"), b"base").unwrap();
+    let layrs_in = |dir: &Path, args: &[&std::ffi::OsStr], format: &str| {
+        Command::new(env!("CARGO_BIN_EXE_layrs"))
+            .current_dir(dir)
+            .env("LAYRS_STORE_FORMAT", format)
+            .env("LAYRS_AUTO_MAINTENANCE", "0")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let layrs = |args: &[&std::ffi::OsStr], format: &str| layrs_in(&checkout, args, format);
+    let json_in = |dir: &Path, args: &[&str], format: &str| -> Value {
+        let mut all: Vec<&std::ffi::OsStr> = vec![std::ffi::OsStr::new("--json")];
+        all.extend(args.iter().map(std::ffi::OsStr::new));
+        let output = layrs_in(dir, &all, format);
+        assert!(
+            output.status.success(),
+            "{args:?}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["data"].clone()
+    };
+    let json = |args: &[&str]| json_in(&checkout, args, "8");
+    json(&["init", "Format 8"]);
+    for n in 0..3 {
+        fs::write(checkout.join(format!("f{n}")), format!("content {n}")).unwrap();
+        json(&["step"]);
+    }
+    let store = checkout.join(".layrs");
+    let note = store.join("metadata").join("metadata-rewritten");
+    let data = json(&["maintenance"]);
+    assert_eq!(data["metadata"]["status"], "rewritten", "{data}");
+    assert!(note.exists());
+    let data = json(&["maintenance"]);
+    assert_eq!(data["metadata"]["status"], "notDue", "{data}");
+    fs::remove_file(&note).unwrap();
+    let command = std::ffi::OsStr::new(layrs_cli::native::MAINTENANCE_COMMAND);
+    let detached = layrs(&[command, store.as_os_str()], "8");
+    assert_eq!(detached.status.code(), Some(0));
+    assert!(note.exists(), "the detached run rewrote nothing");
+    let data = json(&["status"]);
+    assert!(data.is_object(), "{data}");
+    // Format 7: no rewrite, no field.
+    let other = fixture.directory("format-7");
+    fs::write(other.join("file"), b"base").unwrap();
+    json_in(&other, &["init", "Format 7"], "7");
+    let data = json_in(&other, &["maintenance"], "7");
+    assert!(data.get("metadata").is_none(), "{data}");
+    assert!(!other.join(".layrs/metadata/metadata-rewritten").exists());
+}
+
 /// The detached maintenance run a batch starts takes the Store root as its
 /// only argument and exits 0 (council s17, B2c).
 #[test]

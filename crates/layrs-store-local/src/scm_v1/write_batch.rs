@@ -58,6 +58,15 @@ const COMPACT_TAG_LEN: usize = 8;
 const RECEIPT_KEY_TEXT: u8 = 0;
 const RECEIPT_KEY_UUID: u8 = 1;
 const TRANSACTION_PREFIX: &str = "transaction:";
+/// The schema's check of a receipt key (tests/fixtures/scm-v4.sql), which
+/// fsck runs to find rows forged past it; `receipt_key_check_matches_the_schema`
+/// keeps the two equal.
+pub(crate) const RECEIPT_KEY_CHECK: &str = "(substr(transaction_key, 1, 1) = x'01' AND length(transaction_key) = 17) \
+    OR (substr(transaction_key, 1, 1) = x'00' \
+    AND length(transaction_key) BETWEEN 2 AND 256 \
+    AND instr(substr(transaction_key, 2), x'00') = 0 \
+    AND CAST(substr(transaction_key, 2) AS TEXT) NOT GLOB '*[^A-Za-z0-9._:-]*' \
+    AND CAST(substr(transaction_key, 2) AS TEXT) NOT GLOB 'transaction:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')";
 
 /// The 16 bytes of a canonical lowercase hyphenated UUID, if `text` is one.
 fn canonical_uuid(text: &str) -> Option<[u8; 16]> {
@@ -284,6 +293,20 @@ mod tests {
         ApplyBatchReceipt, RECEIPT_APPLIED, RECEIPT_SCHEMA, receipt_key, receipt_transaction,
     };
 
+    /// fsck's copy of the schema's key check is the schema's (whitespace
+    /// aside).
+    #[test]
+    fn receipt_key_check_matches_the_schema() {
+        let squash = |text: &str| text.split_whitespace().collect::<String>();
+        let schema = crate::scm_v1::schema::SCHEMA_V4_SQL;
+        let at = schema
+            .find("transaction_key BLOB PRIMARY KEY CHECK (")
+            .unwrap();
+        let body = &schema[at + "transaction_key BLOB PRIMARY KEY CHECK (".len()..];
+        let end = body.find("\n    ),").unwrap();
+        assert_eq!(squash(&body[..end]), squash(super::RECEIPT_KEY_CHECK));
+    }
+
     /// Phase 3e: a receipt key is 17 bytes for `transaction:` plus a
     /// canonical lowercase UUID, the tagged text otherwise; each id has one
     /// key, and a key stands for one id.
@@ -318,7 +341,7 @@ mod tests {
         );
         assert_eq!(receipt_transaction(&[0]), None);
         assert_eq!(
-            receipt_transaction(b" transaction:{d9ca3a5f-9d45-4681-9fdc-6049560969ff}"),
+            receipt_transaction(b"\0transaction:{d9ca3a5f-9d45-4681-9fdc-6049560969ff}"),
             None
         );
         assert_eq!(receipt_transaction(&key[..16]), None);

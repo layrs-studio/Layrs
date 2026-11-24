@@ -1470,20 +1470,28 @@ Done (format 8, schema v4 draft 11; formats 5 to 7 unchanged):
   hyphenated UUID, else byte 0 then the id's text (`receipt_key`). Each id
   has one key; `receipt_transaction` reads a key back only when it is its
   id's one encoding (a text key of the UUID shape is refused). The schema
-  checks the tag and lengths. The compact receipt's tag still covers the
-  id's text (s29), so a moved key is corruption, not a replay.
+  checks the tag and lengths, and a text key's alphabet, no NUL and never
+  the UUID shape (s35). The compact receipt's tag still covers the id's
+  text (s29), so a moved key is corruption, not a replay.
 - Writers, the replay, the precheck and VFS recovery look receipts up by
   key. fsck finds the receipts the current references cite by key and
   reports a key that is not its id's one encoding (a UUID id kept as text,
   which no replay would find).
-- `layrs maintenance` (explicit or automatic, format 8 only) rewrites the metadata
-  database (`VACUUM`, then the checked checkpoint) in a short exclusive
-  session once it holds at least 256 pages and a quarter more than after
-  the last rewrite (`metadata/metadata-vacuumed`). Receipts are inserted in
-  random key order and leave B-tree pages about two-thirds full; git
-  repacks its refs in `gc` likewise. A busy Store skips it.
+- After a maintenance run's passes (explicit or automatic, format 8 only),
+  `rewrite_metadata` rewrites the metadata database (`VACUUM`, then the
+  checked checkpoint) in a short exclusive session once it holds at least
+  64 pages and a quarter more than before the last rewrite
+  (`metadata/metadata-rewritten`). Receipts are inserted in random key order
+  and leave B-tree pages about two-thirds full; git repacks its refs in
+  `gc` likewise. A busy Store skips it; its failures are its own
+  (`metadata-rewrite-failed`) and never undo the passes. Automatic runs
+  rewrite at most 32 MiB; an explicit run rewrites any size (s35).
 - Not done: UUIDv7 transaction ids (ordered keys). The VACUUM gives the
-  same fill after maintenance without changing how ids are made.
+  same fill right after maintenance, which is where git (after `gc`) and
+  Layrs are measured; between rewrites new random keys split full pages,
+  drifting back towards about two-thirds fill before the next rewrite (a
+  quarter more data). Ordered ids would keep the fill all the time and
+  touch fewer pages per insert: a trade-off recorded, not taken (s35 r2).
 - Tests: `receipt_keys_are_reversible_and_unique`,
   `format_8_keeps_uuid_transaction_keys_in_17_bytes` (17-byte key, replay,
   schema checks, fsck on the text form), the compact receipt tests by key.
@@ -1543,3 +1551,41 @@ and durable; formats 5 to 7 keep their paths. Fixed:
 
 Not done: a fault between the VACUUM and the checkpoint (SQLite's own
 atomicity; the checked checkpoint is unchanged).
+
+## Council s35 r2 (2026-11-24)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 (ship) |
+
+Fixed:
+
+- (P2 Astra, Sol) The automatic size bound was checked only before the
+  lock: it is checked again under the exclusive session (page count times
+  page size), with the pause.
+- (P2 Astra, Sol; P3 Opus) A busy Store cleared the failure count, and the
+  count was updated after the session ended: the outcome is recorded under
+  the session; only a completed rewrite clears the count, and a busy Store
+  or a rewrite not due leaves it. Test: a busy Store keeps the count.
+- (P2 all) The schema's alphabet check stopped at a NUL byte (GLOB reads
+  NUL-terminated text): a text key holds no NUL (`instr(..., x'00') = 0`).
+  Test: a key of a single NUL, and one with a NUL inside, are refused.
+- (P2 Opus) No test ran the rewrite as the CLI does: in format 8,
+  `layrs maintenance` reports `rewritten`, then `notDue`, the detached run
+  rewrites, and a format 7 Store's output has no `metadata` field
+  (`format_8_maintenance_rewrites_the_metadata`).
+- (P3 Opus) fsck reads only the rows failing the schema's own key check
+  (`RECEIPT_KEY_CHECK`, kept equal to the schema's by a test), a CPU unit
+  each: a sound Store's receipts cost its budget nothing.
+- (P3 Opus) An explicit run rewrites even after a failed pass and reports
+  both; formats 5 to 7 read nothing and take no lock for the rewrite (the
+  format marker is read first) and their output has no `metadata` field;
+  the help says an explicit run holds the lock for the whole rewrite; the
+  message counts pages; a raw NUL in a test literal; the 3e progress notes
+  updated; the UUIDv7 trade-off recorded.
+
+Not done (later, before the default flip, 2e): a rewrite outside the Store
+lock (`VACUUM INTO` and a journaled swap), so that automatic runs on
+databases past 32 MiB rewrite too.

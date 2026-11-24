@@ -458,13 +458,16 @@ impl Context<'_> {
         if compact_receipts {
             // Each key is its transaction id's one encoding: a UUID id kept
             // as text would never be found by a replay.
-            // Streamed and charged a CPU unit a row; a key past the
-            // schema's bound is reported by its length, never loaded.
-            let mut statement = self.connection.prepare(
+            // Only rows failing the schema's own check (forged past it) are
+            // read, a CPU unit each: the scan costs nothing in the budget
+            // of a sound Store. A key past the bound is reported by its
+            // length, never loaded.
+            let mut statement = self.connection.prepare(&format!(
                 "SELECT length(transaction_key),
                         CASE WHEN length(transaction_key) <= 256 THEN transaction_key END
-                 FROM applied_transactions",
-            )?;
+                 FROM applied_transactions WHERE NOT ({})",
+                crate::scm_v1::write_batch::RECEIPT_KEY_CHECK
+            ))?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
                 if !self.consume_cpu(1) {

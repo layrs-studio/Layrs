@@ -49,7 +49,8 @@ Commands:
     Consolidate the pack files batches leave out (compact Store formats), as git maintenance repacks.
     Builds outside the Store lock; one pass at a time. Safe to run while other commands work.
     Store format 8: also rewrites the metadata database once it has grown by a quarter (as git gc
-    repacks refs); the rewrite holds the Store lock briefly (automatic runs: databases up to 32 MiB).
+    repacks refs). The rewrite holds the Store lock while it runs: automatic runs rewrite databases up
+    to 32 MiB; an explicit run rewrites any size, and other commands wait for it.
     Started detached after a command whose batch leaves such packs; LAYRS_AUTO_MAINTENANCE=0 disables that
     (for example in CI, so no pass outlives a job's cleanup).
   layrs identity [--actor ACTOR_ID [--device DEVICE_ID] [--name NAME]]

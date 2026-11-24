@@ -134,32 +134,43 @@ pub fn run_detached(args: &[String]) -> i32 {
 /// consolidate the pack files batches leave out, building outside the
 /// Store lock.
 pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
-    let Passes {
-        last: outcome,
-        consolidated,
-        failure,
-    } = passes(store_root).map_err(CliError::runtime)?;
+    let passes = passes(store_root);
     // Format 8: the metadata database is rewritten once it has grown enough
-    // (any size when asked explicitly); a failure is reported, not fatal.
+    // (any size when asked explicitly), even after a failed pass; a failure
+    // is reported, not fatal. Other formats have no rewrite and no field.
     let (rewrite_human, rewrite_data) = match rewrite_metadata(store_root, false) {
+        Ok(MetadataRewrite::Unsupported) => (None, None),
         Ok(MetadataRewrite::Rewritten { before, after }) => (
             Some(format!(
-                "Rewrote the metadata database: {before} KiB to {after} KiB."
+                "Rewrote the metadata database: {before} to {after} pages."
             )),
-            serde_json::json!({ "status": "rewritten", "beforePages": before, "afterPages": after }),
+            Some(
+                serde_json::json!({ "status": "rewritten", "beforePages": before, "afterPages": after }),
+            ),
         ),
-        Ok(MetadataRewrite::Busy) => (None, serde_json::json!({ "status": "busy" })),
+        Ok(MetadataRewrite::Busy) => (None, Some(serde_json::json!({ "status": "busy" }))),
         Ok(MetadataRewrite::NotDue | MetadataRewrite::Paused) => {
-            (None, serde_json::json!({ "status": "notDue" }))
+            (None, Some(serde_json::json!({ "status": "notDue" })))
         }
         Err(error) => (
             Some(format!("Rewriting the metadata database failed: {error}")),
-            serde_json::json!({ "status": "failed", "error": error }),
+            Some(serde_json::json!({ "status": "failed", "error": error })),
         ),
     };
     let with_rewrite = |human: String| match &rewrite_human {
         Some(line) => format!("{human}\n{line}"),
         None => human,
+    };
+    let Passes {
+        last: outcome,
+        consolidated,
+        failure,
+    } = passes.map_err(|error| CliError::runtime(with_rewrite(error)))?;
+    let with_data = |mut data: serde_json::Value| {
+        if let Some(metadata) = &rewrite_data {
+            data["metadata"] = metadata.clone();
+        }
+        data
     };
     if consolidated > 0 {
         let mut human = format!("Consolidated {consolidated} pack files.");
@@ -168,12 +179,11 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
         }
         return Ok(Rendered {
             human: with_rewrite(human),
-            data: serde_json::json!({
+            data: with_data(serde_json::json!({
                 "status": "consolidated",
                 "packs": consolidated,
                 "warning": failure,
-                "metadata": rewrite_data,
-            }),
+            })),
         });
     }
     let (human, status, packs) = match outcome {
@@ -197,7 +207,7 @@ pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
     };
     Ok(Rendered {
         human: with_rewrite(human),
-        data: serde_json::json!({ "status": status, "packs": packs, "metadata": rewrite_data }),
+        data: with_data(serde_json::json!({ "status": status, "packs": packs })),
     })
 }
 
