@@ -302,10 +302,11 @@ fn colliding_history_keys_are_never_merged_nor_served_for_one_another() {
     drop(repository);
     assert_eq!(get(&root.0, &ids[0]).unwrap(), Some(first.clone()));
     assert_eq!(get(&root.0, &unrelated).unwrap(), Some(lands.clone()));
-    // A read of a refused id never answers another record.
+    // A refused id is absent, its twin's record under its key or not
+    // (council s37): never another record, never Store damage.
     for id in [&ids[1], &pair[0], &pair[1]] {
         let answer = get(&root.0, id);
-        assert!(!matches!(&answer, Ok(Some(_))), "{id}: {answer:?}");
+        assert!(matches!(&answer, Ok(None)), "{id}: {answer:?}");
     }
     // Consolidated into one pack, every stored record keeps its own key.
     assert!(matches!(

@@ -1033,7 +1033,8 @@ fn candidates_among_within(
     file_count: usize,
     budget: Budget,
 ) -> Vec<usize> {
-    let budget = lifted_past_many(budget, file_count);
+    // Only the pack files a group may take count (skipped ones do not).
+    let budget = lifted_past_many(budget, files.len());
     let inline_bytes = inline
         .iter()
         .fold(0_u64, |total, pack| total.saturating_add(pack.0));

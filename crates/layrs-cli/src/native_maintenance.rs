@@ -125,15 +125,20 @@ pub fn run_detached(args: &[String]) -> i32 {
     let [root] = args else {
         return 2;
     };
-    let code = match passes(Path::new(root), false) {
+    let passes = passes(Path::new(root), false);
+    let consolidated = passes.as_ref().map_or(0, |passes| passes.consolidated);
+    let code = match passes {
         Ok(Passes { failure: None, .. }) => 0,
         Ok(_) | Err(_) => 1,
     };
     // Then (format 8) the projection cache trim and the metadata rewrite,
     // bounded for automatic runs; their failures do not change the code (the
-    // rewrite's is recorded by the Store).
+    // rewrite's is recorded by the Store). The kept projections are read
+    // again only once a pass retired packs they may name files in.
     if let Ok(ProjectionTrim::Trimmed { bases, .. }) = trim_projections(Path::new(root)) {
-        layrs_client_core::native_scm::warm_step_projections(Path::new(root), &bases);
+        if consolidated > 0 {
+            layrs_client_core::native_scm::warm_step_projections(Path::new(root), &bases);
+        }
     }
     let _ = rewrite_metadata(Path::new(root), true);
     // Opt-in diagnostics (`LAYRS_PERF_OUT` for a process without stderr).
@@ -146,13 +151,17 @@ pub fn run_detached(args: &[String]) -> i32 {
 /// Store lock.
 pub(super) fn maintain(store_root: &Path) -> Result<Rendered, CliError> {
     let passes = passes(store_root, true);
+    let consolidated = passes.as_ref().map_or(0, |passes| passes.consolidated);
     // Format 8: the cached projections no Worktree or Room stands on are
-    // removed and the others read again, so the next command finds them
-    // (best effort, reported in the data only).
+    // removed, and once a pass retired packs the others may name files in,
+    // they are read again so the next command finds them (best effort,
+    // reported in the data only).
     let projections = match trim_projections(store_root) {
         Ok(ProjectionTrim::Unsupported) => None,
         Ok(ProjectionTrim::Trimmed { removed, bases }) => {
-            layrs_client_core::native_scm::warm_step_projections(store_root, &bases);
+            if consolidated > 0 {
+                layrs_client_core::native_scm::warm_step_projections(store_root, &bases);
+            }
             Some(serde_json::json!({ "status": "trimmed", "removed": removed }))
         }
         Ok(ProjectionTrim::Skipped) => Some(serde_json::json!({ "status": "skipped" })),

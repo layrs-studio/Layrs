@@ -348,15 +348,21 @@ fn projection_cache(
 /// cache, so that a value the maintenance made unreadable (a consolidation
 /// retires the packs it names files in) is rebuilt there, not by the next
 /// command. Best effort: a failure leaves the next command to rebuild it.
+/// The first `KEPT_COMPLETE` bases only, each in a Store session of its own
+/// (council s37): the cache keeps no more complete projections, and a later
+/// one would evict one warmed before; other commands wait for no warm-up.
 pub fn warm_step_projections(store_root: &std::path::Path, bases: &[(SpaceId, StepId)]) {
     let _span = layrs_store_local::perf::span("projection.warm");
-    let Ok(store) = layrs_store_local::scm_v1::open(store_root) else {
-        return;
-    };
-    let Ok(reader) = NativeScmReader::new(&store) else {
-        return;
-    };
-    for (space, step) in bases {
+    for (space, step) in bases
+        .iter()
+        .take(layrs_store_local::scm_v1::projection_cache::KEPT_COMPLETE)
+    {
+        let Ok(store) = layrs_store_local::scm_v1::open(store_root) else {
+            return;
+        };
+        let Ok(reader) = NativeScmReader::new(&store) else {
+            return;
+        };
         let _ = read_admitted_step_projection(&reader, space, step, Some(store_root));
     }
 }

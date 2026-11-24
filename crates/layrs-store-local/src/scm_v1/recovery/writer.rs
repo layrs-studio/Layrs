@@ -818,6 +818,20 @@ fn check_plan_operation(
         .map_err(|error| RecoveryError::Corruption(format!("Operation {operation}: {error}")))?;
     let canonical = layrs_core::scm::canonical_json(&decoded)
         .map_err(|error| RecoveryError::Corruption(error.to_string()))?;
+    // Another id whose key it shares (keys keep 16 bytes, draft 12): the
+    // Operation named is not in this Store.
+    if decoded.id() != operation
+        && canonical == body
+        && crate::scm_v1::cas::history_key(
+            crate::scm_v1::cas::OPERATION_KIND,
+            decoded.id().as_str(),
+        ) == key
+    {
+        return Err(RecoveryError::InvalidInput {
+            field: "operation_id",
+            reason: format!("Operation {operation} is not in this Store"),
+        });
+    }
     if decoded.id() != operation || canonical != body {
         return Err(RecoveryError::Corruption(format!(
             "the record filed as Operation {operation} is another"

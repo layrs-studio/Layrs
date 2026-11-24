@@ -54,11 +54,16 @@ const FILE: &str = "derived.sqlite3";
 /// "LYRD": marks a database as this cache.
 const APPLICATION_ID: i64 = 0x4C59_5244;
 /// 2: values are zstd frames (one per value, with its content size).
-const SCHEMA_VERSION: i64 = 2;
+/// 3: a clock row gives projections their sequences (council s37); a
+/// database of version 2 is replaced, as any other cache's.
+const SCHEMA_VERSION: i64 = 3;
 const BUSY: Duration = Duration::from_secs(1);
 const CHANGE_INDEX_TABLE: &str =
     "CREATE TABLE change_index (worktree TEXT PRIMARY KEY NOT NULL, bytes BLOB NOT NULL)";
 const PROJECTION_TABLE: &str = "CREATE TABLE projection (root TEXT PRIMARY KEY NOT NULL, base TEXT, positions INTEGER NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL)";
+/// The last sequence given to a projection: it only grows, whatever rows
+/// are removed (council s37).
+const CLOCK_TABLE: &str = "CREATE TABLE clock (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), seq INTEGER NOT NULL)";
 
 pub(crate) fn path(store_root: &Path) -> PathBuf {
     store_root.join("metadata").join(FILE)
@@ -304,7 +309,10 @@ fn initialize(path: &Path) -> rusqlite::Result<Connection> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 0 {
-        transaction.execute_batch(&format!("{CHANGE_INDEX_TABLE}; {PROJECTION_TABLE};"))?;
+        transaction.execute_batch(&format!(
+            "{CHANGE_INDEX_TABLE}; {PROJECTION_TABLE}; {CLOCK_TABLE}; \
+             INSERT INTO clock (singleton, seq) VALUES (1, 0);"
+        ))?;
         transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -358,7 +366,7 @@ fn check_schema(connection: &Connection, hold: bool) -> rusqlite::Result<Schema>
         }
         if application != APPLICATION_ID
             || version != SCHEMA_VERSION
-            || count != 4
+            || count != 5
             || longest.unwrap_or(0) > SCHEMA_TEXT_MAX
         {
             return Ok(Schema::Foreign);
@@ -382,6 +390,7 @@ fn check_schema(connection: &Connection, hold: bool) -> rusqlite::Result<Schema>
                 "change_index",
                 Some(CHANGE_INDEX_TABLE),
             ),
+            ("table", "clock", "clock", Some(CLOCK_TABLE)),
             ("table", "projection", "projection", Some(PROJECTION_TABLE)),
             (
                 "index",
@@ -632,13 +641,6 @@ impl Drop for Projections {
     }
 }
 
-/// The sequence a write gives its projection: past every recorded one,
-/// and past the microseconds since the epoch, so that removing the newest
-/// rows never makes a later write reuse a sequence a trim read as old
-/// (council s37).
-const NEXT_SEQ: &str = "max((SELECT coalesce(max(seq), 0) + 1 FROM projection), \
-     CAST(unixepoch('subsec') * 1000000 AS INTEGER))";
-
 /// A cached projection's row: its root, the root of the complete
 /// projection it is a delta to, and its sequence (larger is more recent).
 pub(crate) struct ProjectionRow {
@@ -684,59 +686,74 @@ impl Projections {
         self.fetch(root, max_bytes).ok().flatten()
     }
 
+    /// The next sequence of the clock row: past every one given before,
+    /// whatever rows were removed since (council s37).
+    fn next_seq(&self) -> rusqlite::Result<i64> {
+        self.noted(self.connection().query_row(
+            "UPDATE clock SET seq = seq + 1 WHERE singleton = 1 RETURNING seq",
+            [],
+            |row| row.get(0),
+        ))
+    }
+
     /// Marks `root` most recent; whether it was recorded.
     pub(crate) fn touch(&self, root: &str) -> bool {
+        let Ok(seq) = self.next_seq() else {
+            return false;
+        };
         self.noted(self.connection().execute(
-            &format!("UPDATE projection SET seq = {NEXT_SEQ} WHERE root = ?1"),
-            [root],
+            "UPDATE projection SET seq = ?2 WHERE root = ?1",
+            params![root, seq],
         ))
         .is_ok_and(|changed| changed > 0)
     }
 
     /// The most recently recorded complete projection a caller can read
-    /// (one naming files by position only with `positions`): its root and
-    /// bytes.
+    /// (one naming files by position only with `positions`): its root, its
+    /// sequence (read first: bytes changed since carry another) and bytes.
     pub(crate) fn newest_complete(
         &self,
         max_bytes: u64,
         positions: bool,
-    ) -> Option<(String, Vec<u8>)> {
-        let root: String = self
+    ) -> Option<(String, i64, Vec<u8>)> {
+        let (root, seq): (String, i64) = self
             .connection()
             .query_row(
-                "SELECT root FROM projection WHERE base IS NULL AND (positions = 0 OR ?1) \
+                "SELECT root, seq FROM projection WHERE base IS NULL AND (positions = 0 OR ?1) \
                  ORDER BY seq DESC LIMIT 1",
                 [positions],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .ok()
             .flatten()?;
         let bytes = self.get(&root, max_bytes)?;
-        Some((root, bytes))
+        Some((root, seq, bytes))
     }
 
     /// Records `root`'s value; whether it was written: a delta is written
-    /// only while the complete projection it applies to (`base`) is
-    /// recorded, in the same statement (council s37), so maintenance's
-    /// trim never leaves a delta written after its removal.
+    /// only while the complete projection it applies to (`base`: its root
+    /// and the sequence it was read at) is still recorded as read, in the
+    /// same statement (council s37), so maintenance's trim never leaves a
+    /// delta written after its base went or changed.
     pub(crate) fn insert(
         &self,
         root: &str,
-        base: Option<&str>,
+        base: Option<(&str, i64)>,
         positions: bool,
         bytes: &[u8],
     ) -> io::Result<bool> {
         let bytes = compress(bytes)?;
+        let seq = self.next_seq().map_err(io::Error::other)?;
+        let (base_root, base_seq) = base.unzip();
         self.noted(self.connection().execute(
-            &format!(
-                "INSERT INTO projection (root, base, positions, seq, bytes) \
-                 SELECT ?1, ?2, ?3, {NEXT_SEQ}, ?4 \
-                 WHERE ?2 IS NULL OR EXISTS (SELECT 1 FROM projection WHERE root = ?2) \
-                 ON CONFLICT (root) DO UPDATE SET base = excluded.base, \
-                 positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes"
-            ),
-            params![root, base, positions, bytes],
+            "INSERT INTO projection (root, base, positions, seq, bytes) \
+             SELECT ?1, ?2, ?3, ?5, ?4 \
+             WHERE ?2 IS NULL OR EXISTS (SELECT 1 FROM projection \
+             WHERE root = ?2 AND base IS NULL AND seq = ?6) \
+             ON CONFLICT (root) DO UPDATE SET base = excluded.base, \
+             positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes",
+            params![root, base_root, positions, bytes, seq, base_seq],
         ))
         .map(|changed| changed > 0)
         .map_err(io::Error::other)
@@ -770,11 +787,12 @@ impl Projections {
             .map_or(0, |count| usize::try_from(count).unwrap_or(usize::MAX))
     }
 
-    /// The sequence of the most recently written or touched projection (0
-    /// when there is none); `None` when the database cannot answer.
+    /// The last sequence given (the clock's): every projection written or
+    /// touched after this call has a larger one; `None` when the database
+    /// cannot answer.
     pub(crate) fn newest_seq(&self) -> Option<i64> {
         self.connection()
-            .query_row("SELECT coalesce(max(seq), 0) FROM projection", [], |row| {
+            .query_row("SELECT seq FROM clock WHERE singleton = 1", [], |row| {
                 row.get(0)
             })
             .ok()
@@ -789,6 +807,17 @@ impl Projections {
             "DELETE FROM projection WHERE root = ?1 AND seq = ?2 \
              AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)",
             params![root, seq],
+        ))
+        .is_ok_and(|changed| changed > 0)
+    }
+
+    /// Removes the complete projection of `root` unless a recorded delta
+    /// applies to it (one statement, council s37); whether it was removed.
+    pub(crate) fn remove_unless_based(&self, root: &str) -> bool {
+        self.noted(self.connection().execute(
+            "DELETE FROM projection WHERE root = ?1 \
+             AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)",
+            [root],
         ))
         .is_ok_and(|changed| changed > 0)
     }
@@ -879,8 +908,17 @@ mod tests {
         ));
         let projections = Projections::open(&store, Access::Create).unwrap();
         projections.insert("a", None, false, b"complete a").unwrap();
+        let seq_of = |root: &str| {
+            projections
+                .rows()
+                .into_iter()
+                .find(|row| row.root == root)
+                .map(|row| row.seq)
+                .unwrap()
+        };
+        let a = seq_of("a");
         projections
-            .insert("b", Some("a"), false, b"delta b")
+            .insert("b", Some(("a", a)), false, b"delta b")
             .unwrap();
         assert!(projections.touch("a"));
         assert!(!projections.touch("missing"));
@@ -894,18 +932,18 @@ mod tests {
         );
         assert_eq!(
             projections.newest_complete(1 << 20, false),
-            Some(("a".into(), b"complete a".to_vec()))
+            Some(("a".into(), seq_of("a"), b"complete a".to_vec()))
         );
         // A complete projection naming files by position is no base for a
         // caller without positions.
         projections.insert("p", None, true, b"complete p").unwrap();
         assert_eq!(
             projections.newest_complete(1 << 20, false),
-            Some(("a".into(), b"complete a".to_vec()))
+            Some(("a".into(), seq_of("a"), b"complete a".to_vec()))
         );
         assert_eq!(
             projections.newest_complete(1 << 20, true),
-            Some(("p".into(), b"complete p".to_vec()))
+            Some(("p".into(), seq_of("p"), b"complete p".to_vec()))
         );
         projections.remove("p");
         projections.remove("a");

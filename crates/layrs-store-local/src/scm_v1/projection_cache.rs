@@ -669,7 +669,7 @@ fn record(
     let delta = (!replacing)
         .then(|| cache.newest_complete(MAX_BYTES, refs.is_some()))
         .flatten()
-        .and_then(|(base_root, bytes)| {
+        .and_then(|(base_root, base_seq, bytes)| {
             let base_root = TreeId::parse(base_root).ok()?;
             // Never a base this process found wrong (council s12 r3).
             if quarantined(&base_root) {
@@ -681,14 +681,14 @@ fn record(
             };
             let changes = changes_between(base_entries, entries);
             (changes.len() * 100 <= entries.len() * DELTA_MAX_PERCENT)
-                .then(|| (base_root, base.checksum, changes_owned(&changes)))
+                .then(|| (base_root, base_seq, base.checksum, changes_owned(&changes)))
         });
     let complete = delta.is_none();
     let base = delta
         .as_ref()
-        .map(|(base_root, ..)| base_root.as_str().to_owned());
+        .map(|(base_root, base_seq, ..)| (base_root.as_str().to_owned(), *base_seq));
     match delta {
-        Some((base_root, base_checksum, changes)) => {
+        Some((base_root, _, base_checksum, changes)) => {
             form.push(FORM_DELTA);
             put_string(&mut form, base_root.as_str());
             form.extend_from_slice(&base_checksum);
@@ -729,13 +729,14 @@ fn record(
     body.extend_from_slice(checksum.as_bytes());
     match cache.insert(
         root_tree.as_str(),
-        base.as_deref(),
+        base.as_ref().map(|(root, seq)| (root.as_str(), *seq)),
         !packs.is_empty(),
         &body,
     ) {
         Ok(true) => {}
-        // The complete projection it applies to was removed meanwhile
-        // (maintenance's trim): written complete instead (council s37).
+        // The complete projection it applies to was removed or changed
+        // meanwhile (maintenance's trim, another writer): written complete
+        // instead (council s37).
         Ok(false) if !replacing => {
             drop(cache);
             return record(store_root, root_tree, projection_tree, entries, refs, true);
@@ -844,7 +845,7 @@ fn put_entries<'a>(
 const KEPT: usize = 8;
 /// Complete projections kept, each about 40 bytes per path: the bases of a
 /// project and two Rooms on other Steps keep theirs.
-const KEPT_COMPLETE: usize = 3;
+pub const KEPT_COMPLETE: usize = 3;
 
 /// Keeps the `KEPT` most recently written projections (`kept`, just
 /// written, always) and the complete projections they apply to, with at most
@@ -865,6 +866,7 @@ fn prune(cache: &Projections, kept: &str) {
         .collect();
     // Deltas fill what the complete projections leave of `KEPT`.
     let mut retained = complete.len();
+    let mut removed_complete = Vec::new();
     for row in &rows {
         let keep = match &row.base {
             Some(base) => {
@@ -874,9 +876,19 @@ fn prune(cache: &Projections, kept: &str) {
             }
             None => complete.contains(&row.root.as_str()),
         };
-        if !keep && row.root != kept {
-            cache.remove(&row.root);
+        if keep || row.root == kept {
+            continue;
         }
+        if row.base.is_some() {
+            cache.remove(&row.root);
+        } else {
+            removed_complete.push(row.root.as_str());
+        }
+    }
+    // Then the complete projections, each unless a delta recorded since
+    // applies to it (council s37).
+    for root in removed_complete {
+        cache.remove_unless_based(root);
     }
 }
 
@@ -1266,19 +1278,50 @@ mod tests {
                 .find(|row| row.root == root)
                 .map(|row| row.seq)
         };
-        assert!(!cache.insert("delta", Some("base"), false, b"d").unwrap());
+        assert!(
+            !cache
+                .insert("delta", Some(("base", 1)), false, b"d")
+                .unwrap()
+        );
         assert!(seq_of("delta").is_none());
         assert!(cache.insert("base", None, false, b"b").unwrap());
-        assert!(cache.insert("delta", Some("base"), false, b"d").unwrap());
         let base_seq = seq_of("base").unwrap();
+        // Bound to the base as read: not once it changed.
+        assert!(
+            !cache
+                .insert("delta", Some(("base", base_seq + 1)), false, b"d")
+                .unwrap()
+        );
+        assert!(
+            cache
+                .insert("delta", Some(("base", base_seq)), false, b"d")
+                .unwrap()
+        );
         assert!(!cache.remove_unused("base", base_seq));
         assert!(cache.remove_unused("delta", seq_of("delta").unwrap()));
         assert!(cache.touch("base"));
         assert!(!cache.remove_unused("base", base_seq));
         let newest = seq_of("base").unwrap();
+        assert_eq!(cache.newest_seq(), Some(newest));
         assert!(cache.remove_unused("base", newest));
+        // The clock keeps going once the newest row went, at once.
         assert!(cache.insert("next", None, false, b"n").unwrap());
         assert!(seq_of("next").unwrap() > newest);
+        // Pruning removes a complete projection only while no delta applies
+        // to it.
+        assert!(
+            cache
+                .insert(
+                    "on-next",
+                    Some(("next", seq_of("next").unwrap())),
+                    false,
+                    b"x"
+                )
+                .unwrap()
+        );
+        assert!(!cache.remove_unless_based("next"));
+        assert!(cache.remove("on-next"));
+        assert!(cache.remove_unless_based("next"));
         drop(cache);
         let _ = fs::remove_dir_all(&root);
     }

@@ -234,7 +234,15 @@ impl ScmReader for NativeScmReader<'_> {
                 id.as_str(),
                 "StepObservation",
             )?;
-            if value.as_ref().is_some_and(|value| value.id() != id) {
+            if let Some(found) = value.as_ref().filter(|value| value.id() != id) {
+                // Another id whose key it shares (keys keep 16 bytes, draft
+                // 12): this id is absent; under another key, corruption.
+                let code = crate::scm_v1::cas::OBSERVATION_KIND;
+                if crate::scm_v1::cas::history_key(code, found.id().as_str())
+                    == crate::scm_v1::cas::history_key(code, id.as_str())
+                {
+                    return Ok(None);
+                }
                 return Err(corruption(format!(
                     "StepObservation {id} decodes to another id"
                 )));
@@ -273,7 +281,15 @@ impl ScmReader for NativeScmReader<'_> {
         if self.history_in_packs() {
             let value: Option<Operation> =
                 self.history_payload(crate::scm_v1::cas::OPERATION_KIND, id.as_str(), "Operation")?;
-            if value.as_ref().is_some_and(|value| value.id() != id) {
+            if let Some(found) = value.as_ref().filter(|value| value.id() != id) {
+                // Another id whose key it shares (keys keep 16 bytes, draft
+                // 12): this id is absent; under another key, corruption.
+                let code = crate::scm_v1::cas::OPERATION_KIND;
+                if crate::scm_v1::cas::history_key(code, found.id().as_str())
+                    == crate::scm_v1::cas::history_key(code, id.as_str())
+                {
+                    return Ok(None);
+                }
                 return Err(corruption(format!("Operation {id} decodes to another id")));
             }
             return Ok(value);

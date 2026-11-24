@@ -1762,9 +1762,8 @@ silent substitution). Fixed:
   is written only while its base is recorded (one statement; else it is
   written complete), the trim removes deltas first, then each complete
   projection only if no recorded delta applies to it and its sequence is
-  still the one it read (one statement each), and a sequence is past every
-  recorded one and the microseconds since the epoch. Test: a trim and
-  writers keep every delta its base.
+  still the one it read (one statement each). Sequences: see r2. Test: a
+  trim and writers keep every delta its base.
 - (P2 Astra, Sol) Inline packs of many small records (a large
   `LAYRS_CAS_INLINE_MAX`) could never merge under the record bound, and
   maintenance takes only pack files. Inline merges have no record bound
@@ -1794,3 +1793,38 @@ received different twins first refuse each other's descendants). Before
 2e, history keys need s30's full-key escape or a per-Store secret in
 their derivation (`keyed_hash(store_salt, code || id)[..16]`, only if no
 pack is copied byte for byte between Stores).
+
+## Council s37 r2 (2026-11-25)
+
+| Member | Round 1 | Round 2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 (ship after fixes) |
+
+Fixed:
+
+- (P2 all) Round 1's sequence rule could go backwards: SQLite's
+  `unixepoch('subsec')` has millisecond resolution, so a row written in
+  the millisecond after the newest one went could reuse a sequence (the new
+  test failed so in the format 8 run). The derived cache (schema 3) keeps a
+  clock row: every write and touch takes the next value, whatever rows are
+  removed, and the trim reads it as its cutoff. A cache of schema 2 is
+  replaced (a rebuild once). The race test ran 30 times without a failure.
+- (P2 Astra) The delta insert checked only that its base's root was
+  recorded: a base removed and written again (complete or not) between the
+  read and the insert took the delta. A delta is bound to the base's
+  sequence as read, a complete projection (else it is written complete).
+- (P2 Sol) Warming more than `KEPT_COMPLETE` bases evicted the first ones
+  warmed: the warm-up reads at most that many.
+- (P3 Opus) The warm-up held one Store session over every base and ran
+  when nothing was consolidated: one session per base, and only once a pass
+  consolidated packs.
+- (P3 Opus) A read of an id whose key its twin's record holds answered
+  Store damage: such an id is absent (`None`; for recovery, not in this
+  Store); a record under another id's key stays corruption. Test: refused
+  ids read as absent.
+- (P3 Opus) `prune` removed complete projections unguarded: deltas first,
+  then each complete projection unless a delta applies to it.
+- (P3 Opus) The batch's record bound was lifted counting skipped packs:
+  only the packs a group may take count.
