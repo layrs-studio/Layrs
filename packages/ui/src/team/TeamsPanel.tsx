@@ -34,10 +34,20 @@ export function TeamsPanel({
   const archived = teams.filter((team) => team.state !== "active");
   const reason = !canAdminister ? "Réservé aux administrateurs du projet." : management?.mode === "custom" ? "Règles personnalisées actives." : undefined;
 
-  if (loading && !teams.length) return <Loading label="Lecture des équipes…" />;
+  const organisationTeams = <OrganisationTeamsPanel key={scope} scope={scope} administration={administration} onChanged={onChanged} />;
+  // A reload after a change (`onChanged`) must not unmount the organisation
+  // teams: their confirmation would be lost. Both branches keep them first.
+  if (loading && !teams.length) {
+    return (
+      <div className="team-panel">
+        {organisationTeams}
+        <Loading label="Lecture des équipes…" />
+      </div>
+    );
+  }
   return (
     <div className="team-panel">
-      <OrganisationTeamsPanel key={scope} scope={scope} administration={administration} onChanged={onChanged} />
+      {organisationTeams}
       <h2 className="team-section-title">Équipes historiques du projet</h2>
       <p className="team-muted">Ces équipes restent liées à ce projet. Leur composition et leurs droits existants sont conservés.</p>
       {error && <Banner tone="danger">{error}</Banner>}
