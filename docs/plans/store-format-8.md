@@ -1418,3 +1418,45 @@ Later (out of 3d):
   the changed paths only. A preview shows only the summary and conflicts.
 - Cut a block only at the Tree group's edges (Opus, optional: small groups
   of an inline merge pay about 60 bytes each).
+
+## Council s34 r3 (2026-11-24, last round) and the chair's decision
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 | 8/10 (blocked on evidence) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 8/10 (ship) |
+
+No code defect in round 3. Fixed (e01afae): a whole read of a batch pack of
+more than 64 blocks in random order decompresses each block once (fails
+with 64 recent blocks: 1,389 reads for 116 blocks); the order test fails on
+a record held twice; the amendment's wording (registration order, then each
+block's order, a locality heuristic). The full matrix (formats 8, 7, 6 and
+5, every crate) and workspace clippy are green at c85aec7; e01afae's test
+file passes in all four formats.
+
+Sol's blocker and Opus's P2: a Room at an old Step looked 5 % slower at both
+sizes, from single runs, and no plain diff of an old Step was measured.
+Measured since (`scratchpad/room_ab.py`): two Stores per size, one written
+by 3c (03a06ba) and one by 3d (c85aec7's code), each 1,000 Steps in folders
+of 100 and maintained; ten rounds alternating the binaries, each command
+cold, every sample kept (medians, then min and max):
+
+| Command | 3c | 3d | 3d / 3c |
+| --- | --- | --- | --- |
+| 10k, `diff OLD --stat` | 564 ms (551-605) | 556 ms (545-600) | 0.99 |
+| 10k, Room at OLD | 1,097 ms (1,081-1,152) | 1,114 ms (1,050-1,129) | 1.02 |
+| 99k, `diff OLD --stat` | 5,708 ms (5,255-8,199) | 5,992 ms (5,380-8,850) | 1.05 |
+| 99k, Room at OLD | 11,538 ms (9,323-12,692) | 10,266 ms (9,259-12,356) | 0.89 |
+
+The ranges overlap everywhere; the best runs are within 2 % (99k diff:
+5,255 and 5,380 ms). Blocks decompressed (one run each): 10k diff 29/23,
+Room 63/52; 99k diff 89/531, Room 134/780 (3d's Store kept its initial
+batch pack unconsolidated, as in r2's runs; the recent blocks now hold it).
+
+Chair's decision: no regression is established; the s30 latency gate for
+3d passes on the measured commands. 3d lands in the opt-in format 8.
+
+Later (performance, not format 8): a plain `diff` of an old Step takes 5 to
+9 s at 99k files whatever the format, like the rewrites (see s34 r2's later
+list).
