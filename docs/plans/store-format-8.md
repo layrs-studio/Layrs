@@ -1589,3 +1589,29 @@ Fixed:
 Not done (later, before the default flip, 2e): a rewrite outside the Store
 lock (`VACUUM INTO` and a journaled swap), so that automatic runs on
 databases past 32 MiB rewrite too.
+
+## Council s35 r3 (2026-11-24, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 | 9/10 (ship) |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 | 9/10 (ship) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 9/10 (ship) |
+
+All three: ship, no finding above P3. Fixed (Opus's P3s):
+
+- The automatic rewrite's bound was 32 MiB without a measurement: a VACUUM
+  and its checkpoint took 1.2 s for 38 MiB here (Windows, a busy machine),
+  past the 5 s a VFS capture waits for the lock only with margin to spare;
+  the bound is 16 MiB (about half a second).
+- The help says other commands wait for an explicit rewrite up to their own
+  lock wait, then report the Store busy.
+- fsck tests a key's length before the check's string functions, so a
+  forged oversized key is never loaded by the scan.
+- The floor of 64 pages is documented as nominal (an empty draft 11
+  database holds more); raw line breaks in a test's strings escaped.
+
+Later: measure the rewrite's lock time on a large Store before 2e, with the
+rewrite outside the lock (`VACUUM INTO` and a journaled swap, sharing what
+`compact_metadata` already has) as the way to lift the automatic bound;
+fsck checking every compact receipt's tag (only replays do, since s29).

@@ -50,12 +50,15 @@ const REWRITE_FAILED_FILE: &str = "metadata-rewrite-failed";
 /// Maintenance rewrites the metadata database once it holds at least this
 /// many pages (1 KiB each in format 8) and a quarter more than before the
 /// last rewrite: its receipts fill B-tree pages in random key order, as
-/// `git gc` repacks refs.
+/// `git gc` repacks refs. The floor is nominal: an empty draft 11 database
+/// already holds more (its tables and indexes); the growth rule decides.
 const VACUUM_MIN_PAGES: u64 = 64;
 /// Automatic maintenance rewrites a metadata database of at most this many
 /// bytes: the rewrite holds the exclusive Store lock while it runs (council
-/// s35). An explicit `layrs maintenance` rewrites any size.
-const AUTOMATIC_REWRITE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// s35; about half a second here, measured at 1.2 s for 38 MiB, under the
+/// 5 s a VFS capture waits). An explicit `layrs maintenance` rewrites any
+/// size.
+const AUTOMATIC_REWRITE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Test support: per Store root, the page threshold of the metadata
 /// rewrite tests force.

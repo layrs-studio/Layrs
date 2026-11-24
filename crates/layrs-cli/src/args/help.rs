@@ -50,7 +50,8 @@ Commands:
     Builds outside the Store lock; one pass at a time. Safe to run while other commands work.
     Store format 8: also rewrites the metadata database once it has grown by a quarter (as git gc
     repacks refs). The rewrite holds the Store lock while it runs: automatic runs rewrite databases up
-    to 32 MiB; an explicit run rewrites any size, and other commands wait for it.
+    to 16 MiB; an explicit run rewrites any size, and other commands wait for it up to their own lock
+    wait, then report the Store busy.
     Started detached after a command whose batch leaves such packs; LAYRS_AUTO_MAINTENANCE=0 disables that
     (for example in CI, so no pass outlives a job's cleanup).
   layrs identity [--actor ACTOR_ID [--device DEVICE_ID] [--name NAME]]

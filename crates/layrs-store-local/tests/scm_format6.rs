@@ -1175,20 +1175,8 @@ fn the_metadata_is_rewritten_once_it_grew() {
     assert!(!failed.exists());
     // A busy Store leaves the failure count as it is: only a completed
     // rewrite clears it.
-    fs::write(
-        &note, "1
-",
-    )
-    .unwrap();
-    fs::write(
-        &failed,
-        format!(
-            "1 {now_ms}
-an earlier failure
-"
-        ),
-    )
-    .unwrap();
+    fs::write(&note, "1\n").unwrap();
+    fs::write(&failed, format!("1 {now_ms}\nan earlier failure\n")).unwrap();
     let held = open_exclusive(&root.0).unwrap();
     assert_eq!(
         rewrite_metadata(&root.0, true).unwrap(),

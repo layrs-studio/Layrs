@@ -461,11 +461,13 @@ impl Context<'_> {
             // Only rows failing the schema's own check (forged past it) are
             // read, a CPU unit each: the scan costs nothing in the budget
             // of a sound Store. A key past the bound is reported by its
-            // length, never loaded.
+            // length (the length test comes first, so the check's string
+            // functions never load it).
             let mut statement = self.connection.prepare(&format!(
                 "SELECT length(transaction_key),
                         CASE WHEN length(transaction_key) <= 256 THEN transaction_key END
-                 FROM applied_transactions WHERE NOT ({})",
+                 FROM applied_transactions
+                 WHERE length(transaction_key) NOT BETWEEN 2 AND 256 OR NOT ({})",
                 crate::scm_v1::write_batch::RECEIPT_KEY_CHECK
             ))?;
             let mut rows = statement.query([])?;
