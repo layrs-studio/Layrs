@@ -632,6 +632,13 @@ impl Drop for Projections {
     }
 }
 
+/// The sequence a write gives its projection: past every recorded one,
+/// and past the microseconds since the epoch, so that removing the newest
+/// rows never makes a later write reuse a sequence a trim read as old
+/// (council s37).
+const NEXT_SEQ: &str = "max((SELECT coalesce(max(seq), 0) + 1 FROM projection), \
+     CAST(unixepoch('subsec') * 1000000 AS INTEGER))";
+
 /// A cached projection's row: its root, the root of the complete
 /// projection it is a delta to, and its sequence (larger is more recent).
 pub(crate) struct ProjectionRow {
@@ -680,8 +687,7 @@ impl Projections {
     /// Marks `root` most recent; whether it was recorded.
     pub(crate) fn touch(&self, root: &str) -> bool {
         self.noted(self.connection().execute(
-            "UPDATE projection SET seq = (SELECT coalesce(max(seq), 0) + 1 FROM projection) \
-                 WHERE root = ?1",
+            &format!("UPDATE projection SET seq = {NEXT_SEQ} WHERE root = ?1"),
             [root],
         ))
         .is_ok_and(|changed| changed > 0)
@@ -710,22 +716,29 @@ impl Projections {
         Some((root, bytes))
     }
 
+    /// Records `root`'s value; whether it was written: a delta is written
+    /// only while the complete projection it applies to (`base`) is
+    /// recorded, in the same statement (council s37), so maintenance's
+    /// trim never leaves a delta written after its removal.
     pub(crate) fn insert(
         &self,
         root: &str,
         base: Option<&str>,
         positions: bool,
         bytes: &[u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         let bytes = compress(bytes)?;
         self.noted(self.connection().execute(
-            "INSERT INTO projection (root, base, positions, seq, bytes) \
-                 VALUES (?1, ?2, ?3, (SELECT coalesce(max(seq), 0) + 1 FROM projection), ?4) \
+            &format!(
+                "INSERT INTO projection (root, base, positions, seq, bytes) \
+                 SELECT ?1, ?2, ?3, {NEXT_SEQ}, ?4 \
+                 WHERE ?2 IS NULL OR EXISTS (SELECT 1 FROM projection WHERE root = ?2) \
                  ON CONFLICT (root) DO UPDATE SET base = excluded.base, \
-                 positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes",
+                 positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes"
+            ),
             params![root, base, positions, bytes],
         ))
-        .map(drop)
+        .map(|changed| changed > 0)
         .map_err(io::Error::other)
     }
 
@@ -767,12 +780,15 @@ impl Projections {
             .ok()
     }
 
-    /// Removes the value of `root` unless it was written or touched after
-    /// sequence `through`; whether it was removed.
-    pub(crate) fn remove_through(&self, root: &str, through: i64) -> bool {
+    /// Removes the value of `root` unless it was written or touched since
+    /// it held sequence `seq`, or a recorded delta applies to it; whether it
+    /// was removed. One statement: a delta recorded meanwhile either keeps
+    /// it or is not written (`insert`).
+    pub(crate) fn remove_unused(&self, root: &str, seq: i64) -> bool {
         self.noted(self.connection().execute(
-            "DELETE FROM projection WHERE root = ?1 AND seq <= ?2",
-            params![root, through],
+            "DELETE FROM projection WHERE root = ?1 AND seq = ?2 \
+             AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)",
+            params![root, seq],
         ))
         .is_ok_and(|changed| changed > 0)
     }

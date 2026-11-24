@@ -374,6 +374,12 @@ fn format_8_explicit_maintenance_packs_all_into_one_and_trims_projections() {
     }
     let room = fixture.0.join("room");
     json(&["room", "new", "agent", "--dir", room.to_str().unwrap()]);
+    // The Room advances, then the project: the Space's current View keeps
+    // the Room's older state (each capture keeps the other Worktrees'
+    // states from its own View), and the trim reads the Room's own (council
+    // s37).
+    append(&room, 2, "room before maintenance\n");
+    layrs_in(&room, &["room", "step"], "8", None);
     for k in 12..15 {
         append(&checkout, 1, &format!("e{k}\n"));
         json(&["step"]);

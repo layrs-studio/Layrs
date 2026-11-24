@@ -727,16 +727,20 @@ fn record(
     body.extend_from_slice(&form);
     let checksum = blake3::hash(&body);
     body.extend_from_slice(checksum.as_bytes());
-    if cache
-        .insert(
-            root_tree.as_str(),
-            base.as_deref(),
-            !packs.is_empty(),
-            &body,
-        )
-        .is_err()
-    {
-        return false;
+    match cache.insert(
+        root_tree.as_str(),
+        base.as_deref(),
+        !packs.is_empty(),
+        &body,
+    ) {
+        Ok(true) => {}
+        // The complete projection it applies to was removed meanwhile
+        // (maintenance's trim): written complete instead (council s37).
+        Ok(false) if !replacing => {
+            drop(cache);
+            return record(store_root, root_tree, projection_tree, entries, refs, true);
+        }
+        Ok(false) | Err(_) => return false,
     }
     // Pruning is only needed once a complete projection was added (at most
     // `KEPT_COMPLETE` stay) or more than `KEPT` are recorded. A delta added
@@ -906,14 +910,19 @@ pub(crate) fn trim(
         .filter_map(|row| row.base.as_deref())
         .collect();
     let mut removed = 0;
-    for row in &rows {
-        if kept(row) || bases.contains(row.root.as_str()) {
-            continue;
-        }
-        if cache.remove_through(&row.root, through) {
-            removed += 1;
-            if let Ok(tree) = TreeId::parse(row.root.clone()) {
-                forget_complete(&tree);
+    // Deltas first, then the complete projections, each only if no delta
+    // still applies to it (`remove_unused`, in one statement): a delta
+    // recorded meanwhile keeps its base (council s37).
+    for deltas in [true, false] {
+        for row in &rows {
+            if row.base.is_some() != deltas || kept(row) || bases.contains(row.root.as_str()) {
+                continue;
+            }
+            if cache.remove_unused(&row.root, row.seq) {
+                removed += 1;
+                if let Ok(tree) = TreeId::parse(row.root.clone()) {
+                    forget_complete(&tree);
+                }
             }
         }
     }
@@ -1233,6 +1242,43 @@ mod tests {
         save(&root, &tree(0), &tree(0), &altered, None);
         assert_eq!(load(&root, &tree(1), None), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
+        drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Against a trim running beside other writers (council s37): a delta
+    /// is written only while its base is recorded, a complete projection a
+    /// recorded delta applies to is never removed, a value touched since
+    /// the trim read it stays, and a sequence is never reused after the
+    /// newest value goes.
+    #[test]
+    fn a_trim_and_concurrent_writers_keep_every_delta_its_base() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-trim-race-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let cache = Projections::open(&root, Access::Create).unwrap();
+        let seq_of = |root: &str| {
+            cache
+                .rows()
+                .into_iter()
+                .find(|row| row.root == root)
+                .map(|row| row.seq)
+        };
+        assert!(!cache.insert("delta", Some("base"), false, b"d").unwrap());
+        assert!(seq_of("delta").is_none());
+        assert!(cache.insert("base", None, false, b"b").unwrap());
+        assert!(cache.insert("delta", Some("base"), false, b"d").unwrap());
+        let base_seq = seq_of("base").unwrap();
+        assert!(!cache.remove_unused("base", base_seq));
+        assert!(cache.remove_unused("delta", seq_of("delta").unwrap()));
+        assert!(cache.touch("base"));
+        assert!(!cache.remove_unused("base", base_seq));
+        let newest = seq_of("base").unwrap();
+        assert!(cache.remove_unused("base", newest));
+        assert!(cache.insert("next", None, false, b"n").unwrap());
+        assert!(seq_of("next").unwrap() > newest);
         drop(cache);
         let _ = fs::remove_dir_all(&root);
     }

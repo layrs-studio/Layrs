@@ -270,8 +270,10 @@ pub enum ProjectionTrim {
 /// Worktree or Room stands on, as `git gc` keeps only the index. Run once
 /// after a maintenance run's passes. Under a shared Store session (no
 /// RepositoryView moves meanwhile): the cache's newest sequence first, then
-/// the root Trees of every current RepositoryView's Worktrees (their base
-/// Steps' and their materialized Trees), then the trim, which keeps what
+/// the root Trees each registered Worktree stands on (in its active
+/// Operation's View) and those of every current RepositoryView's Worktrees
+/// (their base Steps' and their materialized Trees), then the trim, which
+/// keeps what
 /// was written or touched since and the complete projections kept deltas
 /// apply to (`projection_cache::trim`). Skipped while a Worktree transition
 /// is pending. Best effort: a removed projection is read from the Store
@@ -314,28 +316,68 @@ pub fn trim_projections(root: impl AsRef<std::path::Path>) -> Result<ProjectionT
         let mut statement = connection
             .prepare("SELECT space_id FROM current_repository_views")
             .map_err(sql)?;
-        statement
+        let spaces = statement
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(sql)?
             .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        let mut statement = connection
+            .prepare("SELECT worktree_id FROM worktrees")
+            .map_err(sql)?;
+        let worktrees = statement
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        (spaces, worktrees)
     };
+    let (spaces, worktrees) = spaces;
     let reader = super::NativeScmReader::new(&store).map_err(error)?;
-    let mut needed = BTreeSet::new();
-    let mut bases = Vec::new();
-    for space in spaces {
-        let space = layrs_core::scm::SpaceId::parse(space).map_err(|error| error.to_string())?;
-        let Some(view) = reader
-            .current_repository_view(&space)
+    // Each registered Worktree stands on the state its own active
+    // Operation's View gives it (a capture keeps the other Worktrees'
+    // states from its own View, so the Space's current View may hold an
+    // older one, council s37); the current Views' states are kept too.
+    let mut views = Vec::new();
+    for worktree in worktrees {
+        let id = layrs_core::scm::WorktreeId::parse(worktree).map_err(|error| error.to_string())?;
+        let Some(worktree) = reader.get_worktree(&id).map_err(error)? else {
+            continue;
+        };
+        let Some(operation) = reader
+            .get_operation(worktree.active_operation_id())
             .map_err(error)?
-            .and_then(|current| current.view_id().cloned())
         else {
             continue;
         };
+        views.push((
+            worktree.space_id().clone(),
+            operation.resulting_view_id().clone(),
+            Some(id),
+        ));
+    }
+    for space in spaces {
+        let space = layrs_core::scm::SpaceId::parse(space).map_err(|error| error.to_string())?;
+        if let Some(view) = reader
+            .current_repository_view(&space)
+            .map_err(error)?
+            .and_then(|current| current.view_id().cloned())
+        {
+            views.push((space, view, None));
+        }
+    }
+    let mut needed = BTreeSet::new();
+    let mut bases = Vec::new();
+    for (space, view, only) in views {
         let Some(view) = reader.get_repository_view(&view).map_err(error)? else {
             continue;
         };
         for worktree in view.worktrees() {
+            if only
+                .as_ref()
+                .is_some_and(|only| only != worktree.worktree_id())
+            {
+                continue;
+            }
             if let Some(tree) = worktree.materialized_tree_id() {
                 needed.insert(tree.to_string());
             }

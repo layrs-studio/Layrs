@@ -1650,10 +1650,11 @@ Chair's decision:
 - A: `trim_projections`, after the passes (explicit and detached runs),
   under a shared Store session (no RepositoryView moves meanwhile): the
   cache's newest sequence, then the root Trees of every current
-  RepositoryView's Worktrees (base Steps' roots and materialized Trees),
-  then `projection_cache::trim`, which removes the values written at or
-  before that sequence whose root is not needed and that no kept delta
-  applies to. Skipped while a Worktree transition is pending (recovery
+  RepositoryView's Worktrees and of each registered Worktree in its
+  active Operation's View (base Steps' roots and materialized Trees), then
+  `projection_cache::trim`, which removes the values written at or before
+  that sequence whose root is not needed and that no kept delta applies
+  to. Skipped while a Worktree transition is pending (recovery
   operations pending, prepared or applying). Then the CLI reads the kept
   bases' projections again (`warm_step_projections`): a consolidation
   retires the packs a cached projection names files in (by position), and
@@ -1674,18 +1675,18 @@ Chair's decision:
   uses the same 32-byte form. The pack metadata was 604 KB of the nested
   pack's 1.11 MB at 2,000 Steps (explicit keys 386 KB).
 
-  Deviation from s30's conditions, for council s37: a pack does not keep
-  full keys when two keys share 16 bytes; colliding ids are refused
-  instead. A batch whose history record's key a stored record already has
-  fails its admission (the stored bytes differ), two colliding records in
-  one pack are refused by the builder ("two copies of a history record
-  differ"), a copy of two colliding records in consolidation fails its
-  candidate, and every read compares the decoded id (`get_*` refuses
-  another id). Legitimate ids are random (UUIDs): about n²/2^129 for n
-  records. A forced collision needs 2^64 work on two ids of the forger's
-  own choosing (no second preimage at 128 bits), and only those refuse.
-  Test: `history_key_collision.rs`, keys cut to one byte through a test
-  hook (`set_history_key_bytes`).
+  Deviation from s30's conditions, accepted by council s37 for the opt-in
+  draft: a pack does not keep full keys when two keys share 16 bytes;
+  colliding ids are refused instead (`AdmissionRejected`, "history key
+  collision"): one whose key a stored record of another id holds, or two
+  in one batch. A reference to an id counts only when the record under
+  its key names it (s37), a copy of two colliding records in consolidation
+  fails its candidate, and every read compares the decoded id (`get_*`
+  refuses another id). Legitimate ids are random (UUIDs): about n²/2^129
+  for n records. A forced collision needs 2^64 work on two ids of the
+  forger's own choosing (no second preimage at 128 bits). Test:
+  `history_key_collision.rs`, keys cut to one byte through a test hook
+  (`set_history_key_bytes`).
 - Measured with A, D and B:
 
   | Scenario | 1,000 Steps | 2,000 Steps | slope |
@@ -1739,3 +1740,57 @@ Chair's decision:
   them: its objects grew 14 KiB over 10 commits (`git99.py`: `.git` 15.0
   MiB at 0 and 10 commits, 15.8 at 50), Layrs's pack 6.5 MB. A design
   question for the next council (Tree deltas or chunked large Trees).
+
+## Council s37 r1 (2026-11-25): review of the size gate's closing
+
+| Member | Round 1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 (ship after fixes) |
+
+All three accept B's refusal of colliding ids for the opt-in draft (no
+silent substitution). Fixed:
+
+- (P2 Astra, Sol) The records balance stopped a geometric group at the
+  first pack that would unbalance it: packs of alternating densities never
+  grouped and maintenance was never due. Such a pack is now skipped, not
+  the end of the group. Test: alternating densities group.
+- (P2 Astra, Sol; P3 Opus) The trim raced with cache writers: a delta
+  written after its snapshot could lose its base, and sequences
+  (`max(seq) + 1`) could be reused once the newest rows went. Now a delta
+  is written only while its base is recorded (one statement; else it is
+  written complete), the trim removes deltas first, then each complete
+  projection only if no recorded delta applies to it and its sequence is
+  still the one it read (one statement each), and a sequence is past every
+  recorded one and the microseconds since the epoch. Test: a trim and
+  writers keep every delta its base.
+- (P2 Astra, Sol) Inline packs of many small records (a large
+  `LAYRS_CAS_INLINE_MAX`) could never merge under the record bound, and
+  maintenance takes only pack files. Inline merges have no record bound
+  (the inline limit bounds them). Test.
+- (P2 Sol) The Space's current View does not give every Worktree's base: a
+  capture keeps the other Worktrees' states from its own active
+  Operation's View. The trim now also reads each registered Worktree's
+  state in its active Operation's View. The CLI test advances the Room,
+  then the project, before maintenance (it fails without the fix).
+- (P2 Opus) A reference check (`references::check_batch`) counted a
+  history record under the id's key without comparing the id: with a
+  collision, an Operation on a refused twin was admitted, dangling. It now
+  counts only a record that names the id. Test: an Operation on the
+  Initialize's colliding twin is refused, on the Initialize it lands.
+- (P3 Opus) Collisions were refused as Store damage or an I/O error: they
+  are `AdmissionRejected` ("history key collision"), found before the pack
+  is written.
+- (P3 Opus) A batch's record bound depends on maintenance running: past
+  twice the trigger's pack files, a batch lifts it, so the pack count stays
+  bounded with maintenance disabled or without the CLI. Test.
+- (P3 Opus) The balance test held the import back by size, not records: a
+  case of small packs half its size with few records is added.
+
+Gate before the default flip (2e), recorded (P2 Opus): with refusal, a
+forger with 2^64 work can split honest history between peers (peers that
+received different twins first refuse each other's descendants). Before
+2e, history keys need s30's full-key escape or a per-Store secret in
+their derivation (`keyed_hash(store_salt, code || id)[..16]`, only if no
+pack is copied byte for byte between Stores).

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use layrs_core::scm::{
     CaptureReason, Layer, LayerHeadSet, LayerId, LayerKind, LayerSettings, LayerStatus, Metadata,
-    ObservationId, Operation, OperationId, OperationKind, RepositoryView, Space, SpaceId, Step,
-    StepId, StepObservation, StoreId, Timestamp, Tree,
+    ObservationId, Operation, OperationId, OperationKind, RepositoryView, RepositoryViewId, Space,
+    SpaceId, Step, StepId, StepObservation, StoreId, Timestamp, Tree,
 };
 use layrs_store::scm::{
     CanonicalObject, EntityRecord, OperationHeadsCas, RepositoryViewCas, ScmReader, ScmRepository,
@@ -34,7 +34,7 @@ fn timestamp() -> Timestamp {
 }
 
 /// A Space with one empty Step: its Initialize batch.
-fn initialize(space: &SpaceId) -> (StepId, WriteBatch) {
+fn initialize(space: &SpaceId) -> (StepId, RepositoryViewId, WriteBatch) {
     let space_record = Space::new(space.clone(), "Space", timestamp(), Metadata::empty()).unwrap();
     let layer = Layer::new(
         LayerId::parse("layer:collision").unwrap(),
@@ -106,7 +106,7 @@ fn initialize(space: &SpaceId) -> (StepId, WriteBatch) {
         ],
     )
     .unwrap();
-    (step.id().clone(), batch)
+    (step.id().clone(), view.id().clone(), batch)
 }
 
 fn observation(id: &str, step: &StepId, space: &SpaceId) -> StepObservation {
@@ -140,10 +140,36 @@ fn observations(transaction: &str, records: Vec<StepObservation>) -> WriteBatch 
 
 /// The first byte of a StepObservation's history key (kind 12).
 fn first_key_byte(id: &str) -> u8 {
+    key_byte(12, id)
+}
+
+/// The first byte of a history key of kind `code`.
+fn key_byte(code: u8, id: &str) -> u8 {
     blake3::derive_key(
         "layrs history key v1",
-        &[&[12_u8][..], id.as_bytes()].concat(),
+        &[&[code][..], id.as_bytes()].concat(),
     )[0]
+}
+
+/// An Operation on `parents`, a Capture of the Space's first View.
+fn operation(id: &str, space: &SpaceId, view: &RepositoryViewId, parents: &[&str]) -> Operation {
+    Operation::new(
+        OperationId::parse(id).unwrap(),
+        space.clone(),
+        parents
+            .iter()
+            .map(|parent| OperationId::parse(*parent).unwrap())
+            .collect(),
+        view.clone(),
+        OperationKind::CaptureWorktree,
+        "Capture",
+        vec![],
+        None,
+        None,
+        timestamp(),
+        Metadata::empty(),
+    )
+    .unwrap()
 }
 
 /// Three ids whose keys share their first byte, the first one `base`'s.
@@ -182,7 +208,7 @@ fn colliding_history_keys_are_never_merged_nor_served_for_one_another() {
     init(&root.0, StoreId::parse("store:collision").unwrap()).unwrap();
     unsafe { std::env::remove_var("LAYRS_STORE_FORMAT") };
     let space = SpaceId::parse("space:collision").unwrap();
-    let (step, batch) = initialize(&space);
+    let (step, view, batch) = initialize(&space);
     let mut repository = NativeScmRepository::new(&root.0);
     repository.apply_batch(&batch).unwrap();
     let ids = colliding("observation:first");
@@ -199,7 +225,7 @@ fn colliding_history_keys_are_never_merged_nor_served_for_one_another() {
         .apply_batch(&observations("transaction:collision-2", vec![second]))
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("conflicting payload"), "{refused}");
+    assert!(refused.contains("history key collision"), "{refused}");
     // Two colliding ids in one batch: refused.
     let other = |taken: &[u8]| {
         (0..)
@@ -218,10 +244,52 @@ fn colliding_history_keys_are_never_merged_nor_served_for_one_another() {
         ))
         .unwrap_err()
         .to_string();
-    assert!(
-        refused.contains("two copies of a history record differ"),
-        "{refused}"
+    assert!(refused.contains("history key collision"), "{refused}");
+    // A reference to an id whose key another id's record holds is missing,
+    // not found under that key (council s37): an Operation on the stored
+    // Initialize's colliding twin is refused, on the Initialize itself it
+    // lands.
+    let initialize_id = "operation:collision-0";
+    let twin = (0..)
+        .map(|n| format!("operation:twin-{n}"))
+        .find(|id| key_byte(11, id) == key_byte(11, initialize_id))
+        .unwrap();
+    let child = |n: usize| {
+        (n..)
+            .map(|n| format!("operation:child-{n}"))
+            .find(|id| key_byte(11, id) != key_byte(11, initialize_id))
+            .unwrap()
+    };
+    let on_twin = operation(&child(0), &space, &view, &[&twin]);
+    let batch = |transaction: &str, operation: Operation| {
+        WriteBatch::new(
+            TransactionId::new(transaction).unwrap(),
+            vec![],
+            vec![EntityRecord::Operation(operation)],
+            vec![],
+            vec![],
+        )
+        .unwrap()
+    };
+    let refused = repository
+        .apply_batch(&batch("transaction:collision-5", on_twin))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains(&twin), "{refused}");
+    let first_child = child(0);
+    let second_child = child(
+        first_child
+            .trim_start_matches("operation:child-")
+            .parse::<usize>()
+            .unwrap()
+            + 1,
     );
+    repository
+        .apply_batch(&batch(
+            "transaction:collision-6",
+            operation(&second_child, &space, &view, &[initialize_id]),
+        ))
+        .unwrap();
     // An id of another key still lands.
     let unrelated = other(&[first_key_byte(&ids[0]), first_key_byte(&pair[0])]);
     let lands = observation(&unrelated, &step, &space);

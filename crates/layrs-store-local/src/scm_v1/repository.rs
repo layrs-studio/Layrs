@@ -18,6 +18,17 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use super::acquisition::{SHORT_WAIT, acquire};
+
+/// Whether a history record's canonical `body` (kind `code`) is the record
+/// of `id`: its key keeps 16 bytes of a derivation (draft 12), so another
+/// id's record may be filed under the same key.
+fn history_body_names(code: u8, id: &str, body: &[u8]) -> bool {
+    if code == super::cas::OPERATION_KIND {
+        serde_json::from_slice::<Operation>(body).is_ok_and(|value| value.id().as_str() == id)
+    } else {
+        serde_json::from_slice::<StepObservation>(body).is_ok_and(|value| value.id().as_str() == id)
+    }
+}
 use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter, PutItem};
 use super::sqlite::{
     canonical_receipt_json, rfc3339_to_epoch_millis, validate_canonical_receipt_json,
@@ -754,10 +765,12 @@ impl NativeScmRepository {
                 |id| catalog.contains_with(id, false).map_err(cas_backend),
                 |code, id| {
                     let key = super::cas::history_key(code, id);
+                    // The record under the key, if it is that id's: keys
+                    // keep 16 bytes (draft 12), two ids may share one.
                     Ok(catalog
                         .history_record(cas.reader(), code, &key, None)
                         .map_err(cas_backend)?
-                        .is_some())
+                        .is_some_and(|(body, _)| history_body_names(code, id, &body)))
                 },
             )?;
         }
@@ -1594,19 +1607,38 @@ fn plan_history(
         }
     }
     let mut planned = Vec::new();
+    let mut planned_ids: std::collections::HashMap<(u8, [u8; 32]), &str> =
+        std::collections::HashMap::new();
     for (code, id, body, space) in records {
         let key = super::cas::history_key(code, id);
+        // Keys keep 16 bytes (draft 12): an id whose key another id holds,
+        // stored or in this batch, is refused, never merged (council s37).
+        let collision = || StoreError::AdmissionRejected {
+            kind: "history key collision",
+            id: id.to_owned(),
+        };
         match catalog
             .history_record(cas.reader(), code, &key, None)
             .map_err(cas_backend)?
         {
             Some((stored, _)) if stored == body => {}
+            Some((stored, _)) if !history_body_names(code, id, &stored) => {
+                return Err(collision());
+            }
             Some(_) => {
                 return Err(StoreError::Corruption {
                     message: format!("immutable entity {id} has conflicting payload"),
                 });
             }
-            None => planned.push((code, key, body, space)),
+            None => {
+                if planned_ids
+                    .insert((code, key), id)
+                    .is_some_and(|other| other != id)
+                {
+                    return Err(collision());
+                }
+                planned.push((code, key, body, space));
+            }
         }
     }
     if planned.is_empty() {

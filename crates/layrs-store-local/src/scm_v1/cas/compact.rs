@@ -1011,6 +1011,21 @@ fn candidates_among(
     candidates_among_within(inline, files, file_count, Budget::IN_BATCH)
 }
 
+/// `budget` without its record bound once `file_count` pack files are
+/// registered, twice the trigger (council s37): when no maintenance runs
+/// (disabled, or a library applying batches without the CLI), a batch
+/// still keeps the pack count bounded, as before s36.
+fn lifted_past_many(budget: Budget, file_count: usize) -> Budget {
+    if file_count >= 2 * CONSOLIDATE_AT_PACKS {
+        Budget {
+            records: u64::MAX,
+            ..budget
+        }
+    } else {
+        budget
+    }
+}
+
 /// `candidates_among` within `budget`.
 fn candidates_among_within(
     inline: &[(u64, u64, u64, u64, usize)],
@@ -1018,10 +1033,18 @@ fn candidates_among_within(
     file_count: usize,
     budget: Budget,
 ) -> Vec<usize> {
+    let budget = lifted_past_many(budget, file_count);
     let inline_bytes = inline
         .iter()
         .fold(0_u64, |total, pack| total.saturating_add(pack.0));
     if inline.len() >= CONSOLIDATE_INLINE_AT || inline_bytes >= CONSOLIDATE_INLINE_BYTES {
+        // Inline packs are bounded by the inline limit, and only a batch
+        // merges them: no record bound, or packs of many small records
+        // would never merge (council s37).
+        let budget = Budget {
+            records: u64::MAX,
+            ..budget
+        };
         let group = bounded_group_within(inline, false, budget);
         if group.len() >= 2 {
             return group;
@@ -1080,18 +1103,21 @@ fn bounded_group_within(
     let (mut total, mut records, mut blocks, mut raw) = (0_u64, 0_u64, 0_u64, 0_u64);
     let mut heaviest = 0_u64;
     for &(size, pack_records, pack_blocks, pack_raw, position) in by_size {
+        if geometric && !chosen.is_empty() && size > total.saturating_mul(2) {
+            break;
+        }
         if geometric && !chosen.is_empty() {
             // Balanced in records too (council s36): a rewrite costs per
             // record, so a pack past `QUICK_REWRITE_RECORDS` (a large
             // import's file records) is rewritten only once the others
             // hold half as many records, not only half its size (a few
-            // wide Trees make small packs large on disk).
+            // wide Trees make small packs large on disk). A pack that would
+            // unbalance the group is skipped, not the end of it: packs of
+            // alternating densities still group (council s37).
             let heaviest = heaviest.max(pack_records);
             let others = records + pack_records - heaviest;
-            if size > total.saturating_mul(2)
-                || (heaviest > QUICK_REWRITE_RECORDS && heaviest > others.saturating_mul(2))
-            {
-                break;
+            if heaviest > QUICK_REWRITE_RECORDS && heaviest > others.saturating_mul(2) {
+                continue;
             }
         }
         // Within the inline budgets, and half the reader's limits for one
@@ -5978,6 +6004,32 @@ mod consolidation_tests {
         );
         let large = vec![import, (10 * mib, 200, 1, 10 * mib, 1)];
         assert!(consolidation_group_within(&large, Budget::MAINTENANCE).is_empty());
+        // Small packs of few records, half its size on disk: still not.
+        let half = vec![
+            (3 * mib, 10, 1, 3 * mib, 1),
+            (3 * mib, 10, 1, 3 * mib, 2),
+            (3 * mib, 10, 1, 3 * mib, 3),
+            import,
+        ];
+        assert_eq!(
+            consolidation_group_within(&half, Budget::MAINTENANCE),
+            vec![1, 2, 3]
+        );
+        // Alternating densities (council s37): stopping at the first
+        // imbalance found no group; skipping it, the dense packs group, then
+        // the sparse ones join a group they no longer unbalance.
+        let alternating: Vec<_> = [20_000, 100, 20_000, 100, 20_000, 100]
+            .into_iter()
+            .enumerate()
+            .map(|(position, records)| {
+                let size = mib + position as u64 * mib / 10;
+                (size, records, 1, size, position)
+            })
+            .collect();
+        assert_eq!(
+            consolidation_group_within(&alternating, Budget::MAINTENANCE),
+            vec![0, 2, 3, 4, 5]
+        );
         // Once the others hold half its records, maintenance takes it.
         let grown = vec![import, (10 * mib, 50_000, 1, 10 * mib, 1)];
         assert_eq!(
@@ -5995,6 +6047,31 @@ mod consolidation_tests {
             consolidation_group_within(&few, Budget::MAINTENANCE),
             vec![0, 1]
         );
+    }
+
+    /// Inline packs merge whatever records they hold (council s37): the
+    /// inline limit bounds them, and nothing else would merge them.
+    #[test]
+    fn inline_packs_of_many_records_still_merge() {
+        let inline: Vec<_> = (0..8)
+            .map(|p| (64 * 1024, 9_000, 1, 64 * 1024, p))
+            .collect();
+        assert_eq!(
+            candidates_among(&inline, &[], 0),
+            (0..8).collect::<Vec<_>>()
+        );
+    }
+
+    /// With twice the trigger's pack files, a batch takes a group past
+    /// the record bound (council s37): with no maintenance running, the
+    /// pack count stays bounded.
+    #[test]
+    fn many_pack_files_lift_a_batch_record_bound() {
+        let mib = 1024 * 1024;
+        let files: Vec<_> = (0..12).map(|p| (mib, 10_000, 1, mib, p)).collect();
+        assert!(candidates_among(&[], &files[..6], 6).is_empty());
+        assert!(candidates_among(&[], &files[..11], 11).is_empty());
+        assert!(candidates_among(&[], &files, 12).len() >= 2);
     }
 
     #[test]
