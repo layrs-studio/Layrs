@@ -350,11 +350,19 @@ pub fn trim_projections(root: impl AsRef<std::path::Path>) -> Result<ProjectionT
             continue;
         };
         views.push((
+            operation.created_at().clone(),
             worktree.space_id().clone(),
             operation.resulting_view_id().clone(),
             Some(id),
         ));
     }
+    // Most recent active Operation first (council s37): the warm-up reads
+    // the first bases only.
+    views.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut views: Vec<_> = views
+        .into_iter()
+        .map(|(_, space, view, only)| (space, view, only))
+        .collect();
     for space in spaces {
         let space = layrs_core::scm::SpaceId::parse(space).map_err(|error| error.to_string())?;
         if let Some(view) = reader

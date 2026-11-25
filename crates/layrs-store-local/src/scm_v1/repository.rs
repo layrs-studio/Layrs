@@ -19,16 +19,6 @@ use serde::Serialize;
 
 use super::acquisition::{SHORT_WAIT, acquire};
 
-/// Whether a history record's canonical `body` (kind `code`) is the record
-/// of `id`: its key keeps 16 bytes of a derivation (draft 12), so another
-/// id's record may be filed under the same key.
-fn history_body_names(code: u8, id: &str, body: &[u8]) -> bool {
-    if code == super::cas::OPERATION_KIND {
-        serde_json::from_slice::<Operation>(body).is_ok_and(|value| value.id().as_str() == id)
-    } else {
-        serde_json::from_slice::<StepObservation>(body).is_ok_and(|value| value.id().as_str() == id)
-    }
-}
 use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter, PutItem};
 use super::sqlite::{
     canonical_receipt_json, rfc3339_to_epoch_millis, validate_canonical_receipt_json,
@@ -770,7 +760,9 @@ impl NativeScmRepository {
                     Ok(catalog
                         .history_record(cas.reader(), code, &key, None)
                         .map_err(cas_backend)?
-                        .is_some_and(|(body, _)| history_body_names(code, id, &body)))
+                        .is_some_and(|(body, _)| {
+                            history_body_id(code, &body).as_deref() == Some(id)
+                        }))
                 },
             )?;
         }
@@ -1622,14 +1614,19 @@ fn plan_history(
             .map_err(cas_backend)?
         {
             Some((stored, _)) if stored == body => {}
-            Some((stored, _)) if !history_body_names(code, id, &stored) => {
-                return Err(collision());
-            }
-            Some(_) => {
-                return Err(StoreError::Corruption {
-                    message: format!("immutable entity {id} has conflicting payload"),
-                });
-            }
+            Some((stored, _)) => match history_body_id(code, &stored) {
+                Some(other) if other != id => return Err(collision()),
+                Some(_) => {
+                    return Err(StoreError::Corruption {
+                        message: format!("immutable entity {id} has conflicting payload"),
+                    });
+                }
+                None => {
+                    return Err(StoreError::Corruption {
+                        message: format!("the history record filed for {id} does not decode"),
+                    });
+                }
+            },
             None => {
                 if planned_ids
                     .insert((code, key), id)
@@ -2527,6 +2524,21 @@ impl ScmReader for NativeScmRepository {
     }
     fn proof_in_space(&self, p: &ProofId, s: &SpaceId) -> Result<bool> {
         self.with_reader(|r| r.proof_in_space(p, s))
+    }
+}
+
+/// The id a history record's canonical `body` (kind `code`) names, `None`
+/// when it does not decode: its key keeps 16 bytes of a derivation (draft
+/// 12), so another id's record may be filed under the same key.
+fn history_body_id(code: u8, body: &[u8]) -> Option<String> {
+    if code == super::cas::OPERATION_KIND {
+        serde_json::from_slice::<Operation>(body)
+            .ok()
+            .map(|value| value.id().as_str().to_owned())
+    } else {
+        serde_json::from_slice::<StepObservation>(body)
+            .ok()
+            .map(|value| value.id().as_str().to_owned())
     }
 }
 

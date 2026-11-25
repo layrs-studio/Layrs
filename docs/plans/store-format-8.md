@@ -1828,3 +1828,48 @@ Fixed:
   then each complete projection unless a delta applies to it.
 - (P3 Opus) The batch's record bound was lifted counting skipped packs:
   only the packs a group may take count.
+
+## Council s37 r3 (2026-11-25, last round)
+
+| Member | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 7/10 | 7/10 (ship after fixes) |
+| GPT-6.1 Sol (max) | 7/10 | 8/10 | 8/10 (ship after fixes) |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 8/10 (ship) |
+
+No P0 or P1. The remaining P2s cost the projection cache's availability
+only (a load checks every delta against its base's checksum, so a wrong
+projection is never served). Fixed by the chair after the last round, not
+reviewed again:
+
+- (P2 Astra, Sol) `prune` removed the deltas it chose from its snapshot
+  unconditionally: a root written again as a complete projection, with a
+  delta on it, could go. Both passes now remove a value only while it is as
+  read and no delta applies to it (`remove_unused`).
+- (P2 Astra, Sol) A sequence was taken and applied in two commits: a write
+  could land after a trim read the clock with a sequence below its cutoff,
+  and touches could apply out of order. Taking and applying it is one write
+  transaction (`with_next_seq`). Test: two writers on their own
+  connections get distinct sequences, the clock holds the newest.
+- (P2 Astra) A delta could replace a complete projection other deltas
+  apply to, or base on its own root: neither is written (the complete
+  form is, then). Test.
+- (P3 Opus) A cache replaced during a trim restarted its clock at 0, below
+  the trim's cutoff: a new clock starts at the microseconds since the
+  epoch. A missing clock row is damage (the cache is replaced).
+- (P3 Opus) A stored history body that does not decode was refused as a
+  collision: it is corruption; only a well-formed record of another id is
+  a collision.
+- (P3 Opus) The warm-up's bases were in table order: the Worktrees whose
+  active Operation is the newest come first.
+
+Not done, recorded:
+
+- (P3 Opus) `consolidation_due` counts skipped packs, the candidates do
+  not: with many skipped packs a batch may reopen the CAS for nothing (as
+  before s36, more likely with the lift). Rare (damaged packs); later.
+- (Scope, Opus) Measure the size gate at 10,000 Steps before 2e: past
+  16,384 records outside the largest pack, the explicit whole group no
+  longer takes it.
+- (Scope, Opus) The 2e gate on history keys (full-key escape or a
+  per-Store secret) as a check at the default-flip site, not only here.

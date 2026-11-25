@@ -867,6 +867,7 @@ fn prune(cache: &Projections, kept: &str) {
     // Deltas fill what the complete projections leave of `KEPT`.
     let mut retained = complete.len();
     let mut removed_complete = Vec::new();
+    let mut removed_deltas = Vec::new();
     for row in &rows {
         let keep = match &row.base {
             Some(base) => {
@@ -880,15 +881,16 @@ fn prune(cache: &Projections, kept: &str) {
             continue;
         }
         if row.base.is_some() {
-            cache.remove(&row.root);
+            removed_deltas.push(row);
         } else {
-            removed_complete.push(row.root.as_str());
+            removed_complete.push(row);
         }
     }
-    // Then the complete projections, each unless a delta recorded since
-    // applies to it (council s37).
-    for root in removed_complete {
-        cache.remove_unless_based(root);
+    // Deltas first, then the complete projections, each only while it is
+    // as read and no delta applies to it (`remove_unused`, council s37): a
+    // value written or touched since stays.
+    for row in removed_deltas.into_iter().chain(removed_complete) {
+        cache.remove_unused(&row.root, row.seq);
     }
 }
 
@@ -1307,21 +1309,67 @@ mod tests {
         // The clock keeps going once the newest row went, at once.
         assert!(cache.insert("next", None, false, b"n").unwrap());
         assert!(seq_of("next").unwrap() > newest);
-        // Pruning removes a complete projection only while no delta applies
-        // to it.
+        // A delta never bases on itself, nor replaces a projection another
+        // delta applies to.
+        let next = seq_of("next").unwrap();
         assert!(
-            cache
-                .insert(
-                    "on-next",
-                    Some(("next", seq_of("next").unwrap())),
-                    false,
-                    b"x"
-                )
+            !cache
+                .insert("next", Some(("next", next)), false, b"self")
                 .unwrap()
         );
-        assert!(!cache.remove_unless_based("next"));
+        assert!(
+            cache
+                .insert("on-next", Some(("next", next)), false, b"x")
+                .unwrap()
+        );
+        assert!(cache.insert("other", None, false, b"o").unwrap());
+        let other = seq_of("other").unwrap();
+        assert!(
+            !cache
+                .insert("next", Some(("other", other)), false, b"d")
+                .unwrap()
+        );
+        // Removed only while as read and no delta applies to it.
+        assert!(!cache.remove_unused("next", next));
         assert!(cache.remove("on-next"));
-        assert!(cache.remove_unless_based("next"));
+        assert!(cache.remove_unused("next", next));
+        drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Two writers on their own connections (council s37): each sequence is
+    /// given and applied in one write transaction, so every row has its own
+    /// and the clock holds the newest.
+    #[test]
+    fn concurrent_writers_take_distinct_sequences() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-clock-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        drop(Projections::open(&root, Access::Create).unwrap());
+        let writers: Vec<_> = (0..2)
+            .map(|writer| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    let cache = Projections::open(&root, Access::Write).unwrap();
+                    for n in 0..100 {
+                        let name = format!("w{writer}-{n}");
+                        while !cache.insert(&name, None, false, b"v").unwrap_or(false) {}
+                        assert!(cache.touch(&name));
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let cache = Projections::open(&root, Access::Write).unwrap();
+        let rows = cache.rows();
+        assert_eq!(rows.len(), 200);
+        let seqs: std::collections::BTreeSet<i64> = rows.iter().map(|row| row.seq).collect();
+        assert_eq!(seqs.len(), 200);
+        assert_eq!(cache.newest_seq(), seqs.last().copied());
         drop(cache);
         let _ = fs::remove_dir_all(&root);
     }

@@ -309,9 +309,13 @@ fn initialize(path: &Path) -> rusqlite::Result<Connection> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 0 {
+        // The clock starts at the microseconds since the epoch: a cache
+        // replaced while a trim runs gives sequences past the cutoff it read
+        // from the one before (council s37).
         transaction.execute_batch(&format!(
             "{CHANGE_INDEX_TABLE}; {PROJECTION_TABLE}; {CLOCK_TABLE}; \
-             INSERT INTO clock (singleton, seq) VALUES (1, 0);"
+             INSERT INTO clock (singleton, seq) \
+             VALUES (1, CAST(unixepoch('subsec') * 1000000 AS INTEGER));"
         ))?;
         transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -686,25 +690,42 @@ impl Projections {
         self.fetch(root, max_bytes).ok().flatten()
     }
 
-    /// The next sequence of the clock row: past every one given before,
-    /// whatever rows were removed since (council s37).
-    fn next_seq(&self) -> rusqlite::Result<i64> {
-        self.noted(self.connection().query_row(
+    /// Runs `write` with the next sequence of the clock row (past every one
+    /// given before, whatever rows were removed since) in one write
+    /// transaction (council s37): a sequence is applied in the order it was
+    /// given, and a trim that read the clock before sees the write as newer.
+    /// A missing clock row is damage.
+    fn with_next_seq<T>(
+        &self,
+        write: impl FnOnce(&Connection, i64) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        let connection = self.connection();
+        let transaction =
+            rusqlite::Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+        let seq = match connection.query_row(
             "UPDATE clock SET seq = seq + 1 WHERE singleton = 1 RETURNING seq",
             [],
-            |row| row.get(0),
-        ))
+            |row| row.get::<_, i64>(0),
+        ) {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                self.damaged.set(true);
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            other => self.noted(other)?,
+        };
+        let written = self.noted(write(connection, seq))?;
+        transaction.commit()?;
+        Ok(written)
     }
 
     /// Marks `root` most recent; whether it was recorded.
     pub(crate) fn touch(&self, root: &str) -> bool {
-        let Ok(seq) = self.next_seq() else {
-            return false;
-        };
-        self.noted(self.connection().execute(
-            "UPDATE projection SET seq = ?2 WHERE root = ?1",
-            params![root, seq],
-        ))
+        self.with_next_seq(|connection, seq| {
+            connection.execute(
+                "UPDATE projection SET seq = ?2 WHERE root = ?1",
+                params![root, seq],
+            )
+        })
         .is_ok_and(|changed| changed > 0)
     }
 
@@ -733,9 +754,11 @@ impl Projections {
 
     /// Records `root`'s value; whether it was written: a delta is written
     /// only while the complete projection it applies to (`base`: its root
-    /// and the sequence it was read at) is still recorded as read, in the
+    /// and the sequence it was read at) is still recorded as read, on
+    /// another root, and while no delta applies to `root` itself, in the
     /// same statement (council s37), so maintenance's trim never leaves a
-    /// delta written after its base went or changed.
+    /// delta written after its base went or changed, and a delta never
+    /// replaces another delta's base.
     pub(crate) fn insert(
         &self,
         root: &str,
@@ -744,17 +767,20 @@ impl Projections {
         bytes: &[u8],
     ) -> io::Result<bool> {
         let bytes = compress(bytes)?;
-        let seq = self.next_seq().map_err(io::Error::other)?;
         let (base_root, base_seq) = base.unzip();
-        self.noted(self.connection().execute(
-            "INSERT INTO projection (root, base, positions, seq, bytes) \
-             SELECT ?1, ?2, ?3, ?5, ?4 \
-             WHERE ?2 IS NULL OR EXISTS (SELECT 1 FROM projection \
-             WHERE root = ?2 AND base IS NULL AND seq = ?6) \
-             ON CONFLICT (root) DO UPDATE SET base = excluded.base, \
-             positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes",
-            params![root, base_root, positions, bytes, seq, base_seq],
-        ))
+        self.with_next_seq(|connection, seq| {
+            connection.execute(
+                "INSERT INTO projection (root, base, positions, seq, bytes) \
+                 SELECT ?1, ?2, ?3, ?5, ?4 \
+                 WHERE ?2 IS NULL OR (?2 <> ?1 \
+                 AND EXISTS (SELECT 1 FROM projection \
+                 WHERE root = ?2 AND base IS NULL AND seq = ?6) \
+                 AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)) \
+                 ON CONFLICT (root) DO UPDATE SET base = excluded.base, \
+                 positions = excluded.positions, seq = excluded.seq, bytes = excluded.bytes",
+                params![root, base_root, positions, bytes, seq, base_seq],
+            )
+        })
         .map(|changed| changed > 0)
         .map_err(io::Error::other)
     }
@@ -807,17 +833,6 @@ impl Projections {
             "DELETE FROM projection WHERE root = ?1 AND seq = ?2 \
              AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)",
             params![root, seq],
-        ))
-        .is_ok_and(|changed| changed > 0)
-    }
-
-    /// Removes the complete projection of `root` unless a recorded delta
-    /// applies to it (one statement, council s37); whether it was removed.
-    pub(crate) fn remove_unless_based(&self, root: &str) -> bool {
-        self.noted(self.connection().execute(
-            "DELETE FROM projection WHERE root = ?1 \
-             AND NOT EXISTS (SELECT 1 FROM projection AS delta WHERE delta.base = ?1)",
-            [root],
         ))
         .is_ok_and(|changed| changed > 0)
     }
