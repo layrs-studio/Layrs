@@ -1873,3 +1873,53 @@ Not done, recorded:
   longer takes it.
 - (Scope, Opus) The 2e gate on history keys (full-key escape or a
   per-Store secret) as a check at the default-flip site, not only here.
+
+## Council s38 r1 (2026-11-25): wide folders at 99k files
+
+Question: at 99k files in 10 folders of 9,900 files, each Step rewrites
+about five folder Trees of 405 KB (binary), 320 KB stored alone, 160 KB per
+version in 1 MiB clustered blocks: Layrs's packs grew 6.5 MB over 10 Steps
+where git's objects grew 14 KiB (`git99.py`; git deltas its trees). Which
+change brings Layrs's growth per Step to git's, with no command slower?
+
+Correction to the brief (Opus): after `layrs maintenance` the Store keeps
+two packs, the import's (8.2 MB, 99k file records, outside the whole group
+since s37's record bound) and the Steps' (9.7 MB after 10 Steps), not one
+of 14.7 MB (that was the build before the bound).
+
+All three recommend T1, Tree deltas inside a pack, as git does, with
+conditions; T2 (zstd with a reference prefix) only as a delta engine to
+compare; T3 (larger blocks) and T4 (chunked Trees) rejected as the
+answer; T5 (index cost per file) later, for totals only.
+
+Chair's decision:
+
+- Step 0 (Opus), no format change: the pack inventory after maintenance;
+  git's curve with `git verify-pack -v` at 10, 50 and 200 commits; the
+  accounting (`.layrs` with `derived.sqlite3` against `.git` with its
+  index); an offline T1 prototype on the real Tree versions of a 99k Store
+  (bytes per version, rebuild and check cost of a 9,900-entry Tree, cold
+  read at depth H).
+- Placement first (Opus, Sol): every version of a wide folder must end up
+  in one pack after maintenance, or each pack keeps a full version per
+  folder. Candidates: a large capture written as a content batch, then
+  its Step batch (Opus), or separately repackable outputs (Sol).
+- T1 in packs v4 (draft 13), conditions to settle with the prototype:
+  base in the same pack, linked in the pack metadata as a bounded forest;
+  copy/insert body over the base's binary body, every bound checked
+  before allocation; the rebuilt body checked by the existing
+  `decode_tree_binary` (shape, canonical form, id), never served
+  unchecked; newest version full, older ones deltas; bounded depth and
+  rebuild work, anchors charged to the size decision (no full version
+  every K); deltas only past a size threshold and only in maintenance;
+  working past the 64 MiB clustering bound. Reusing a delta byte for byte
+  in consolidation (checked by its block's registered hash, not decoded
+  again) changes s28's rule for Tree records: for the next council, with
+  the prototype's numbers.
+- Step latency at 99k (Astra, Sol): profile the wide-Tree writer
+  (`put_compact`: canonical envelope, binary encode, round-trip checks)
+  separately; deltas at maintenance do not change it.
+- Gates: size at 99k after 10, 50, 200 and 1,000 Steps against `git gc`,
+  total and slope; the flat and nested gates unchanged; latency of step,
+  status, checkouts of the head and of old Steps, diff, log, maintenance
+  and fsck at 10k and 99k; damage to a base fails its dependents closed.
